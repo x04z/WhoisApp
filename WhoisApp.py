@@ -701,7 +701,6 @@ def display_prefecture_trivia(tip_placeholder):
 
     # 5. Markdownで整形して表示
     tip_markdown = (
-        f"**{tip_type_title}**\n\n"
         f"**{selected_prefecture}** のトリビア:\n"
         f"> {selected_tip_text}"
     )
@@ -1009,3 +1008,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
