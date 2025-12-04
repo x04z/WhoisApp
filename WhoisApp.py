@@ -12,7 +12,7 @@ from urllib.parse import quote # URLエンコードに使用
 # --- 設定：API通信と並行処理 ---
 # 【重要】レートリミット対策として、無料枠(45req/min)に対し安全な値に調整
 MAX_WORKERS = 3
-DELAY_BETWEEN_REQUESTS = 1.4 # 約42req/min 程度に抑え、安全性を高める
+DELAY_BETWEEN_REQUESTS = 4.3 # 約42req/min 程度に抑え、安全性を高める (3 worker * 4.3 sec/req -> 約42req/min)
 
 # IP-APIでISP情報と国情報を取得
 IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,country,isp,query,message"
@@ -26,6 +26,7 @@ RIR_LINKS = {
     'APNIC': 'https://wq.apnic.net/static/search.html',
     'JPNIC': 'https://www.nic.ad.jp/ja/whois/ja-gateway.html',
     'AFRINIC': 'https://www.afrinic.net/whois',
+    'ICANN Whois': 'https://lookup.icann.org/', # 追加
 }
 
 # --- 国名からRIRを判定するマッピング (IP-APIは国名を返すため) ---
@@ -341,7 +342,7 @@ def group_results_by_isp(results):
     return final_grouped_results
 
 
-# --- 47都道府県のトリビアデータ ---
+# --- 47都道府県のトリビアデータ (3つの真面目な豆知識と2つのユーモアのある豆知識) ---
 # このデータは、ユーザーの要望に基づき、AIモデルが生成し組み込んだものです。
 PREFECTURE_TRIVIA_47 = {
     '北海道': {
@@ -481,7 +482,7 @@ PREFECTURE_TRIVIA_47 = {
         'serious_1': "「日本の屋根」と呼ばれる日本アルプスがあり、3000m級の山々が連なる。",
         'serious_2': "1998年に長野オリンピック・パラリンピックが開催され、世界的な知名度が高まった。",
         'serious_3': "蕎麦の名産地であり、戸隠そばや信州そばは全国的に有名である。",
-        'humorous_1': "長野県民は、隣の山梨県民を「海なし仲間」と思っている。",
+        'humorous_1': "長野県民は、隣の山梨県民を「海なし仲間」として静かに見下す傾向がある（長野は山が多い）。",
         'humorous_2': "長野県の形が細長いため、端から端まで移動するのに非常に時間がかかる。",
     },
     '岐阜県': {
@@ -700,6 +701,7 @@ def display_prefecture_trivia(tip_placeholder):
 
     # 5. Markdownで整形して表示
     tip_markdown = (
+        f"**{tip_type_title}**\n\n"
         f"**{selected_prefecture}** のトリビア:\n"
         f"> {selected_tip_text}"
     )
