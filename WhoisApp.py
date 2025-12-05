@@ -445,7 +445,7 @@ def main():
 
     st.set_page_config(layout="wide")
 
-    st.markdown('<h1 style="color: #1e3a8a; text-shadow: 1px 1px 2px #9ca3af; font-weight: bold;">🌐Whois一括検索アプリ (v1.3.1)</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 style="color: #1e3a8a; text-shadow: 1px 1px 2px #9ca3af; font-weight: bold;">🌐WhoisSearch</h1>', unsafe_allow_html=True)
     st.markdown("IPアドレス/ドメインリストを解析し、国情報に基づき**管轄RIRリンク**を自動判定します。**IPv4/IPv6の両方に対応**しています。")
 
     # --- Whois特性比較テーブルの追加 ---
@@ -675,3 +675,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
