@@ -375,6 +375,9 @@ def summarize_in_realtime(raw_results):
     isp_counts = {}
     country_code_counts = {}
 
+    # 1. 【変更点: ターゲット頻度マップを取得】
+    target_frequency = st.session_state.get('target_freq_map', {})
+
     # NEW: デバッグ情報初期化
     st.session_state['debug_summary'] = {} 
 
@@ -394,12 +397,19 @@ def summarize_in_realtime(raw_results):
 
     # ISPと国コードの集計
     for r in success_ipv4:
+        ip = r.get('Target_IP') # IPアドレスを取得 (キーとして使用)
+        # 2. 【変更点: IPの出現頻度を取得。マップになければ（異常値など）1とする】
+        frequency = target_frequency.get(ip, 1) 
+
         isp = r.get('ISP', 'N/A')
         cc = r.get('CountryCode', 'N/A')
+        
         if isp and isp not in ['N/A', 'N/A (簡易モード)']:
-            isp_counts[isp] = isp_counts.get(isp, 0) + 1
+            # 2. 【変更点: 頻度を加算】
+            isp_counts[isp] = isp_counts.get(isp, 0) + frequency
         if cc and cc != 'N/A':
-            country_code_counts[cc] = country_code_counts.get(cc, 0) + 1
+            # 2. 【変更点: 頻度を加算】
+            country_code_counts[cc] = country_code_counts.get(cc, 0) + frequency
 
     # ISPトップ10
     isp_df = pd.DataFrame(list(isp_counts.items()), columns=['ISP', 'Count'])
@@ -456,6 +466,7 @@ def summarize_in_realtime(raw_results):
     # Target Frequency
     freq_map = st.session_state.get('target_freq_map', {})
     finished = st.session_state.get('finished_ips', set())
+    # Target FrequencyはユニークIPではなく、入力リストでの出現回数を示すため、このロジックは変更なし
     freq_list = [{'Target_IP': t, 'Count': c} for t, c in freq_map.items() if t in finished]
     freq_df = pd.DataFrame(freq_list)
     if not freq_df.empty:
@@ -763,6 +774,7 @@ def main():
             - **集約モード**: 同じ ISP/国コードを持つ連続するIPv4アドレス群を「IPレンジ」として集約表示します。
             - **簡易モード**: APIコールを行わず、各種セキュリティ/Whois検索サイトへのリンクのみを提供します。
         - **集計結果**: 検索後、ISP別、国別、ターゲット別をグラフで表示し、国別のIPカウントヒートマップも表示します。
+            - **💡 キャッシュ対応**: キャッシュ機能によりAPIリクエストはユニークなIPに限定されますが、**集計機能は入力リストのIPの重複度（出現回数）を正確に反映**するように修正されています。
         - **セキュリティリンク**: VirusTotal, Aguseなどのセキュリティ関連リンクも併せて表示します。
                     
         #### 3. セキュリティリンクの特性
@@ -784,7 +796,7 @@ def main():
         #### 5. API レートリミット対策
         `ip-api.com` の API は無料版で**毎分 45リクエスト**のレートリミットがあります。
         - 検索処理中に 429 エラー (Too Many Requests) が発生した場合、ツールは自動的に 60 秒間処理を中断し、その後残りの処理を再開します。
-        - これにより、IPアドレスの連続したブロックがAPI制限にかかった場合でも、セッションがクラッシュすることなく処理が続行されます。
+        - **`@st.cache_data`** によるキャッシュ機能により、一度検索したIPアドレスに対するAPIリクエストを回避し、レートリミット対策の効率を大幅に向上させています。
 
         #### 6. OCRエラー対策
         入力された文字列に対して、OCR誤認識で発生しやすい文字 (`I/l` -> `1`, `O/o` -> `0`, `S/s` -> `5` など) を自動で修正する処理を加えています。
@@ -1100,11 +1112,11 @@ def main():
         # 🔔 デバッグ情報の表示 🔔
         if st.session_state.get('debug_summary'):
             with st.expander("🛠️ デバッグ情報 (集計データ確認用)", expanded=False):
-                st.markdown("**country_code_counts (Alpha-2とカウント)**")
+                st.markdown("**country_code_counts (Alpha-2とカウント)** - **重複度を反映**")
                 st.json(st.session_state['debug_summary'].get('country_code_counts', {}))
                 
                 # NumericCodeが'392'や'840'のように文字列になっているか確認
-                st.markdown("**country_all_df (Numeric ISO Codeとカウント - 整数型であるべき)**")
+                st.markdown("**country_all_df (Numeric ISO Codeとカウント - 整数型であるべき)** - **重複度を反映**")
                 st.json(st.session_state['debug_summary'].get('country_all_df', []))
                 
                 st.markdown("---")
