@@ -18,12 +18,12 @@ st.set_page_config(layout="wide", page_title="Whois Search Tool", page_icon="�
 # --- 設定：API通信と並行処理 ---
 MAX_WORKERS = 2
 # レートリミット回避のための待ち時間。ワーカー内でのブロッキングは削除するため、この値は単一リクエストごとの遅延時間として使用。
-DELAY_BETWEEN_REQUESTS = 2.7  # 秒
+DELAY_BETWEEN_REQUESTS = 0.1  # 秒 # キャッシュが効かない初回リクエスト時用に微小な値に変更
 # countryCode を明示的にリクエストに追加
 IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,country,countryCode,isp,query,message"
 # レートリミット発生時の強制待機時間 (秒)
 RATE_LIMIT_WAIT_SECONDS = 120
-
+  
 # --- RIR/RegistryのURL定義 (変更なし) ---
 RIR_LINKS = {
     'RIPE': 'https://apps.db.ripe.net/db-web-ui/#/query?searchtext={ip}',
@@ -228,6 +228,7 @@ def create_secondary_links(target):
     return link_html.rstrip(' | ')
 
 # --- API通信関数の変更（レートリミット対策） ---
+@st.cache_data(ttl=86400, show_spinner=False) #24時間 (86400秒) キャッシュを保持
 def get_ip_details_from_api(ip):
     """
     IP-APIから詳細を取得する。
@@ -236,9 +237,9 @@ def get_ip_details_from_api(ip):
         'Target_IP': ip, 'ISP': 'N/A', 'Country': 'N/A', 'CountryCode': 'N/A', 'RIR_Link': 'N/A',
         'Secondary_Security_Links': 'N/A', 'Status': 'N/A'
     }
-    
+    # 【重要】レートリミット回避のための待ち時間は、キャッシュを使う場合は不要になるためコメントアウト
     # 連続リクエストによるレートリミットを回避するための短いスリープ
-    time.sleep(DELAY_BETWEEN_REQUESTS)
+    # time.sleep(DELAY_BETWEEN_REQUESTS)
     
     try:
         url = IP_API_URL.format(ip=ip)
@@ -737,6 +738,12 @@ def main():
                 "nav-link-selected": {"background-color": "#1e3a8a"},
             }
         )
+        st.markdown("---")
+        if st.button("🔄 IP APIキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
+            # st.cache_dataでキャッシュされたすべての関数をクリア
+            st.cache_data.clear()
+            st.info("IP APIキャッシュをクリアしました。")
+            st.rerun()
 
     # --- メインコンテンツ：仕様・解説タブ ---
     if selected_menu == "仕様・解説":
