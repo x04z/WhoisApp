@@ -24,7 +24,7 @@ IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,country,countryCode,isp,
 # レートリミット発生時の強制待機時間 (秒)
 RATE_LIMIT_WAIT_SECONDS = 120
   
-# --- RIR/RegistryのURL定義 (変更なし) ---
+# --- RIR/RegistryのURL定義 ---
 RIR_LINKS = {
     'RIPE': 'https://apps.db.ripe.net/db-web-ui/#/query?searchtext={ip}',
     'ARIN': 'https://search.arin.net/rdap/?query={ip}',
@@ -33,6 +33,19 @@ RIR_LINKS = {
     'AFRINIC': 'https://www.afrinic.net/whois',
     'ICANN Whois': 'https://lookup.icann.org/',
 }
+# --- セカンダリツールリンクのベースURL定義 ---
+SECONDARY_TOOL_BASE_LINKS = {
+    'VirusTotal': 'https://www.virustotal.com/',
+    'Whois.com': 'https://www.whois.com/',
+    'Who.is': 'https://who.is/',
+    'DomainSearch.jp': 'https://www.domainsearch.jp/',
+    'Aguse': 'https://www.aguse.jp/',
+    'IP2Proxy': 'https://www.ip2proxy.com/',
+    'DNS Checker': 'https://dnschecker.org/',
+    'DNSlytics': 'https://dnslytics.com/',
+    'IP Location': 'https://iplocation.io/',
+    'CP-WHOIS': 'https://doco.cph.jp/whoisweb.php',
+    }
 
 # --- RIR割り当てマップを国コード (Alpha-2) に基づいて再定義 (RIR_LINKSのキーと対応) ---
 COUNTRY_CODE_TO_RIR = {
@@ -750,16 +763,16 @@ def main():
             }
         )
         st.markdown("---")
-        if st.button("🔄 IP APIキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
+        if st.button("🔄 IPキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
             # st.cache_dataでキャッシュされたすべての関数をクリア
             st.cache_data.clear()
-            st.info("IP APIキャッシュをクリアしました。")
+            st.info("IPキャッシュをクリアしました。")
             st.rerun()
 
     # --- メインコンテンツ：仕様・解説タブ ---
     if selected_menu == "仕様・解説":
         st.title("📖 ツールの仕様と解説")
-        st.markdown("""
+        st.markdown(f"""
         このツールは、IPアドレスまたはドメイン名に対して Whois および IP Geolocation 情報を一括で検索するためのアプリケーションです。
                     
         #### 1. データソース
@@ -779,13 +792,13 @@ def main():
                     
         #### 3. セキュリティ/Whois検索サイトの特性
         - **公式RIR**: 各地域のインターネットレジストリ (RIR) が提供する公式の Whois サービスです。最も正確な情報が得られますが、一部の RIR では手動での検索が必要です。
-        - **VirusTotal**: セキュリティ評判、マルウェア、攻撃履歴の確認できます。
-        - **Whois.com / Who.is IP**: 公式情報を見やすく表示します。ドメイン/IPの両方に対応しています。
-        - **DomainSearch.jp / Aguse**: IPアドレス、ドメイン名、ネームサーバ等の複合的な調査が可能です。
-        - **IP2Proxy**: プロキシ、VPN、Torなどの匿名化技術の使用判定が可能です。
-        - **DNS Checker**: IPv6対応。DNSレコードやWhois情報の多機能ツールです。
-        - **DNSlytics / IP Location**: IPv6対応。地理情報、ホスティング情報等の調査が可能です。
-        - **CP-WHOIS**: **信頼性**が高いWhois検索ツールです。利用者認証が必要です。
+        - **[{'VirusTotal'}]({SECONDARY_TOOL_BASE_LINKS['VirusTotal']})**: セキュリティ評判、マルウェア、攻撃履歴の確認できます。
+        - **[{'Whois.com'}]({SECONDARY_TOOL_BASE_LINKS['Whois.com']}) / [{'Who.is'}]({SECONDARY_TOOL_BASE_LINKS['Who.is']})**: 公式情報を見やすく表示します。ドメイン/IPの両方に対応しています。            
+        - **[{'DomainSearch.jp'}]({SECONDARY_TOOL_BASE_LINKS['DomainSearch.jp']}) / [{'Aguse'}]({SECONDARY_TOOL_BASE_LINKS['Aguse']})**: IPアドレス、ドメイン名、ネームサーバ等の複合的な調査が可能です。
+        - **[{'IP2Proxy'}]({SECONDARY_TOOL_BASE_LINKS['IP2Proxy']})**: プロキシ、VPN、Torなどの匿名化技術の使用判定が可能です。
+        - **[{'DNS Checker'}]({SECONDARY_TOOL_BASE_LINKS['DNS Checker']})**: IPv6対応。DNSレコードやWhois情報の多機能ツールです。
+        - **[{'DNSlytics'}]({SECONDARY_TOOL_BASE_LINKS['DNSlytics']}) / [{'IP Location'}]({SECONDARY_TOOL_BASE_LINKS['IP Location']})**: IPv6対応。地理情報、ホスティング情報等の調査が可能です。
+        - **[{'CP-WHOIS'}]({SECONDARY_TOOL_BASE_LINKS['CP-WHOIS']})**: **信頼性**が高いWhois検索ツールです。利用者認証が必要です。
 
         #### 4. 技術的仕様
         - **Streamlit**: WebUIフレームワーク
