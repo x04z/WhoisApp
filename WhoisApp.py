@@ -720,7 +720,7 @@ def display_results(results, current_mode_full_text, display_mode):
                 row_cols = st.columns(col_widths)
                 
                 # --- No. (普通の数字として表示) ---
-                row_cols[0].write(f"**{i+1}**")
+                row_cols[0].write(f"**{idx+1}**")
                 
                 # --- Target IP (IPv6絵文字化防止) ---
                 target_ip = res.get('Target_IP', 'N/A')
