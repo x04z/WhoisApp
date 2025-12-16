@@ -18,9 +18,9 @@ st.set_page_config(layout="wide", page_title="Whois Search Tool", page_icon="�
 # --- 設定：API通信と並行処理 ---
 # ユーザーが選択可能なモードの設定値を定義
 MODE_SETTINGS = {
-    "安定性重視 (1.5秒待機/単一スレッド)": {
+    "安定性重視 (2.5秒待機/単一スレッド)": {
         "MAX_WORKERS": 1, 
-        "DELAY_BETWEEN_REQUESTS": 1.5 # 1.5秒 (レートリミット回避の確実性を高める)
+        "DELAY_BETWEEN_REQUESTS": 2.5 # 2.5秒 (レートリミット回避の確実性を高める)
     },
     "速度優先 (1.4秒待機/2スレッド)": {
         "MAX_WORKERS": 2, 
@@ -1186,3 +1186,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
