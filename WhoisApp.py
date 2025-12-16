@@ -102,7 +102,53 @@ COUNTRY_CODE_TO_NUMERIC_ISO = {
     'TC': 796, 'TV': 798, 'UG': 800, 'UA': 804, 'AE': 784, 'GB': 826, 'US': 840, 'UM': 581, 'UY': 858, 'UZ': 860,
     'VU': 548, 'VE': 862, 'VN': 704, 'VI': 850, 'WF': 876, 'EH': 732, 'YE': 887, 'ZM': 894, 'ZW': 716
 }
+COUNTRY_JP_NAME = {
+    "AF": "アフガニスタン","AL": "アルバニア","DZ": "アルジェリア","AS": "アメリカ領サモア","AD": "アンドラ","AO": "アンゴラ",
+    "AI": "アンギラ","AQ": "南極","AG": "アンティグア・バーブーダ","AR": "アルゼンチン","AM": "アルメニア","AW": "アルバ","AU": "オーストラリア",
+    "AT": "オーストリア","AZ": "アゼルバイジャン","BS": "バハマ","BH": "バーレーン","BD": "バングラデシュ","BB": "バルバドス","BY": "ベラルーシ",
+    "BE": "ベルギー","BZ": "ベリーズ","BJ": "ベナン","BM": "バミューダ","BT": "ブータン","BO": "ボリビア","BA": "ボスニア・ヘルツェゴビナ",
+    "BW": "ボツワナ","BR": "ブラジル","BN": "ブルネイ","BG": "ブルガリア","BF": "ブルキナファソ","BI": "ブルンジ","KH": "カンボジア","CM": "カメルーン",
+    "CA": "カナダ","CV": "カーボベルデ","CF": "中央アフリカ共和国","TD": "チャド","CL": "チリ","CN": "中国","CO": "コロンビア","CR": "コスタリカ",
+    "HR": "クロアチア","CU": "キューバ","CY": "キプロス","CZ": "チェコ","DK": "デンマーク","DJ": "ジブチ","DM": "ドミニカ国","DO": "ドミニカ共和国",
+    "EC": "エクアドル","EG": "エジプト","SV": "エルサルバドル","EE": "エストニア","ET": "エチオピア","FI": "フィンランド","FR": "フランス","DE": "ドイツ",
+    "GR": "ギリシャ","GL": "グリーンランド","GT": "グアテマラ","GY": "ガイアナ","HK": "香港","HU": "ハンガリー","IN": "インド","ID": "インドネシア",
+    "IR": "イラン","IQ": "イラク","IE": "アイルランド","IL": "イスラエル","IT": "イタリア","JP": "日本","KR": "韓国","TW": "台湾","MY": "マレーシア",
+    "MX": "メキシコ","NL": "オランダ","NZ": "ニュージーランド","NO": "ノルウェー","PK": "パキスタン","PA": "パナマ","PE": "ペルー","PH": "フィリピン",
+    "PL": "ポーランド","PT": "ポルトガル","QA": "カタール","RO": "ルーマニア","RU": "ロシア","SA": "サウジアラビア","SG": "シンガポール","ZA": "南アフリカ",
+    "ES": "スペイン","SE": "スウェーデン","CH": "スイス","TH": "タイ","TR": "トルコ","UA": "ウクライナ","AE": "アラブ首長国連邦","GB": "イギリス",
+    "US": "アメリカ","VN": "ベトナム","YE": "イエメン","ZM": "ザンビア","ZW": "ジンバブエ"
+}
+ISP_JP_NAME = {
+    'NTT Communications Corporation': 'NTTコミュニケーションズ',
+    'NTT DOCOMO, INC.': 'NTTドコモ ',
+    'Kddi Corporation': 'KDDI',
+    'SoftBank Corp.': 'ソフトバンク',
+    'Sony Network Communications Inc.': 'ソニーネットワークコミュニケーションズ',
+    'Internet Initiative Japan Inc.': 'IIJ',
+    'BIGLOBE Inc.': 'ビッグローブ',
+    'So-net Entertainment Corporation': 'ソネット',
+    'ASAHI Net, Inc.': '朝日ネット',
+    'Optage Inc.': 'オプテージ',
+    'Jupiter Telecommunications Co., Ltd.': 'ジュピターテレコム (J:COM)',
+    'SAKURA Internet Inc.': 'さくらインターネット',
+    'Chubu Telecommunications Co., Inc.': '中部テレコミュニケーション',
+    'Energia Communications, Inc.': 'エネコム',
+    'STNet, Inc.': 'STNet',
+    'QTNet, Inc.': 'QTNet',
+    'Hokkaido Telecommunication Network Co., Inc.': 'HOTnet',
+    'ARTERIA Networks Corporation':'アルテリアネットワークス',
+    'Asahi Net':'朝日ネット',
+    'GMO Internet, Inc.':'GMOインターネット',
+    'NTT PC Communications, Inc.':'NTTPCコミュニケーションズ',
+    'KIBI Cable Television Co., Ltd.':'吉備ケーブルテレビ',
+    'Chubu Telecommunications Company, Inc.':'中部テレコミュニケーション',
+}
 
+def get_jp_names(english_isp, country_code):
+    """ISP名と国コードから日本語名を取得するヘルパー関数"""
+    jp_isp = ISP_JP_NAME.get(english_isp, english_isp)  # 辞書になければ英語名のまま
+    jp_country = COUNTRY_JP_NAME.get(country_code, country_code) # 辞書になければコードのまま
+    return jp_isp, jp_country
 
 @st.cache_resource
 def get_session():
@@ -197,6 +243,10 @@ def get_authoritative_rir_link(ip, country_code):
 
     return f"[Whois (汎用検索 - APNIC窓口)]({RIR_LINKS.get('APNIC', 'https://wq.apnic.net/static/search.html')})"
 
+def get_copy_target(ip_display):
+    if not ip_display: return ""
+    return str(ip_display).split(' - ')[0].split(' ')[0]
+
 def create_secondary_links(target):
     encoded_target = quote(target, safe='')
     is_ip = is_valid_ip(target)
@@ -263,8 +313,8 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
     """
     
     result = {
-        'Target_IP': ip, 'ISP': 'N/A', 'Country': 'N/A', 'CountryCode': 'N/A', 'RIR_Link': 'N/A',
-        'Secondary_Security_Links': 'N/A', 'Status': 'N/A'
+        'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
+        'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A'
     }
     new_cache_entry = None
 
@@ -274,17 +324,16 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
     # 2. CIDRキャッシュのチェック
     if cidr_block and cidr_block in cidr_cache_snapshot:
         cached_data = cidr_cache_snapshot[cidr_block]
-        
-        # キャッシュのTTLチェック (24時間 = 86400秒)
         if time.time() - cached_data['Timestamp'] < 86400:
-            status_type = "IPv6 CIDR Cache" if not is_ipv4(ip) else "IPv4 CIDR Cache"
-            
+            # キャッシュから取得
             result['ISP'] = cached_data['ISP']
             result['Country'] = cached_data['Country']
             result['CountryCode'] = cached_data['CountryCode']
-            result['RIR_Link'] = get_authoritative_rir_link(ip, cached_data['CountryCode'])
-            result['Status'] = f'Success ({status_type})'
-            result['Secondary_Security_Links'] = create_secondary_links(ip)
+            
+            # 日本語名への変換を適用
+            jp_isp, jp_country = get_jp_names(result['ISP'], result['CountryCode'])
+            result['ISP_JP'] = jp_isp
+            result['Country_JP'] = jp_country
             
             return result, new_cache_entry
         # キャッシュ期限切れの場合は、APIコールに進む
@@ -315,20 +364,24 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             country_code = data.get('countryCode', 'N/A') 
 
             result['ISP'] = data.get('isp', 'N/A')
-            result['Country'] = country
-            result['CountryCode'] = country_code
+            result['Country'] = data.get('country', 'N/A')
+            result['CountryCode'] = data.get('countryCode', 'N/A')
             result['RIR_Link'] = get_authoritative_rir_link(ip, country_code)
             status_type = "IPv6 API" if not is_ipv4(ip) else "IPv4 API"
             result['Status'] = f'Success ({status_type})'
+            jp_isp, jp_country = get_jp_names(result['ISP'], country_code)
+            result['ISP_JP'] = jp_isp
+            result['Country_JP'] = jp_country
             
             # 4. CIDRキャッシュの書き込みデータを準備（成功時のみ）
             if cidr_block:
                 new_cache_entry = {
                     cidr_block: {
-                        'ISP': result['ISP'],
-                        'Country': result['Country'],
-                        'CountryCode': result['CountryCode'],
-                        'Timestamp': time.time()
+                    # キャッシュデータにも日本語を含めるか、取得時に関数を通す
+                    'ISP': result['ISP'],
+                    'Country': result['Country'],
+                    'CountryCode': result['CountryCode'],
+                    'Timestamp': time.time()
                     }
                 }
             
@@ -396,7 +449,9 @@ def group_results_by_isp(results):
                 'Secondary_Security_Links': res['Secondary_Security_Links'],
                 'ISP': res['ISP'], 
                 'Country': res['Country'], 
-                'Status': res['Status']
+                'Status': res['Status'],
+                'ISP_JP': res.get('ISP_JP', 'N/A'),
+                'Country_JP': res.get('Country_JP', 'N/A')
             }
         ip_int = ip_to_int(res['Target_IP'])
         if ip_int != 0:
@@ -427,8 +482,13 @@ def group_results_by_isp(results):
         status_display = data['Status'] if count == 1 else f"Aggregated ({count} IPs)"
         
         final_grouped_results.append({
-            'Target_IP': target_ip_display, 'Country': data['Country'], 'ISP': data['ISP'],
-            'RIR_Link': data['RIR_Link'], 'Secondary_Security_Links': data['Secondary_Security_Links'],
+            'Target_IP': target_ip_display, 
+            'Country': data['Country'], 
+            'Country_JP': data['Country_JP'], # 追加
+            'ISP': data['ISP'],
+            'ISP_JP': data['ISP_JP'], # 追加
+            'RIR_Link': data['RIR_Link'], 
+            'Secondary_Security_Links': data['Secondary_Security_Links'],
             'Status': status_display
         })
     
@@ -634,90 +694,67 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
         else:
             st.info("データがありません")
 
-
-def get_copy_target(ip_display):
-    return ip_display.split(' - ')[0].split(' ')[0]
-
-# --- 結果を表示する関数 (変更なし) ---
-def display_results(results_to_display, display_mode):
+def display_results(results, current_mode_full_text, display_mode):
+    # 外側に定義した get_copy_target を使用することを前提としています
+    
     st.markdown("### 📝 検索結果")
     
-    def get_copy_target(ip_display):
-        return ip_display.split(' - ')[0].split(' ')[0]
+    # 1. カラム幅の定義 (1216-01の項目数に合わせた8列)
+    col_widths = [0.4, 1.2, 1.2, 1.5, 1.0, 1.5, 0.8, 0.4]
+    
+    # 2. ヘッダー部分は「枠の外」に固定
+    h_cols = st.columns(col_widths)
+    headers = ["No.", "Target IP", "国名", "ISP(日本語)", "RIR Link", "Security Links", "Status", "✅"]
+    for col, name in zip(h_cols, headers):
+        col.markdown(f"**{name}**")
+    st.divider()
 
-    with st.container(height=600):
-        
-        if display_mode == "簡易モード (APIなし - セキュリティリンクのみ)":
-            col_widths = [0.5, 1.5, 2.0, 3.5, 0.5] 
-            header_names = ["No.", "Target IP", "RIR Links", "Secondary Links", "✅"]
-        else:
-            col_widths = [0.5, 1.0, 1.0, 1.0, 1.8, 2.2, 0.9, 0.5]
-            header_names = ["No.", "Target IP", "Country", "ISP", "RIR Links", "Secondary Links", "**Status**", "✅"]
-        
-        cols = st.columns(col_widths)
-        header_style = "font-weight: bold; background-color: #f0f2f6; padding: 10px; border-radius: 5px; color: #1e3a8a;"
-        for i, name in enumerate(header_names):
-            if name == "**Status**":
-                cols[i].markdown(f'<div style="{header_style}">{name.replace("**", "")}</div>', unsafe_allow_html=True)
-            else:
-                cols[i].markdown(f'<div style="{header_style}">{name}</div>', unsafe_allow_html=True)
-        st.markdown("---")
-        
-        for i, row in enumerate(results_to_display):
-            row_cols = st.columns(col_widths)
-            ip_display = row['Target_IP']
-            rir_link = row['RIR_Link']
-            sec_links = row['Secondary_Security_Links'].replace('\n', ' ')
-            chk_key = f"chk_{i}_{ip_display}"
-            
-            target_to_copy = get_copy_target(ip_display)
+    # 3. 1215-03zスタイルのスクロール可能なディスプレイ枠
+    with st.container(height=800):
+        if not results:
+            st.info("検索結果がここに表示されます。")
+            return
 
-            row_cols[0].write(f"**{i+1}**")
-            row_cols[1].markdown(f"`{ip_display}`")
-            
-            if not display_mode.startswith("簡易"):
-                row_cols[2].write(row.get('Country', ''))
-                row_cols[3].write(row.get('ISP', ''))
+        for idx, res in enumerate(results):
+            with st.container():
+                row_cols = st.columns(col_widths)
                 
-            rir_col_index = 2 if display_mode.startswith("簡易") else 4
-            with row_cols[rir_col_index]: 
-                st.markdown(rir_link)
-                st.code(target_to_copy, language=None)
-            
-            sec_col_index = 3 if display_mode.startswith("簡易") else 5
-            row_cols[sec_col_index].markdown(sec_links)
-            
-            if not display_mode.startswith("簡易"):
-                status = row.get('Status', '')
-                status_text_style = ""
+                # --- No. (普通の数字として表示) ---
+                row_cols[0].write(f"**{i+1}**")
                 
-                if status.startswith("Success"):
-                    if status.endswith("CIDR Cache)"):
-                        status_text_style = f'<span style="color: #0d9488; font-weight: bold;">{status}</span>' 
-                    else:
-                        status_text_style = f'<span style="color: #16a34a; font-weight: bold;">{status}</span>' 
-                elif status.startswith("Aggregated"):
-                    status_text_style = f'<span style="color: #2563eb; font-weight: bold;">{status}</span>'
-                elif status.startswith("Error"):
-                    status_text_style = f'<span style="color: #dc2626; font-weight: bold;">{status}</span>'
-                elif status.startswith("Pending"):
-                    status_text_style = f'<span style="color: #f59e0b; font-weight: bold;">{status}</span>'
+                # --- Target IP (IPv6絵文字化防止) ---
+                target_ip = res.get('Target_IP', 'N/A')
+                row_cols[1].markdown(f"`{target_ip}`")
+                
+                # --- 国名 ---
+                c_jp = res.get('Country_JP', 'N/A')
+                c_en = res.get('Country', 'N/A')
+                row_cols[2].write(f"{c_jp}\n({c_en})")
+                
+                # --- ISP ---
+                isp_display = res.get('ISP_JP', res.get('ISP', 'N/A'))
+                row_cols[3].write(isp_display)
+                
+                # --- RIR Link と コピー用枠 (ここが復活させたポイント) ---
+                rir_link = res.get('RIR_Link', 'N/A')
+                with row_cols[4]:
+                    st.write(rir_link)
+                    # 1215-03zで採用していたIPコピー用のコードブロック枠
+                    clean_ip = get_copy_target(target_ip)
+                    st.code(clean_ip, language=None)
+                
+                # --- Security Links ---
+                row_cols[5].write(res.get('Secondary_Security_Links', 'N/A'))
+                
+                # --- Status ---
+                status_val = res.get('Status', 'N/A')
+                if "Success" in status_val:
+                    row_cols[6].markdown(f"<span style='color:green;'>{status_val}</span>", unsafe_allow_html=True)
                 else:
-                    status_text_style = status
-
-                if status_text_style:
-                    row_cols[6].markdown(status_text_style, unsafe_allow_html=True)
-                else:
-                    row_cols[6].write(status)
-
-                row_cols[7].checkbox("", key=chk_key, value=False)
-                
-            else:
-                row_cols[4].checkbox("", key=chk_key, value=False)
-
-                
-            st.markdown('<hr style="margin: 5px 0; opacity: 0.2;">', unsafe_allow_html=True)
-
+                    row_cols[6].write(status_val)
+                    
+                # --- チェックボックス ---
+                row_cols[7].checkbox("", key=f"chk_{get_copy_target(target_ip)}_{idx}")
 
 # --- メイン処理 ---
 def main():
@@ -793,7 +830,7 @@ def main():
         #### 5. API レートリミット対策
         `ip-api.com` の API は無料版で**毎分 45リクエスト**のレートリミットがあります。
         - **API 処理モード**で、安定性を優先するか、速度を優先するかを選択できます。
-            - **安定性重視**: 単一スレッドで、APIコール間に {MODE_SETTINGS["安定性重視 (1.5秒待機/単一スレッド)"]["DELAY_BETWEEN_REQUESTS"]} 秒の遅延を設けます。
+            - **安定性重視**: 単一スレッドで、APIコール間に {MODE_SETTINGS["安定性重視 (2.5秒待機/単一スレッド)"]["DELAY_BETWEEN_REQUESTS"]} 秒の遅延を設けます。
             - **速度優先**: 2スレッドで、APIコール間に {MODE_SETTINGS["速度優先 (1.4秒待機/2スレッド)"]["DELAY_BETWEEN_REQUESTS"]} 秒の遅延を設けます。
         - 検索処理中に 429 エラー (Too Many Requests) が発生した場合、ツールは自動的に {RATE_LIMIT_WAIT_SECONDS} 秒間処理を中断し、その後残りの処理を再開します。
         - **CIDRキャッシュ機能**により、一度検索したIPアドレスと同じCIDRブロック内のIPアドレスに対するAPIリクエストを回避し、レートリミット対策の効率を向上させています。
@@ -1169,7 +1206,7 @@ def main():
             display_res.sort(key=lambda x: target_order.get(get_copy_target(x['Target_IP']), float('inf')))
 
         
-        display_results(display_res, current_mode_full_text)
+        display_results(display_res, current_mode_full_text, display_mode)
         
         if not st.session_state.is_searching or st.session_state.cancel_search:
             isp_summary_df, country_summary_df, target_frequency_df, country_all_df = summarize_in_realtime(st.session_state.raw_results)
@@ -1177,13 +1214,16 @@ def main():
             draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df, country_all_df, "✅ 集計結果")
 
         
-        csv_df = pd.DataFrame(display_res).astype(str)
-        if 'Defer_Until' in csv_df.columns:
-            csv_df = csv_df.drop(columns=['Defer_Until'])
-            
-        csv = csv_df.to_csv(index=False).encode('utf-8')
+        csv_df = pd.DataFrame(display_res)
+        # 出力したいカラムの順番を定義
+        cols = ['Target_IP', 'Country_JP', 'Country', 'ISP_JP', 'ISP', 'Status']
+        
+        # 存在するカラムのみを抽出して並び替え
+        existing_cols = [c for c in cols if c in csv_df.columns]
+        csv_df = csv_df[existing_cols].astype(str)
+    
+        csv = csv_df.to_csv(index=False).encode('utf-8-sig') 
         st.download_button("⬇️ CSVダウンロード", csv, "whois_results.csv", "text/csv")
-
+        
 if __name__ == "__main__":
     main()
-
