@@ -130,6 +130,7 @@ ISP_JP_NAME = {
     'ASAHI Net, Inc.': '朝日ネット',
     'Optage Inc.': 'オプテージ',
     'Jupiter Telecommunications Co., Ltd.': 'J:COM',
+    'JCN':'J:COM',
     'SAKURA Internet Inc.': 'さくらインターネット',
     'Chubu Telecommunications Co., Inc.': '中部テレコミュニケーション',
     'Energia Communications, Inc.': 'エネコム',
@@ -1227,4 +1228,5 @@ def main():
         
 if __name__ == "__main__":
     main()
+
 
