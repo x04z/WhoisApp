@@ -129,7 +129,7 @@ ISP_JP_NAME = {
     'So-net Entertainment Corporation': 'ソネット',
     'ASAHI Net, Inc.': '朝日ネット',
     'Optage Inc.': 'オプテージ',
-    'Jupiter Telecommunications Co., Ltd.': 'ジュピターテレコム (J:COM)',
+    'Jupiter Telecommunications Co., Ltd.': 'J:COM',
     'SAKURA Internet Inc.': 'さくらインターネット',
     'Chubu Telecommunications Co., Inc.': '中部テレコミュニケーション',
     'Energia Communications, Inc.': 'エネコム',
@@ -1227,3 +1227,4 @@ def main():
         
 if __name__ == "__main__":
     main()
+
