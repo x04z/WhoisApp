@@ -145,6 +145,93 @@ ISP_JP_NAME = {
     'Chubu Telecommunications Company, Inc.':'中部テレコミュニケーション',
 }
 
+# --- 匿名化・プロキシ判定用データ ---
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_tor_exit_nodes():
+    """Tor公式から最新の出口ノードリストを取得する"""
+    # 演出用のプレースホルダー。これ以外に st.write は使わない。
+    terminal = st.empty()
+    log_lines = []
+    
+    def update_log(new_line, color="#00FF41"):
+        log_lines.append(f"<span style='color:{color};'>[SYS] {new_line}</span>")
+        # 演出用ボックスを絶対配置に近いスタイルで表示し、既存テキストとの重複を防ぐ
+        display_text = "<br>".join(log_lines[-5:])
+        terminal.markdown(f"""
+            <div style="background-color: rgba(13, 2, 8, 0.9); border: 1px solid #FF0055; padding: 15px; border-radius: 8px; font-family: 'Courier New', Courier, monospace; font-size: 14px; line-height: 1.3; box-shadow: 0 0 20px rgba(255, 0, 85, 0.4); margin-bottom: 20px;">
+                <div style="color: #FF0055; font-weight: bold; margin-bottom: 5px; font-size: 10px; border-bottom: 1px solid #FF0055;">ENCRYPTED DATA STREAMING...</div>
+                {display_text}
+            </div>
+        """, unsafe_allow_html=True)
+        time.sleep(0.3)
+
+    # st.write("Running...") は削除。ここから即座に演出を開始。
+    update_log("BOOTING NEURAL LINK...")
+    update_log("DECRYPTING EXIT NODE MANIFEST...")
+    
+    try:
+        url = "https://check.torproject.org/exit-addresses"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        
+        update_log("HANDSHAKE SUCCESSFUL.", "#00FFFF")
+        
+        exit_ips = set()
+        for line in response.text.splitlines():
+            if line.startswith("ExitAddress"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    exit_ips.add(parts[1])
+        
+        update_log(f"NODES LOADED: {len(exit_ips)} UNITS", "#00FFFF")
+        update_log("SESSION SECURED. SYSTEM ONLINE.", "#00FF41")
+        time.sleep(1.0)
+        terminal.empty()
+        return exit_ips
+        
+    except Exception as e:
+        update_log(f"CRITICAL ERROR: {e}", "#FF0000")
+        time.sleep(2.0)
+        terminal.empty()
+        return set()
+
+# ISP名や組織名に含まれると「ホスティング/VPN/プロキシ」の可能性が高いキーワード
+HOSTING_VPN_KEYWORDS = [
+    "hosting", "datacenter", "vps", "cloud", "server", "vpn", "proxy", 
+    "digitalocean", "linode", "amazon technologies", "google llc", "microsoft corporation",
+    "m247", "proweb", "choopa", "ovh", "hetzner", "akamai"
+]
+
+def detect_proxy_vpn_tor(ip, isp_name, tor_nodes):
+    isp_lower = isp_name.lower()
+    
+    if ip in tor_nodes:
+        return "Tor Node"
+    # 2. VPN/Proxy判定の強化
+    vpn_keywords = [
+        "vpn", "proxy", "datacamp", "mullvad", "proton",
+        "applied privacy", "ip-volume"
+    ]
+    if any(kw in isp_lower for kw in vpn_keywords):
+        # Torリストに漏れていても、名前で Tor Node と推測できる
+        if "privacy" in isp_lower:
+             return "Tor Node"
+        return "VPN/Proxy"   
+    # 3. Hosting/Infra判定の強化
+    # 「自分の足（回線）を持っていないサーバー屋」特有の単語を追加
+    infra_keywords = [
+        "hosting", "cloudflare", "amazon", "google", "akamai", 
+        "data center", "datacenter", "infrastructure", "server", 
+        "services ab", "digitalocean", "linode", "vultr", "ovh", 
+        "hetzner", "choopa", "leaseweb", "cogent", "tata communications",
+        "pccw", "zenlayer", "equinix", "fastly", "ip-volume"
+    ]
+    if any(kw in isp_lower for kw in infra_keywords):
+        return "Hosting/Infra"
+        
+    return "Residential/Business"
+
 def get_jp_names(english_isp, country_code):
     """ISP名と国コードから日本語名を取得するヘルパー関数"""
     jp_isp = ISP_JP_NAME.get(english_isp, english_isp)  # 辞書になければ英語名のまま
@@ -171,7 +258,7 @@ def get_world_map_data():
 WORLD_MAP_GEOJSON = get_world_map_data()
 
 
-# --- ヘルパー関数群 (変更なし) ---
+# --- ヘルパー関数群 ---
 def clean_ocr_error_chars(target):
     cleaned_target = target
     cleaned_target = cleaned_target.replace('Ⅱ', '11')
@@ -182,9 +269,13 @@ def clean_ocr_error_chars(target):
     cleaned_target = cleaned_target.replace('o', '0')
     cleaned_target = cleaned_target.replace('S', '5')
     cleaned_target = cleaned_target.replace('s', '5')
-    cleaned_target = cleaned_target.replace('A', '4')
-    cleaned_target = cleaned_target.replace('a', '4')
-    cleaned_target = cleaned_target.replace('B', '8')
+
+    # IPv6（コロンを含む）でない場合のみ、a を 4 に、B を　8に置換する
+    if ':' not in cleaned_target:
+        cleaned_target = cleaned_target.replace('A', '4')
+        cleaned_target = cleaned_target.replace('a', '4')
+        cleaned_target = cleaned_target.replace('B', '8')
+        
     return cleaned_target
 
 def is_valid_ip(target):
@@ -273,7 +364,7 @@ def create_secondary_links(target):
         'Who.is': who_is_url,
         'IP2Proxy': f'https://www.ip2proxy.com/{encoded_target}',
         'DNSlytics (手動)': 'https://dnslytics.com/whois-lookup/',
-        'IP Location (手動)': 'https://iplocation.io/ip-whois-lookup',
+        'IP Location': f'https://iplocation.io/ip/{encoded_target}',
         'CP-WHOIS (手動)': 'https://doco.cph.jp/whoisweb.php',
     }
 
@@ -287,7 +378,7 @@ def create_secondary_links(target):
             dns_checker_key: all_links[dns_checker_key],
             'IP2Proxy': all_links['IP2Proxy'],
             'DNSlytics (手動)': all_links['DNSlytics (手動)'],
-            'IP Location (手動)': all_links['IP Location (手動)'],
+            'IP Location': all_links['IP Location'],
             'CP-WHOIS (手動)': all_links['CP-WHOIS (手動)'],
         }
     else:
@@ -298,8 +389,9 @@ def create_secondary_links(target):
         link_html += f"[{name}]({url}) | "
     return link_html.rstrip(' | ')
 
+
 # --- API通信関数の変更（API設定値を引数で受け取るように修正） ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rate_limit_wait_seconds):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes):
     """
     IP-APIから詳細を取得する。CIDRキャッシュを優先的に使用する。
     
@@ -326,18 +418,25 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
     if cidr_block and cidr_block in cidr_cache_snapshot:
         cached_data = cidr_cache_snapshot[cidr_block]
         if time.time() - cached_data['Timestamp'] < 86400:
-            # キャッシュから取得
+            # キャッシュから基本情報を取得
             result['ISP'] = cached_data['ISP']
             result['Country'] = cached_data['Country']
             result['CountryCode'] = cached_data['CountryCode']
-            
-            # 日本語名への変換を適用
+            result['Status'] = "Success (Cache)" # Statusも入れておくと安心です
+
+            # ★重要：日本語名を作成する関数をここで呼ぶ必要があります
             jp_isp, jp_country = get_jp_names(result['ISP'], result['CountryCode'])
+            
+            # 1. 判定を行う
+            proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
+            is_anonymous = (proxy_type != "Residential/Business")
             result['ISP_JP'] = jp_isp
+            # 2. CSV用：判定があれば「種別」、なければ空
+            result['Hosting_Flag'] = f"{proxy_type}" if is_anonymous else ""
+            
             result['Country_JP'] = jp_country
             
-            return result, new_cache_entry
-        # キャッシュ期限切れの場合は、APIコールに進む
+            return result, None # キャッシュ利用時は new_cache_entry は None でOK
 
     
     # 3. APIコール（キャッシュがない、または期限切れの場合）
@@ -371,7 +470,13 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             status_type = "IPv6 API" if not is_ipv4(ip) else "IPv4 API"
             result['Status'] = f'Success ({status_type})'
             jp_isp, jp_country = get_jp_names(result['ISP'], country_code)
+            # --- 匿名化判定を追加 ---
+            proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
+            is_anonymous = (proxy_type != "Residential/Business")
+
             result['ISP_JP'] = jp_isp
+
+            result['Hosting_Flag'] = f"{proxy_type}" if is_anonymous else ""
             result['Country_JP'] = jp_country
             
             # 4. CIDRキャッシュの書き込みデータを準備（成功時のみ）
@@ -699,25 +804,53 @@ def display_results(results, current_mode_full_text, display_mode):
     # 外側に定義した get_copy_target を使用することを前提としています
     
     st.markdown("### 📝 検索結果")
+
+    # --- ⚠️ 判定に関する説明注釈 ---
+    with st.expander("⚠️ 判定アイコンと表示ルールについて"):
+        st.info("""
+        ### 🔍 判定ロジックの概要
+        本ツールは、IPアドレスに紐付けられた**ASN（Autonomous System Number）およびISP（インターネットサービスプロバイダ）の名称・属性**を解析し、通信主体のネットワーク種別を自動的に分類しています。
+        
+        インターネット上の通信は、その用途に応じて「個人宅・法人拠点からの直接接続」と「非対面的な中継・ホスティング経由の接続」に大別されます。本機能は後者を検知し、調査の優先順位判断を支援することを目的としています。
+        
+        ---
+        
+        ### 📌 判定種別の定義と技術的背景
+        
+        - **⚠️ [Tor Node]**
+            - **定義**: Tor（The Onion Router）ネットワークにおける「Exit Node（出口ノード）」を指します。
+            - **背景**: 起動時にTor Project公式サイトより最新のノードリストを取得し、照合を行っています。高い匿名性を維持した通信であるため、セキュリティリスクの検討が必要です。
+            
+        - **⚠️ [VPN/Proxy]**
+            - **定義**: 商用VPNサービス、公開プロキシ、またはプライバシー保護を目的とした中継団体に属するIPです。
+            - **背景**: ISP名称に含まれる特定のキーワード（VPN, Proxy等）および既知の匿名化サービス運営組織名に基づき判別します。
+            
+        - **⚠️ [Hosting/Infra]**
+            - **定義**: クラウドサービス（AWS, Azure, GCP等）や、データセンター、ホスティング事業者のインフラストラクチャです。
+            - **背景**: 一般的なコンシューマ回線とは異なり、サーバー間通信やBot、クローラー、あるいは攻撃用インフラとして利用されるケースが多いノードです。
+            
+        ---
+        
+        ※ 本判定はISP名称等に基づく推論であるため、実際の利用状況と異なる場合があります。
+        """)
     
-    # 1. カラム幅の定義 (1216-01の項目数に合わせた8列)
-    col_widths = [0.4, 1.2, 1.2, 1.5, 1.0, 1.5, 0.8, 0.4]
-    
-    # 2. ヘッダー部分は「枠の外」に固定
+    # 1. カラム幅の定義
+    col_widths = [0.5, 1.5, 1.2, 2.0, 1.5, 1.5, 1.0, 1.2, 0.5] 
+    # 2. ヘッダー部分
     h_cols = st.columns(col_widths)
-    headers = ["No.", "Target IP", "国名", "ISP(日本語)", "RIR Link", "Security Links", "Status", "✅"]
+    headers = ["No.", "Target IP", "国名","ISP(日本語)", "RIR Link", "Security Links", "IP Type",  "Status", "✅"]
     for col, name in zip(h_cols, headers):
         col.markdown(f"**{name}**")
-    st.divider()
+    # 隙間を最小限にするための細い線
+    st.markdown("<hr style='margin: 0px 0px 10px 0px;'>", unsafe_allow_html=True)
 
-    # 3. 1215-03zスタイルのスクロール可能なディスプレイ枠
+    # 3. スタイルのスクロール可能なディスプレイ枠
     with st.container(height=800):
         if not results:
             st.info("検索結果がここに表示されます。")
             return
 
         for idx, res in enumerate(results):
-            with st.container():
                 row_cols = st.columns(col_widths)
                 
                 # --- No. (普通の数字として表示) ---
@@ -736,30 +869,38 @@ def display_results(results, current_mode_full_text, display_mode):
                 isp_display = res.get('ISP_JP', res.get('ISP', 'N/A'))
                 row_cols[3].write(isp_display)
                 
-                # --- RIR Link と コピー用枠 (ここが復活させたポイント) ---
+                # --- RIR Link と コピー用枠 ---
                 rir_link = res.get('RIR_Link', 'N/A')
                 with row_cols[4]:
                     st.write(rir_link)
-                    # 1215-03zで採用していたIPコピー用のコードブロック枠
+                    # IPコピー用のコードブロック枠
                     clean_ip = get_copy_target(target_ip)
                     st.code(clean_ip, language=None)
                 
                 # --- Security Links ---
                 row_cols[5].write(res.get('Secondary_Security_Links', 'N/A'))
+
+                # --- Hosting ---
+                hosting_val = res.get('Hosting_Flag', '')
+                row_cols[6].write(hosting_val)          
                 
                 # --- Status ---
                 status_val = res.get('Status', 'N/A')
                 if "Success" in status_val:
-                    row_cols[6].markdown(f"<span style='color:green;'>{status_val}</span>", unsafe_allow_html=True)
+                    row_cols[7].markdown(f"<span style='color:green;'>{status_val}</span>", unsafe_allow_html=True)
                 else:
-                    row_cols[6].write(status_val)
+                    row_cols[7].write(status_val)
                     
                 # --- チェックボックス ---
-                row_cols[7].checkbox("", key=f"chk_{get_copy_target(target_ip)}_{idx}")
+                row_cols[8].checkbox(
+                "選択", 
+                key=f"chk_{get_copy_target(target_ip)}_{idx}", 
+                label_visibility="collapsed"
+                )
 
 # --- メイン処理 ---
 def main():
-    # 【変更なし】セッションステートの定義
+    # セッションステートの定義
     if 'cancel_search' not in st.session_state: st.session_state['cancel_search'] = False
     if 'raw_results' not in st.session_state: st.session_state['raw_results'] = []
     if 'targets_cache' not in st.session_state: st.session_state['targets_cache'] = []
@@ -769,7 +910,10 @@ def main():
     if 'search_start_time' not in st.session_state: st.session_state['search_start_time'] = 0.0 
     if 'target_freq_map' not in st.session_state: st.session_state['target_freq_map'] = {} 
     if 'cidr_cache' not in st.session_state: st.session_state['cidr_cache'] = {} 
-    if 'debug_summary' not in st.session_state: st.session_state['debug_summary'] = {} 
+    if 'debug_summary' not in st.session_state: st.session_state['debug_summary'] = {}
+
+    # 最新のTorノードリストを取得
+    tor_nodes = fetch_tor_exit_nodes()
     
     # --- サイドバーデザイン ---
     with st.sidebar:
@@ -827,6 +971,8 @@ def main():
         - **Requests/ThreadPoolExecutor**: HTTP通信とマルチスレッド並列処理
         - **IP Address/Socket/Struct**: IPアドレス操作およびCIDR対応
         - **Pandas/Altair/GeoJSON**: データ集計と可視化
+        - **Tor Exit Node 判定**:
+            - 起動時にTor公式サイトから最新の出口ノードリストを自動取得・更新し、匿名化ネットワーク経由の通信かどうかを判定します。
 
         #### 5. API レートリミット対策
         `ip-api.com` の API は無料版で**毎分 45リクエスト**のレートリミットがあります。
@@ -838,8 +984,17 @@ def main():
         
         #### 6. OCRエラー対策
         入力された文字列に対して、OCR誤認識で発生しやすい文字 (`Ⅱ` -> `11`,`I/l` -> `1`, `O/o` -> `0`, `S/s` -> `5` など) を自動で修正する処理を加えています。
+
+    
+        #### 7. 判定ロジックと通信の仕組み
+        - **匿名化・インフラ判定 (Hosting/VPN/Proxy)**:
+            - ISP名や組織名に `hosting`, `cloud`, `vps`, `prox`, `vpn` などのキーワードが含まれる場合、**「⚠️ Hosting/VPN/Proxy」**として警告を表示します。
+            - これは、その通信が一般家庭のPCからではなく、データセンター上のサーバー（プログラム）や中継サーバーを経由している可能性が高いことを示します。
+        - **CDNや中継サービスの特性**:
+            - **Cloudflare / Akamai / Google**: これらは世界的な中継拠点（CDN）やクラウドインフラです。これらがアクセス元として記録されている場合、実際のユーザーがプライバシー保護機能（iCloudプライベートリレー等）を使用しているか、あるいはボットによる自動巡回である可能性があります。
         """) 
         return
+            
 
     # --- メインコンテンツ：Whois検索タブ ---
     st.title("🌐 WhoisSearchTool")
@@ -855,15 +1010,45 @@ def main():
         )
 
     with col_input2:
-        uploaded_file = st.file_uploader("📂 リストをアップロード (txt)", type=['txt'])
-        st.caption("※ 1行に1つのターゲットを記載してください")
+        uploaded_file = st.file_uploader("📂 リストをアップロード (txt/csv)", type=['txt', 'csv'])
+        st.caption("※ 1行に1つのターゲットを記載、またはCSVのIP列を自動検出します")
 
-    # ターゲット解析 (変更なし)
-    raw_targets = []
-    if manual_input: raw_targets.extend(manual_input.splitlines())
-    if uploaded_file: raw_targets.extend(uploaded_file.read().decode("utf-8").splitlines())
-    raw_targets = [t.strip() for t in raw_targets if t.strip()]
+    # ターゲット解析
+        raw_targets = []
+        if manual_input:
+            raw_targets.extend(manual_input.splitlines())
+        
+        if uploaded_file:
+            if uploaded_file.name.endswith('.csv'):
+                try:
+                    df_orig = pd.read_csv(uploaded_file)
+                    st.session_state['original_df'] = df_orig
+                    # IPが含まれる列を自動判定
+                    ip_col = None
+                    for col in df_orig.columns:
+                        # 最初の数行を確認してIPアドレスっぽいか判定
+                        sample = df_orig[col].dropna().head(10).astype(str)
+                        if any(is_valid_ip(val.strip()) for val in sample):
+                            ip_col = col
+                            break
+                    
+                    if ip_col:
+                        st.session_state['ip_column_name'] = ip_col
+                        raw_targets.extend(df_orig[ip_col].dropna().astype(str).tolist())
+                    else:
+                        st.error("CSV内にIPアドレスの列が見つかりませんでした。")
+                except Exception as e:
+                    st.error(f"CSV読み込みエラー: {e}")
+            else:
+                # 従来のテキストファイル処理
+                raw_targets.extend(uploaded_file.read().decode("utf-8").splitlines())
+                st.session_state['original_df'] = None
+                st.session_state['ip_column_name'] = None
     
+    # 変数をあらかじめ空で初期化しておく
+    cleaned_raw_targets_list = []
+    target_freq_counts = {}
+
     if raw_targets:
         cleaned_raw_targets_list = [clean_ocr_error_chars(t) for t in raw_targets]
         target_freq_counts = pd.Series(cleaned_raw_targets_list).value_counts().to_dict()
@@ -900,7 +1085,8 @@ def main():
     
     if has_new_targets or 'target_freq_map' not in st.session_state:
         st.session_state['target_freq_map'] = target_freq_counts
-
+        # これにより、入力が空の状態でも安全に代入が行われます
+        st.session_state['original_input_list'] = cleaned_raw_targets_list
     ip_targets = [t for t in targets if is_valid_ip(t)]
     domain_targets = [t for t in targets if not is_valid_ip(t)]
     ipv6_count = sum(1 for t in ip_targets if not is_ipv4(t))
@@ -1051,7 +1237,8 @@ def main():
                                 ip, 
                                 cidr_cache_snapshot, 
                                 delay_between_requests, 
-                                rate_limit_wait_seconds # RATE_LIMIT_WAIT_SECONDSは固定
+                                rate_limit_wait_seconds, # RATE_LIMIT_WAIT_SECONDSは固定
+                                tor_nodes
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
@@ -1215,18 +1402,63 @@ def main():
             draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df, country_all_df, "✅ 集計結果")
 
         
-        csv_df = pd.DataFrame(display_res)
-        # 出力したいカラムの順番を定義
-        cols = ['Target_IP', 'Country_JP', 'Country', 'ISP_JP', 'ISP', 'Status']
+        st.markdown("### ⬇️ ダウンロード")
+        col_dl1, col_dl2, col_dl3 = st.columns(3)
+        # 1. 画面表示のまま
+        csv_display = pd.DataFrame(display_res).drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link'], errors='ignore').astype(str)
+        with col_dl1:
+            st.download_button("⬇️ 検索結果CSV (画面表示順)", csv_display.to_csv(index=False).encode('utf-8-sig'), "whois_results_display.csv", "text/csv", use_container_width=True)
+
+        # 2. 全入力データ（入力順）
+        result_lookup = {r['Target_IP']: r for r in st.session_state.raw_results}
+        full_output_data = []
+        for original_t in st.session_state.get('original_input_list', []):
+            if original_t in result_lookup:
+                full_output_data.append(result_lookup[original_t])
+            else:
+                full_output_data.append({'Target_IP': original_t, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 'Status': 'Pending/Error'})
         
-        # 存在するカラムのみを抽出して並び替え
-        existing_cols = [c for c in cols if c in csv_df.columns]
-        csv_df = csv_df[existing_cols].astype(str)
-    
-        csv = csv_df.to_csv(index=False).encode('utf-8-sig') 
-        st.download_button("⬇️ CSVダウンロード", csv, "whois_results.csv", "text/csv")
-        
+        csv_full = pd.DataFrame(full_output_data).drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link'], errors='ignore').astype(str)
+        with col_dl2:
+            st.download_button("⬇️ 全入力データCSV (入力順)", csv_full.to_csv(index=False).encode('utf-8-sig'), "whois_results_full.csv", "text/csv", use_container_width=True)
+
+        with col_dl3:
+            df = st.session_state.get('original_df')
+            ip_col = st.session_state.get('ip_column_name')
+
+            if st.session_state.get('original_df') is not None and st.session_state.get('ip_column_name'):
+                df_with_res = st.session_state['original_df'].copy()
+                ip_col = st.session_state['ip_column_name']
+                results = st.session_state.get('batch_results', []) # resultsを明示的に取得
+
+                if results:
+                    res_dict = {r['Target_IP']: r for r in results}
+
+                # 各行のIPに基づいて結果をマッピング
+                isps, isps_jp, countries, countries_jp, statuses, hosting_flags = [], [], [], [], [], []
+                for ip_val in df[ip_col]:
+                    info = res_dict.get(ip_val, {})
+                    isps.append(info.get('ISP', 'N/A'))
+                    # get_ip_details_from_api側でラベルを消しているので、そのまま取得で綺麗になります
+                    isps_jp.append(info.get('ISP_JP', 'N/A')) 
+                    countries.append(info.get('Country', 'N/A'))
+                    countries_jp.append(info.get('Country_JP', 'N/A'))
+                    # Hosting_Flagを確実に取得
+                    hosting_flags.append(info.get('Hosting_Flag', ''))
+                    statuses.append(info.get('Status', 'N/A'))
+                
+                # 指定の順序で列を挿入 (Statusが右端になるように順次挿入)
+                insert_idx = df_with_res.columns.get_loc(ip_col) + 1
+                df_with_res.insert(insert_idx, 'Status', statuses)
+                df_with_res.insert(insert_idx, 'IP Type', hosting_flags)
+                df_with_res.insert(insert_idx, 'Country_JP', countries_jp)
+                df_with_res.insert(insert_idx, 'Country', countries)
+                df_with_res.insert(insert_idx, 'ISP_JP', isps_jp)
+                df_with_res.insert(insert_idx, 'ISP', isps)
+                
+                st.download_button("⬇️ 元のCSV + 検索結果", df_with_res.to_csv(index=False).encode('utf-8-sig'), "original_with_whois.csv", "text/csv", use_container_width=True)
+            else:
+                st.button("⬇️ (CSVアップロード時のみ有効)", disabled=True, use_container_width=True)
+
 if __name__ == "__main__":
     main()
-
-
