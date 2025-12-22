@@ -432,7 +432,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             is_anonymous = (proxy_type != "Residential/Business")
             result['ISP_JP'] = jp_isp
             # 2. CSV用：判定があれば「種別」、なければ空
-            result['Hosting_Flag'] = f"{proxy_type}" if is_anonymous else ""
+            result['Proxy_Type'] = f"{proxy_type}" if is_anonymous else ""
             
             result['Country_JP'] = jp_country
             
@@ -476,7 +476,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
 
             result['ISP_JP'] = jp_isp
 
-            result['Hosting_Flag'] = f"{proxy_type}" if is_anonymous else ""
+            result['Proxy_Type'] = f"{proxy_type}" if is_anonymous else ""
             result['Country_JP'] = jp_country
             
             # 4. CIDRキャッシュの書き込みデータを準備（成功時のみ）
@@ -838,7 +838,7 @@ def display_results(results, current_mode_full_text, display_mode):
     col_widths = [0.5, 1.5, 1.2, 2.0, 1.5, 1.5, 1.0, 1.2, 0.5] 
     # 2. ヘッダー部分
     h_cols = st.columns(col_widths)
-    headers = ["No.", "Target IP", "国名","ISP(日本語)", "RIR Link", "Security Links", "IP Type",  "Status", "✅"]
+    headers = ["No.", "Target IP", "国名","ISP(日本語)", "RIR Link", "Security Links", "Proxy Type",  "Status", "✅"]
     for col, name in zip(h_cols, headers):
         col.markdown(f"**{name}**")
     # 隙間を最小限にするための細い線
@@ -881,7 +881,7 @@ def display_results(results, current_mode_full_text, display_mode):
                 row_cols[5].write(res.get('Secondary_Security_Links', 'N/A'))
 
                 # --- Hosting ---
-                hosting_val = res.get('Hosting_Flag', '')
+                hosting_val = res.get('Proxy_Type', '')
                 row_cols[6].write(hosting_val)          
                 
                 # --- Status ---
@@ -1435,7 +1435,7 @@ def main():
                     res_dict = {r['Target_IP']: r for r in results}
 
                 # 各行のIPに基づいて結果をマッピング
-                isps, isps_jp, countries, countries_jp, statuses, hosting_flags = [], [], [], [], [], []
+                isps, isps_jp, countries, countries_jp, proxy_type, statuses, = [], [], [], [], [], []
                 for ip_val in df[ip_col]:
                     info = res_dict.get(ip_val, {})
                     isps.append(info.get('ISP', 'N/A'))
@@ -1443,14 +1443,13 @@ def main():
                     isps_jp.append(info.get('ISP_JP', 'N/A')) 
                     countries.append(info.get('Country', 'N/A'))
                     countries_jp.append(info.get('Country_JP', 'N/A'))
-                    # Hosting_Flagを確実に取得
-                    hosting_flags.append(info.get('Hosting_Flag', ''))
+                    proxy_type.append(info.get('Proxy Type', ''))
                     statuses.append(info.get('Status', 'N/A'))
                 
                 # 指定の順序で列を挿入 (Statusが右端になるように順次挿入)
                 insert_idx = df_with_res.columns.get_loc(ip_col) + 1
                 df_with_res.insert(insert_idx, 'Status', statuses)
-                df_with_res.insert(insert_idx, 'IP Type', hosting_flags)
+                df_with_res.insert(insert_idx, 'Proxy Type', proxy_type)
                 df_with_res.insert(insert_idx, 'Country_JP', countries_jp)
                 df_with_res.insert(insert_idx, 'Country', countries)
                 df_with_res.insert(insert_idx, 'ISP_JP', isps_jp)
