@@ -121,6 +121,7 @@ COUNTRY_JP_NAME = {
 ISP_JP_NAME = {
     'NTT Communications Corporation': 'NTTドコモビジネス',
     'NTT COMMUNICATIONS CORPORATION': 'NTTドコモビジネス',
+    'NTT DOCOMO BUSINESS,Inc.': 'NTTドコモビジネス',
     'NTT DOCOMO, INC.': 'NTTドコモ ',
     'Kddi Corporation': 'KDDI',
     'SoftBank Corp.': 'ソフトバンク',
@@ -1462,4 +1463,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
