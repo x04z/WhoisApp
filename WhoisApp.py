@@ -118,33 +118,48 @@ COUNTRY_JP_NAME = {
     "ES": "スペイン","SE": "スウェーデン","CH": "スイス","TH": "タイ","TR": "トルコ","UA": "ウクライナ","AE": "アラブ首長国連邦","GB": "イギリス",
     "US": "アメリカ","VN": "ベトナム","YE": "イエメン","ZM": "ザンビア","ZW": "ジンバブエ"
 }
+# --- ISP名称の日本語マッピング (最新化: 2025年時点) ---
+# APIから返ってくる英語名(Key)は古いままの可能性があるため、Keyは変更せずValue(日本語)を最新の実態に合わせます。
 ISP_JP_NAME = {
-    'NTT Communications Corporation': 'NTTドコモビジネス',
-    'NTT COMMUNICATIONS CORPORATION': 'NTTドコモビジネス',
+    # --- NTT Group / Docomo Group ---
+    # 2025年7月より「NTTドコモビジネス」へ社名変更。
+    'NTT Communications Corporation': 'NTTドコモビジネス', 
+    'NTT COMMUNICATIONS CORPORATION': 'NTTドコモビジネス',# 表記ゆれ対応
     'NTT DOCOMO BUSINESS,Inc.': 'NTTドコモビジネス',
-    'NTT DOCOMO, INC.': 'NTTドコモ ',
+    'NTT DOCOMO, INC.': 'NTTドコモ',
+    'NTT PC Communications, Inc.': 'NTTPCコミュニケーションズ',
+    
+    # --- KDDI Group ---
     'Kddi Corporation': 'KDDI',
-    'SoftBank Corp.': 'ソフトバンク',
-    'Sony Network Communications Inc.': 'ソニーネットワークコミュニケーションズ',
-    'Internet Initiative Japan Inc.': 'IIJ',
-    'BIGLOBE Inc.': 'ビッグローブ',
-    'So-net Entertainment Corporation': 'ソネット',
-    'ASAHI Net, Inc.': '朝日ネット',
-    'Optage Inc.': 'オプテージ',
-    'Jupiter Telecommunications Co., Ltd.': 'J:COM',
-    'JCN':'J:COM',
-    'SAKURA Internet Inc.': 'さくらインターネット',
-    'Chubu Telecommunications Co., Inc.': '中部テレコミュニケーション',
+    'Chubu Telecommunications Co., Inc.': '中部テレコミュニケーション (コミュファ光)',
+    'Chubu Telecommunications Company, Inc.': '中部テレコミュニケーション (コミュファ光)', # 表記ゆれ対応
+    'Hokkaido Telecommunication Network Co., Inc.': 'HOTnet',
     'Energia Communications, Inc.': 'エネコム',
     'STNet, Inc.': 'STNet',
     'QTNet, Inc.': 'QTNet',
-    'Hokkaido Telecommunication Network Co., Inc.': 'HOTnet',
-    'ARTERIA Networks Corporation':'アルテリアネットワークス',
-    'Asahi Net':'朝日ネット',
-    'GMO Internet, Inc.':'GMOインターネット',
-    'NTT PC Communications, Inc.':'NTTPCコミュニケーションズ',
-    'KIBI Cable Television Co., Ltd.':'吉備ケーブルテレビ',
-    'Chubu Telecommunications Company, Inc.':'中部テレコミュニケーション',
+    'BIGLOBE Inc.': 'ビッグローブ', # 現在はKDDIグループ
+    'JCN': 'J:COM', # J:COMへ統合済み
+
+    # --- SoftBank Group ---
+    'SoftBank Corp.': 'ソフトバンク',
+    
+    # --- Sony Group ---
+    # 旧So-net Entertainment -> Sony Network Communications
+    'Sony Network Communications Inc.': 'ソニーネットワークコミュニケーションズ (So-net/NURO)',
+    'So-net Entertainment Corporation': 'ソニーネットワークコミュニケーションズ (So-net)', 
+    
+    # --- Others ---
+    'Internet Initiative Japan Inc.': 'IIJ',
+    'ASAHI Net, Inc.': '朝日ネット',
+    'Asahi Net': '朝日ネット',
+    'Optage Inc.': 'オプテージ (eo光)',
+    # 旧Jupiter Telecommunications -> JCOM株式会社
+    'Jupiter Telecommunications Co., Ltd.': 'J:COM', 
+    'JCOM Co., Ltd.': 'J:COM',
+    'SAKURA Internet Inc.': 'さくらインターネット',
+    'ARTERIA Networks Corporation': 'アルテリア・ネットワークス',
+    'GMO Internet, Inc.': 'GMOインターネット',
+    'KIBI Cable Television Co., Ltd.': '吉備ケーブルテレビ',
 }
 
 # --- 匿名化・プロキシ判定用データ ---
@@ -200,37 +215,51 @@ def fetch_tor_exit_nodes():
 
 # ISP名や組織名に含まれると「ホスティング/VPN/プロキシ」の可能性が高いキーワード
 HOSTING_VPN_KEYWORDS = [
-    "hosting", "datacenter", "vps", "cloud", "server", "vpn", "proxy", 
-    "digitalocean", "linode", "amazon technologies", "google llc", "microsoft corporation",
-    "m247", "proweb", "choopa", "ovh", "hetzner", "akamai"
+    # 一般的なインフラ用語
+    "hosting", "datacenter", "vps", "cloud", "server", "vpn", "proxy", "dedi",
+    "telecommunication", "solutions", "network",
+    # 大手クラウド/プラットフォーマー
+    "amazon technologies", "amazon.com", "google llc", "google cloud", "microsoft corporation", "azure",
+    "oracle cloud", "alibaba", "tencent", "huawei", "digitalocean", "linode", "vultr", "ovh", "hetzner",
+    # VPN/Proxyによく使われるホスティング事業者 (IPinfoなどでよく見る常連)
+    "m247", "proweb", "choopa", "leaseweb", "datacamp", "ip-volume", "flyservers", 
+    "performive", "hostroyale", "packet exchange", "xtom", "tzulo", "psychz", 
+    "franantech", "buyvm", "melbicom", "pfcloud", "epyc", "layerhost",
+    # CDN / セキュリティプロキシ
+    "akamai", "cloudflare", "fastly", "cdn77", "imperva", "incapsula", "cloudfront",
+    # VPNサービス名がそのまま出ている場合
+    "expressvpn", "nordvpn", "proton", "mullvad", "private internet access", "windscribe",
+    "cyberghost", "torguard", "vyprvpn", "purevpn"
 ]
 
 def detect_proxy_vpn_tor(ip, isp_name, tor_nodes):
     isp_lower = isp_name.lower()
     
+    # 1. Tor判定 (最優先)
     if ip in tor_nodes:
         return "Tor Node"
-    # 2. VPN/Proxy判定の強化
-    vpn_keywords = [
-        "vpn", "proxy", "datacamp", "mullvad", "proton",
-        "applied privacy", "ip-volume"
+    
+    # 2. Apple iCloud Private Relay 判定
+    # CloudflareやAkamai, Fastlyなどが使われるが、ISP名に特定の特徴が出ることが多い
+    if "icloud" in isp_lower or "private relay" in isp_lower:
+        return "iCloud Private Relay"
+
+    # 3. 具体的なVPNサービス/プライバシー保護団体の判定
+    privacy_keywords = [
+        "vpn", "proxy", "applied privacy", "privacy foundation", 
+        "calyx institute", "foundation for applied privacy"
     ]
-    if any(kw in isp_lower for kw in vpn_keywords):
-        # Torリストに漏れていても、名前で Tor Node と推測できる
-        if "privacy" in isp_lower:
-             return "Tor Node"
-        return "VPN/Proxy"   
-    # 3. Hosting/Infra判定の強化
-    # 「自分の足（回線）を持っていないサーバー屋」特有の単語を追加
-    infra_keywords = [
-        "hosting", "cloudflare", "amazon", "google", "akamai", 
-        "data center", "datacenter", "infrastructure", "server", 
-        "services ab", "digitalocean", "linode", "vultr", "ovh", 
-        "hetzner", "choopa", "leaseweb", "cogent", "tata communications",
-        "pccw", "zenlayer", "equinix", "fastly", "ip-volume"
-    ]
-    if any(kw in isp_lower for kw in infra_keywords):
-        return "Hosting/Infra"
+    if any(kw in isp_lower for kw in privacy_keywords):
+        return "VPN/Proxy (Named)"
+
+    # 4. Hosting/Infra/DataCenter判定 (VPNの出口になっている可能性大)
+    # ISP名自体がホスティング事業者である場合
+    if any(kw in isp_lower for kw in HOSTING_VPN_KEYWORDS):
+        # CDNの切り分け (オプション)
+        if any(cdn in isp_lower for cdn in ["cloudflare", "akamai", "fastly", "cloudfront"]):
+            return "CDN/Proxy"
+        
+        return "Hosting/DataCenter"
         
     return "Residential/Business"
 
@@ -532,7 +561,7 @@ def get_simple_mode_details(target):
         'Status': 'Success (簡易モード)' 
     }
 
-# --- 後続のヘルパー関数群 (group_results_by_isp, summarize_in_realtime, draw_summary_content, display_results) は変更なし ---
+# --- 後続のヘルパー関数群 (group_results_by_isp, summarize_in_realtime, draw_summary_content, display_results) ---
 
 def group_results_by_isp(results):
     grouped = {}
@@ -604,7 +633,7 @@ def group_results_by_isp(results):
 
     return final_grouped_results
 
-# --- リアルタイム集計関数 (変更なし) ---
+# --- リアルタイム集計関数 (全件データフレームも返すように修正) ---
 def summarize_in_realtime(raw_results):
     isp_counts = {}
     country_code_counts = {}
@@ -613,7 +642,7 @@ def summarize_in_realtime(raw_results):
 
     st.session_state['debug_summary'] = {} 
 
-    country_all_df = pd.DataFrame({
+    country_all_df_raw = pd.DataFrame({
         'NumericCode': pd.Series(dtype='int64'), 
         'Count': pd.Series(dtype='int64'),
         'Country': pd.Series(dtype='str')
@@ -636,12 +665,19 @@ def summarize_in_realtime(raw_results):
         if cc and cc != 'N/A':
             country_code_counts[cc] = country_code_counts.get(cc, 0) + frequency
 
-    isp_df = pd.DataFrame(list(isp_counts.items()), columns=['ISP', 'Count'])
-    if not isp_df.empty:
-        isp_df = isp_df.sort_values('Count', ascending=False).head(10)
+    # --- ISP集計 (全件とTop10) ---
+    isp_full_df = pd.DataFrame(list(isp_counts.items()), columns=['ISP', 'Count'])
+    isp_full_df = isp_full_df.sort_values('Count', ascending=False)
+    
+    # 画面表示用Top10
+    if not isp_full_df.empty:
+        isp_df = isp_full_df.head(10).copy()
         isp_df['ISP'] = isp_df['ISP'].str.wrap(25)
     else:
         isp_df = pd.DataFrame(columns=['ISP', 'Count'])
+
+    # --- 国集計 (全件とTop10) ---
+    country_full_df = pd.DataFrame(columns=['Country', 'Count']) # 初期化
 
     if country_code_counts:
         code_to_name = {
@@ -652,6 +688,7 @@ def summarize_in_realtime(raw_results):
         code_to_name['JP'] = 'Japan'
         code_to_name['US'] = 'United States'
 
+        # ヒートマップ用データ作成
         map_data = []
         for cc, cnt in country_code_counts.items():
             num = COUNTRY_CODE_TO_NUMERIC_ISO.get(cc)
@@ -662,32 +699,44 @@ def summarize_in_realtime(raw_results):
                     'Country': code_to_name.get(cc, cc)
                 })
 
-        country_all_df = pd.DataFrame(map_data).astype({
+        country_all_df_raw = pd.DataFrame(map_data).astype({
             'NumericCode': 'int64',
             'Count': 'int64'
         })
+        
+        # 全件リスト作成
+        country_list_data = []
+        for cc, cnt in country_code_counts.items():
+             country_list_data.append({'Country': code_to_name.get(cc, cc), 'Count': cnt})
+        country_full_df = pd.DataFrame(country_list_data).sort_values('Count', ascending=False)
 
-        top10 = sorted(country_code_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-        country_df = pd.DataFrame([
-            {'Country': code_to_name.get(c, c), 'Count': n} 
-            for c, n in top10
-        ])
+        # Top10作成
+        country_df = country_full_df.head(10).copy()
         country_df['Country'] = country_df['Country'].str.wrap(25)
     else:
         country_df = pd.DataFrame(columns=['Country', 'Count'])
         
     st.session_state['debug_summary']['country_code_counts'] = country_code_counts
-    st.session_state['debug_summary']['country_all_df'] = country_all_df.to_dict('records')
+    st.session_state['debug_summary']['country_all_df'] = country_all_df_raw.to_dict('records')
 
-
+    # --- ターゲット頻度集計 (全件とTop10) ---
     freq_map = st.session_state.get('target_freq_map', {})
     finished = st.session_state.get('finished_ips', set())
     freq_list = [{'Target_IP': t, 'Count': c} for t, c in freq_map.items() if t in finished]
-    freq_df = pd.DataFrame(freq_list)
-    if not freq_df.empty:
-        freq_df = freq_df.sort_values('Count', ascending=False).head(10)
+    
+    # 【修正箇所】リストが空の場合の対処を追加
+    if freq_list:
+        freq_full_df = pd.DataFrame(freq_list).sort_values('Count', ascending=False)
+    else:
+        freq_full_df = pd.DataFrame(columns=['Target_IP', 'Count'])
+    
+    if not freq_full_df.empty:
+        freq_df = freq_full_df.head(10).copy()
+    else:
+        freq_df = pd.DataFrame(columns=['Target_IP', 'Count'])
 
-    return isp_df, country_df, freq_df, country_all_df
+    # 戻り値を拡張: 表示用DF群, ヒートマップ用DF, 全件DF群
+    return isp_df, country_df, freq_df, country_all_df_raw, isp_full_df, country_full_df, freq_full_df
 
 # --- 集計結果描画ヘルパー関数 (変更なし) ---
 def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df, country_all_df, title):
@@ -757,7 +806,7 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
     col_freq, col_isp, col_country = st.columns([1, 1, 1]) 
 
     with col_freq:
-        st.markdown("#### 🎯 Target IP別カウント (トップ10)")
+        st.markdown("#### 🎯 対象IP別カウント (トップ10)")
         if not target_frequency_df.empty:
             st.caption(f"**集計対象ターゲット数 (重複なし):** {len(target_frequency_df)} 件")
             
@@ -801,6 +850,94 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
             st.dataframe(country_summary_df, hide_index=True, use_container_width=True)
         else:
             st.info("データがありません")
+
+def generate_full_report_html(isp_full_df, country_full_df, freq_full_df):
+    """
+    全件データを含むグラフHTMLを生成するヘルパー関数
+    """
+    charts = []
+
+    # 1. Target IP Chart
+    if not freq_full_df.empty:
+        # 縦長になりすぎないようにスクロール対応のHTMLにするため、ここでは基本的な定義のみ
+        chart_freq = alt.Chart(freq_full_df).mark_bar().encode(
+            x=alt.X('Count', title='Count'),
+            y=alt.Y('Target_IP', sort='-x', title='Target IP'),
+            tooltip=['Target_IP', 'Count']
+        ).properties(title='Target IP Counts (All Data)', width=600)
+        charts.append(chart_freq.to_json())
+    else:
+        charts.append(None)
+
+    # 2. ISP Chart
+    if not isp_full_df.empty:
+        chart_isp = alt.Chart(isp_full_df).mark_bar().encode(
+            x=alt.X('Count', title='Count'),
+            y=alt.Y('ISP', sort='-x', title='ISP'),
+            tooltip=['ISP', 'Count']
+        ).properties(title='ISP Counts (All Data)', width=600)
+        charts.append(chart_isp.to_json())
+    else:
+        charts.append(None)
+    
+    # 3. Country Chart
+    if not country_full_df.empty:
+        chart_country = alt.Chart(country_full_df).mark_bar().encode(
+            x=alt.X('Count', title='Count'),
+            y=alt.Y('Country', sort='-x', title='Country'),
+            tooltip=['Country', 'Count']
+        ).properties(title='Country Counts (All Data)', width=600)
+        charts.append(chart_country.to_json())
+    else:
+        charts.append(None)
+
+    # HTMLテンプレート
+    html_template = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Whois Search Full Report</title>
+      <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+      <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+      <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+      <style>
+        body {{ font-family: sans-serif; padding: 20px; }}
+        .chart-container {{ margin-bottom: 50px; padding: 20px; border: 1px solid #eee; border-radius: 8px; }}
+        h2 {{ color: #333; }}
+      </style>
+    </head>
+    <body>
+      <h1>Whois検索結果分析レポート</h1>
+      
+      <div class="chart-container">
+        <h2>対象IPアドレス　頻度 </h2>
+        <div id="vis1"></div>
+      </div>
+      
+      <div class="chart-container">
+        <h2>ISP別　カウント</h2>
+        <div id="vis2"></div>
+      </div>
+      
+      <div class="chart-container">
+        <h2>国別　カウント</h2>
+        <div id="vis3"></div>
+      </div>
+
+      <script type="text/javascript">
+        var spec1 = {charts[0] if charts[0] else "{}"};
+        var spec2 = {charts[1] if charts[1] else "{}"};
+        var spec3 = {charts[2] if charts[2] else "{}"};
+
+        if (spec1.data) vegaEmbed('#vis1', spec1);
+        if (spec2.data) vegaEmbed('#vis2', spec2);
+        if (spec3.data) vegaEmbed('#vis3', spec3);
+      </script>
+    </body>
+    </html>
+    """
+    return html_template
+
 
 def display_results(results, current_mode_full_text, display_mode):
     # 外側に定義した get_copy_target を使用することを前提としています
@@ -1297,10 +1434,12 @@ def main():
                                 with status_text_container:
                                     st.caption(f"**Progress:** {processed_api_ips_count}/{total_ip_api_targets} | **Deferred:** {len(st.session_state.deferred_ips)} | **CIDR Cache:** {len(st.session_state.cidr_cache)} | **Remaining Time:** {eta_display}")
                                 
-                                isp_summary_df, country_summary_df, target_frequency_df, country_all_df = summarize_in_realtime(st.session_state.raw_results)
+                                # 戻り値の数が変更されたためアンパック変数を修正
+                                isp_df, country_df, freq_df, country_all_df, isp_full_df, country_full_df, freq_full_df = summarize_in_realtime(st.session_state.raw_results)
                                 with summary_container.container():
                                     st.markdown("---")
-                                    draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df, country_all_df, "📊 Real-time analysis")
+                                    # 画面描画には Top 10 データ (isp_df等) を渡す
+                                    draw_summary_content(isp_df, country_df, freq_df, country_all_df, "📊 Real-time analysis")
                                 st.markdown("---")
 
 
@@ -1398,13 +1537,58 @@ def main():
         
         display_results(display_res, current_mode_full_text, display_mode)
         
+        # 検索完了時や通常表示時に集計を行う
         if not st.session_state.is_searching or st.session_state.cancel_search:
-            isp_summary_df, country_summary_df, target_frequency_df, country_all_df = summarize_in_realtime(st.session_state.raw_results)
+            # 返り値が増えたため受け取り変数を修正
+            isp_df, country_df, freq_df, country_all_df, isp_full_df, country_full_df, freq_full_df = summarize_in_realtime(st.session_state.raw_results)
+            
             st.markdown("---")
-            draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df, country_all_df, "✅ 集計結果")
+            draw_summary_content(isp_df, country_df, freq_df, country_all_df, "✅ 集計結果")
+
+            # --- 全件集計データのダウンロードセクションを追加 ---
+            st.markdown("### 📊 集計データの完全版ダウンロード")
+            st.caption("※ 上記グラフのTop10制限を解除した、すべての集計データとグラフをダウンロードできます。")
+            
+            col_full_dl1, col_full_dl2, col_full_dl3, col_full_dl4 = st.columns(4)
+            
+            with col_full_dl1:
+                st.download_button(
+                    "⬇️ 対象IP カウント (全件)",
+                    freq_full_df.to_csv(index=False).encode('utf-8-sig'),
+                    "target_ip_frequency_all.csv",
+                    "text/csv",
+                    use_container_width=True
+                )
+            with col_full_dl2:
+                st.download_button(
+                    "⬇️ ISP別 カウント (全件)",
+                    isp_full_df.to_csv(index=False).encode('utf-8-sig'),
+                    "isp_counts_all.csv",
+                    "text/csv",
+                    use_container_width=True
+                )
+            with col_full_dl3:
+                st.download_button(
+                    "⬇️ 国別 カウント (全件)",
+                    country_full_df.to_csv(index=False).encode('utf-8-sig'),
+                    "country_counts_all.csv",
+                    "text/csv",
+                    use_container_width=True
+                )
+            
+            with col_full_dl4:
+                # 全件グラフHTMLレポートの生成
+                html_report = generate_full_report_html(isp_full_df, country_full_df, freq_full_df)
+                st.download_button(
+                    "⬇️ 全件グラフHTMLレポート",
+                    html_report,
+                    "whois_analysis_report.html",
+                    "text/html",
+                    use_container_width=True
+                )
 
         
-        st.markdown("### ⬇️ ダウンロード")
+        st.markdown("### ⬇️ 検索結果リストのダウンロード")
         col_dl1, col_dl2, col_dl3 = st.columns(3)
         # 1. 画面表示のまま
         csv_display = pd.DataFrame(display_res).drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link'], errors='ignore').astype(str)
@@ -1431,7 +1615,7 @@ def main():
             if st.session_state.get('original_df') is not None and st.session_state.get('ip_column_name'):
                 df_with_res = st.session_state['original_df'].copy()
                 ip_col = st.session_state['ip_column_name']
-                results = st.session_state.get('batch_results', []) # resultsを明示的に取得
+                results = st.session_state.get('raw_results', []) 
 
                 if results:
                     res_dict = {r['Target_IP']: r for r in results}
@@ -1439,13 +1623,15 @@ def main():
                 # 各行のIPに基づいて結果をマッピング
                 isps, isps_jp, countries, countries_jp, proxy_type, statuses, = [], [], [], [], [], []
                 for ip_val in df[ip_col]:
-                    info = res_dict.get(ip_val, {})
+                    # 型変換して文字列としてキーを探す
+                    ip_val_str = str(ip_val).strip()
+                    info = res_dict.get(ip_val_str, {})
                     isps.append(info.get('ISP', 'N/A'))
                     # get_ip_details_from_api側でラベルを消しているので、そのまま取得で綺麗になります
                     isps_jp.append(info.get('ISP_JP', 'N/A')) 
                     countries.append(info.get('Country', 'N/A'))
                     countries_jp.append(info.get('Country_JP', 'N/A'))
-                    proxy_type.append(info.get('Proxy Type', ''))
+                    proxy_type.append(info.get('Proxy_Type', ''))
                     statuses.append(info.get('Status', 'N/A'))
                 
                 # 指定の順序で列を挿入 (Statusが右端になるように順次挿入)
@@ -1463,5 +1649,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
