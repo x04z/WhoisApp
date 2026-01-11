@@ -9,29 +9,27 @@ import struct
 import ipaddress
 from urllib.parse import quote
 import math
-import altair as alt # 新しいグラフ描画のためにaltairをインポート
-import json # GeoJSONの読み込みに使用
+import altair as alt 
+import json 
+import io 
 
-# ページ設定（必ず先頭に記述）
+# ページ設定
 st.set_page_config(layout="wide", page_title="Whois Search Tool", page_icon="🌐")
 
-# --- 設定：API通信と並行処理 ---
-# ユーザーが選択可能なモードの設定値を定義
+# --- 設定 ---
 MODE_SETTINGS = {
     "安定性重視 (2.5秒待機/単一スレッド)": {
         "MAX_WORKERS": 1, 
-        "DELAY_BETWEEN_REQUESTS": 2.5 # 2.5秒 (レートリミット回避の確実性を高める)
+        "DELAY_BETWEEN_REQUESTS": 2.5 
     },
     "速度優先 (1.4秒待機/2スレッド)": {
         "MAX_WORKERS": 2, 
-        "DELAY_BETWEEN_REQUESTS": 1.4 # 1.4秒 (わずかに高速化しつつ、2スレッドで並列処理)
+        "DELAY_BETWEEN_REQUESTS": 1.4 
     }
 }
-# IP-APIのベースURLと固定レートリミット待機時間は定数として維持
 IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,country,countryCode,isp,query,message"
-RATE_LIMIT_WAIT_SECONDS = 120 # レートリミット発生時の強制待機時間 (秒)
+RATE_LIMIT_WAIT_SECONDS = 120 
   
-# --- RIR/RegistryのURL定義 (変更なし) ---
 RIR_LINKS = {
     'RIPE': 'https://apps.db.ripe.net/db-web-ui/#/query?searchtext={ip}',
     'ARIN': 'https://search.arin.net/rdap/?query={ip}',
@@ -40,7 +38,7 @@ RIR_LINKS = {
     'AFRINIC': 'https://www.afrinic.net/whois',
     'ICANN Whois': 'https://lookup.icann.org/',
 }
-# --- セカンダリツールリンクのベースURL定義 (変更なし) ---
+
 SECONDARY_TOOL_BASE_LINKS = {
     'VirusTotal': 'https://www.virustotal.com/',
     'Whois.com': 'https://www.whois.com/',
@@ -54,7 +52,6 @@ SECONDARY_TOOL_BASE_LINKS = {
     'CP-WHOIS': 'https://doco.cph.jp/whoisweb.php',
     }
 
-# --- RIR割り当てマップ (変更なし) ---
 COUNTRY_CODE_TO_RIR = {
     'JP': 'JPNIC', 'CN': 'APNIC', 'AU': 'APNIC', 'KR': 'APNIC', 'IN': 'APNIC',
     'ID': 'APNIC', 'MY': 'APNIC', 'NZ': 'APNIC', 'SG': 'APNIC',
@@ -75,7 +72,6 @@ COUNTRY_CODE_TO_RIR = {
     'HR': 'RIPE', 'RS': 'RIPE', 'AE': 'RIPE', 'QA': 'RIPE',
 }
 
-# --- 国コードから ISO 3166-1 Numeric Code へのマッピング (変更なし) ---
 COUNTRY_CODE_TO_NUMERIC_ISO = {
     'AF': 4, 'AL': 8, 'DZ': 12, 'AS': 16, 'AD': 20, 'AO': 24, 'AI': 660, 'AQ': 10, 'AG': 28, 'AR': 32,
     'AM': 51, 'AW': 533, 'AU': 36, 'AT': 40, 'AZ': 31, 'BS': 44, 'BH': 48, 'BD': 50, 'BB': 52, 'BY': 112,
@@ -102,6 +98,7 @@ COUNTRY_CODE_TO_NUMERIC_ISO = {
     'TC': 796, 'TV': 798, 'UG': 800, 'UA': 804, 'AE': 784, 'GB': 826, 'US': 840, 'UM': 581, 'UY': 858, 'UZ': 860,
     'VU': 548, 'VE': 862, 'VN': 704, 'VI': 850, 'WF': 876, 'EH': 732, 'YE': 887, 'ZM': 894, 'ZW': 716
 }
+
 COUNTRY_JP_NAME = {
     "AF": "アフガニスタン","AL": "アルバニア","DZ": "アルジェリア","AS": "アメリカ領サモア","AD": "アンドラ","AO": "アンゴラ",
     "AI": "アンギラ","AQ": "南極","AG": "アンティグア・バーブーダ","AR": "アルゼンチン","AM": "アルメニア","AW": "アルバ","AU": "オーストラリア",
@@ -118,62 +115,86 @@ COUNTRY_JP_NAME = {
     "ES": "スペイン","SE": "スウェーデン","CH": "スイス","TH": "タイ","TR": "トルコ","UA": "ウクライナ","AE": "アラブ首長国連邦","GB": "イギリス",
     "US": "アメリカ","VN": "ベトナム","YE": "イエメン","ZM": "ザンビア","ZW": "ジンバブエ"
 }
-# --- ISP名称の日本語マッピング (最新化: 2025年時点) ---
-# APIから返ってくる英語名(Key)は古いままの可能性があるため、Keyは変更せずValue(日本語)を最新の実態に合わせます。
+
+# --- ISP名称の日本語マッピング (企業名統一版) ---
 ISP_JP_NAME = {
-    # --- NTT Group / Docomo Group ---
-    # 2025年7月より「NTTドコモビジネス」へ社名変更。
+    # --- NTT Group ---
     'NTT Communications Corporation': 'NTTドコモビジネス', 
-    'NTT COMMUNICATIONS CORPORATION': 'NTTドコモビジネス',# 表記ゆれ対応
+    'NTT COMMUNICATIONS CORPORATION': 'NTTドコモビジネス',
     'NTT DOCOMO BUSINESS,Inc.': 'NTTドコモビジネス',
     'NTT DOCOMO, INC.': 'NTTドコモ',
     'NTT PC Communications, Inc.': 'NTTPCコミュニケーションズ',
     
     # --- KDDI Group ---
     'Kddi Corporation': 'KDDI',
-    'Chubu Telecommunications Co., Inc.': '中部テレコミュニケーション (コミュファ光)',
-    'Chubu Telecommunications Company, Inc.': '中部テレコミュニケーション (コミュファ光)', # 表記ゆれ対応
+    'Chubu Telecommunications Co., Inc.': '中部テレコミュニケーション',
+    'Chubu Telecommunications Company, Inc.': '中部テレコミュニケーション',
     'Hokkaido Telecommunication Network Co., Inc.': 'HOTnet',
     'Energia Communications, Inc.': 'エネコム',
     'STNet, Inc.': 'STNet',
     'QTNet, Inc.': 'QTNet',
-    'BIGLOBE Inc.': 'ビッグローブ', # 現在はKDDIグループ
-    'JCN': 'J:COM', # J:COMへ統合済み
-
+    'BIGLOBE Inc.': 'ビッグローブ',
+    
     # --- SoftBank Group ---
     'SoftBank Corp.': 'ソフトバンク',
+    'Yahoo Japan Corporation': 'LINEヤフー',
+    'LY Corporation': 'LINEヤフー',
+    'LINE Corporation': 'LINEヤフー',
+    
+    # --- Rakuten Group ---
+    'Rakuten Group, Inc.': '楽天グループ',
+    'Rakuten Mobile, Inc.': '楽天モバイル',
+    'Rakuten Communications Corp.': '楽天コミュニケーションズ',
     
     # --- Sony Group ---
-    # 旧So-net Entertainment -> Sony Network Communications
-    'Sony Network Communications Inc.': 'ソニーネットワークコミュニケーションズ (So-net/NURO)',
-    'So-net Entertainment Corporation': 'ソニーネットワークコミュニケーションズ (So-net)', 
+    'Sony Network Communications Inc.': 'ソニーネットワークコミュニケーションズ',
+    'So-net Entertainment Corporation': 'ソニーネットワークコミュニケーションズ', 
+    'So-net Corporation': 'ソニーネットワークコミュニケーションズ',
     
-    # --- Others ---
+    # --- Major ISPs / VNEs ---
     'Internet Initiative Japan Inc.': 'IIJ',
+    'NIFTY Corporation': 'ニフティ',
+    'FreeBit Co., Ltd.': 'フリービット',
+    'TOKAI Communications Corporation': 'TOKAIコミュニケーションズ',
+    'DREAM TRAIN INTERNET INC.': 'ドリーム・トレイン・インターネット (DTI)',
     'ASAHI Net, Inc.': '朝日ネット',
     'Asahi Net': '朝日ネット',
-    'Optage Inc.': 'オプテージ (eo光)',
-    # 旧Jupiter Telecommunications -> JCOM株式会社
+    'Optage Inc.': 'オプテージ',
     'Jupiter Telecommunications Co., Ltd.': 'J:COM', 
     'JCOM Co., Ltd.': 'J:COM',
+    'JCN': 'J:COM', 
     'SAKURA Internet Inc.': 'さくらインターネット',
-    'ARTERIA Networks Corporation': 'アルテリア・ネットワークス',
     'GMO Internet, Inc.': 'GMOインターネット',
+    'INTERNET MULTIFEED CO.': 'インターネットマルチフィード',
+    'IDC Frontier Inc.': 'IDCフロンティア',
+    
+    # --- Others ---
+    'ARTERIA Networks Corporation': 'アルテリア・ネットワークス',
+    'UCOM Corporation': 'アルテリア・ネットワークス',
+    'VECTANT Ltd.': 'アルテリア・ネットワークス',
     'KIBI Cable Television Co., Ltd.': '吉備ケーブルテレビ',
 }
+
+# 正規化関数: 小文字化し、カンマ(,)とピリオド(.)を除去する
+def normalize_isp_key(text):
+    if not text:
+        return ""
+    # 小文字変換 -> カンマ削除 -> ピリオド削除 -> 前後の空白削除
+    return text.lower().replace(',', '').replace('.', '').strip()
+
+# 検索用にキーを正規化した辞書を作成（大文字小文字・記号の揺らぎを吸収）
+# 例: "NTT DOCOMO, INC." -> "ntt docomo inc"
+ISP_JP_NAME_NORMALIZED = {normalize_isp_key(k): v for k, v in ISP_JP_NAME.items()}
 
 # --- 匿名化・プロキシ判定用データ ---
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_tor_exit_nodes():
-    """Tor公式から最新の出口ノードリストを取得する"""
-    # 演出用のプレースホルダー。これ以外に st.write は使わない。
     terminal = st.empty()
     log_lines = []
     
     def update_log(new_line, color="#00FF41"):
         log_lines.append(f"<span style='color:{color};'>[SYS] {new_line}</span>")
-        # 演出用ボックスを絶対配置に近いスタイルで表示し、既存テキストとの重複を防ぐ
         display_text = "<br>".join(log_lines[-5:])
         terminal.markdown(f"""
             <div style="background-color: rgba(13, 2, 8, 0.9); border: 1px solid #FF0055; padding: 15px; border-radius: 8px; font-family: 'Courier New', Courier, monospace; font-size: 14px; line-height: 1.3; box-shadow: 0 0 20px rgba(255, 0, 85, 0.4); margin-bottom: 20px;">
@@ -183,7 +204,6 @@ def fetch_tor_exit_nodes():
         """, unsafe_allow_html=True)
         time.sleep(0.3)
 
-    # st.write("Running...") は削除。ここから即座に演出を開始。
     update_log("BOOTING NEURAL LINK...")
     update_log("DECRYPTING EXIT NODE MANIFEST...")
     
@@ -213,60 +233,43 @@ def fetch_tor_exit_nodes():
         terminal.empty()
         return set()
 
-# ISP名や組織名に含まれると「ホスティング/VPN/プロキシ」の可能性が高いキーワード
 HOSTING_VPN_KEYWORDS = [
-    # 一般的なインフラ用語
     "hosting", "datacenter", "vps", "cloud", "server", "vpn", "proxy", "dedi",
     "telecommunication", "solutions", "network",
-    # 大手クラウド/プラットフォーマー
     "amazon technologies", "amazon.com", "google llc", "google cloud", "microsoft corporation", "azure",
     "oracle cloud", "alibaba", "tencent", "huawei", "digitalocean", "linode", "vultr", "ovh", "hetzner",
-    # VPN/Proxyによく使われるホスティング事業者 (IPinfoなどでよく見る常連)
     "m247", "proweb", "choopa", "leaseweb", "datacamp", "ip-volume", "flyservers", 
     "performive", "hostroyale", "packet exchange", "xtom", "tzulo", "psychz", 
     "franantech", "buyvm", "melbicom", "pfcloud", "epyc", "layerhost",
-    # CDN / セキュリティプロキシ
     "akamai", "cloudflare", "fastly", "cdn77", "imperva", "incapsula", "cloudfront",
-    # VPNサービス名がそのまま出ている場合
     "expressvpn", "nordvpn", "proton", "mullvad", "private internet access", "windscribe",
     "cyberghost", "torguard", "vyprvpn", "purevpn"
 ]
 
 def detect_proxy_vpn_tor(ip, isp_name, tor_nodes):
     isp_lower = isp_name.lower()
-    
-    # 1. Tor判定 (最優先)
-    if ip in tor_nodes:
-        return "Tor Node"
-    
-    # 2. Apple iCloud Private Relay 判定
-    # CloudflareやAkamai, Fastlyなどが使われるが、ISP名に特定の特徴が出ることが多い
-    if "icloud" in isp_lower or "private relay" in isp_lower:
-        return "iCloud Private Relay"
-
-    # 3. 具体的なVPNサービス/プライバシー保護団体の判定
-    privacy_keywords = [
-        "vpn", "proxy", "applied privacy", "privacy foundation", 
-        "calyx institute", "foundation for applied privacy"
-    ]
-    if any(kw in isp_lower for kw in privacy_keywords):
-        return "VPN/Proxy (Named)"
-
-    # 4. Hosting/Infra/DataCenter判定 (VPNの出口になっている可能性大)
-    # ISP名自体がホスティング事業者である場合
+    if ip in tor_nodes: return "Tor Node"
+    if "icloud" in isp_lower or "private relay" in isp_lower: return "iCloud Private Relay"
+    privacy_keywords = ["vpn", "proxy", "applied privacy", "privacy foundation", "calyx institute", "foundation for applied privacy"]
+    if any(kw in isp_lower for kw in privacy_keywords): return "VPN/Proxy (Named)"
     if any(kw in isp_lower for kw in HOSTING_VPN_KEYWORDS):
-        # CDNの切り分け (オプション)
-        if any(cdn in isp_lower for cdn in ["cloudflare", "akamai", "fastly", "cloudfront"]):
-            return "CDN/Proxy"
-        
+        if any(cdn in isp_lower for cdn in ["cloudflare", "akamai", "fastly", "cloudfront"]): return "CDN/Proxy"
         return "Hosting/DataCenter"
-        
     return "Residential/Business"
 
 def get_jp_names(english_isp, country_code):
-    """ISP名と国コードから日本語名を取得するヘルパー関数"""
-    jp_isp = ISP_JP_NAME.get(english_isp, english_isp)  # 辞書になければ英語名のまま
-    jp_country = COUNTRY_JP_NAME.get(country_code, country_code) # 辞書になければコードのまま
+    if not english_isp:
+        return "N/A", COUNTRY_JP_NAME.get(country_code, country_code)
+
+    # 1. まず完全一致を試す (基本)
+    if english_isp in ISP_JP_NAME:
+        jp_isp = ISP_JP_NAME[english_isp]
+    else:
+        # 2. 正規化して検索 (カンマ・ピリオド・大小文字を無視して照合)
+        normalized_input = normalize_isp_key(english_isp)
+        jp_isp = ISP_JP_NAME_NORMALIZED.get(normalized_input, english_isp)
+
+    jp_country = COUNTRY_JP_NAME.get(country_code, country_code)
     return jp_isp, jp_country
 
 @st.cache_resource
@@ -300,13 +303,10 @@ def clean_ocr_error_chars(target):
     cleaned_target = cleaned_target.replace('o', '0')
     cleaned_target = cleaned_target.replace('S', '5')
     cleaned_target = cleaned_target.replace('s', '5')
-
-    # IPv6（コロンを含む）でない場合のみ、a を 4 に、B を　8に置換する
     if ':' not in cleaned_target:
         cleaned_target = cleaned_target.replace('A', '4')
         cleaned_target = cleaned_target.replace('a', '4')
         cleaned_target = cleaned_target.replace('B', '8')
-        
     return cleaned_target
 
 def is_valid_ip(target):
@@ -332,14 +332,10 @@ def ip_to_int(ip):
         return 0
 
 def get_cidr_block(ip, netmask_range=(8, 24)):
-    """
-    IP Geolocation APIのキャッシュキーとして使用するCIDRブロックを返す。
-    IPv4は/24に固定することで、ISP単位の精度の高いキャッシュを実現している。
-    """
     try:
         ip_obj = ipaddress.ip_address(ip)
         if ip_obj.version == 4:
-            netmask = netmask_range[1] # 24 を使用 (ISP情報に最適)
+            netmask = netmask_range[1] 
             network = ipaddress.ip_network(f'{ip}/{netmask}', strict=False)
             return str(network)
         elif ip_obj.version == 6:
@@ -352,18 +348,14 @@ def get_cidr_block(ip, netmask_range=(8, 24)):
 
 def get_authoritative_rir_link(ip, country_code):
     rir_name = COUNTRY_CODE_TO_RIR.get(country_code)
-    
     if rir_name and rir_name in RIR_LINKS:
         encoded_ip = quote(ip, safe='')
-        
         if rir_name in ['RIPE', 'ARIN']:
             link_url = RIR_LINKS[rir_name].format(ip=encoded_ip)
             return f"[{rir_name}]({link_url})"
-            
         elif rir_name in ['JPNIC', 'APNIC', 'LACNIC', 'AFRINIC']:
             link_url = RIR_LINKS[rir_name]  
             return f"[{rir_name} (手動検索)]({link_url})"
-
     return f"[Whois (汎用検索 - APNIC窓口)]({RIR_LINKS.get('APNIC', 'https://wq.apnic.net/static/search.html')})"
 
 def get_copy_target(ip_display):
@@ -421,66 +413,38 @@ def create_secondary_links(target):
     return link_html.rstrip(' | ')
 
 
-# --- API通信関数の変更（API設定値を引数で受け取るように修正） ---
+# --- API通信関数 ---
 def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes):
-    """
-    IP-APIから詳細を取得する。CIDRキャッシュを優先的に使用する。
-    
-    Args:
-        ip (str): ターゲットIPアドレス
-        cidr_cache_snapshot (dict): メインスレッドから渡された現在のCIDRキャッシュのコピー
-        delay_between_requests (float): APIコール前の待機時間 (レートリミット対策)
-        rate_limit_wait_seconds (int): レートリミット発生時の強制待機時間
-
-    Returns:
-        tuple: (result_dict, new_cache_entry_or_None)
-    """
-    
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A'
     }
     new_cache_entry = None
 
-    # 1. CIDRブロックを特定
     cidr_block = get_cidr_block(ip)
     
-    # 2. CIDRキャッシュのチェック
     if cidr_block and cidr_block in cidr_cache_snapshot:
         cached_data = cidr_cache_snapshot[cidr_block]
         if time.time() - cached_data['Timestamp'] < 86400:
-            # キャッシュから基本情報を取得
             result['ISP'] = cached_data['ISP']
             result['Country'] = cached_data['Country']
             result['CountryCode'] = cached_data['CountryCode']
-            result['Status'] = "Success (Cache)" # Statusも入れておくと安心です
-
-            # ★重要：日本語名を作成する関数をここで呼ぶ必要があります
+            result['Status'] = "Success (Cache)" 
             jp_isp, jp_country = get_jp_names(result['ISP'], result['CountryCode'])
-            
-            # 1. 判定を行う
             proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
             is_anonymous = (proxy_type != "Residential/Business")
             result['ISP_JP'] = jp_isp
-            # 2. CSV用：判定があれば「種別」、なければ空
             result['Proxy_Type'] = f"{proxy_type}" if is_anonymous else ""
-            
             result['Country_JP'] = jp_country
-            
-            return result, None # キャッシュ利用時は new_cache_entry は None でOK
+            return result, None 
 
-    
-    # 3. APIコール（キャッシュがない、または期限切れの場合）
     try:
-        # ユーザー選択に基づく遅延時間を使用
         time.sleep(delay_between_requests) 
 
         url = IP_API_URL.format(ip=ip)
         response = session.get(url, timeout=45)
         
-        # 429エラー (レートリミット) 発生時の処理
         if response.status_code == 429:
-            # ユーザー選択に基づく待機時間を使用
             defer_until = time.time() + rate_limit_wait_seconds
             result['Status'] = 'Error: Rate Limit (429)'
             result['Defer_Until'] = defer_until
@@ -491,7 +455,6 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
         data = response.json()
         
         if data.get('status') == 'success':
-            country = data.get('country', 'N/A')
             country_code = data.get('countryCode', 'N/A') 
 
             result['ISP'] = data.get('isp', 'N/A')
@@ -501,20 +464,15 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             status_type = "IPv6 API" if not is_ipv4(ip) else "IPv4 API"
             result['Status'] = f'Success ({status_type})'
             jp_isp, jp_country = get_jp_names(result['ISP'], country_code)
-            # --- 匿名化判定を追加 ---
             proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
             is_anonymous = (proxy_type != "Residential/Business")
-
             result['ISP_JP'] = jp_isp
-
             result['Proxy_Type'] = f"{proxy_type}" if is_anonymous else ""
             result['Country_JP'] = jp_country
             
-            # 4. CIDRキャッシュの書き込みデータを準備（成功時のみ）
             if cidr_block:
                 new_cache_entry = {
                     cidr_block: {
-                    # キャッシュデータにも日本語を含めるか、取得時に関数を通す
                     'ISP': result['ISP'],
                     'Country': result['Country'],
                     'CountryCode': result['CountryCode'],
@@ -561,7 +519,7 @@ def get_simple_mode_details(target):
         'Status': 'Success (簡易モード)' 
     }
 
-# --- 後続のヘルパー関数群 (group_results_by_isp, summarize_in_realtime, draw_summary_content, display_results) ---
+# --- ヘルパー関数群 ---
 
 def group_results_by_isp(results):
     grouped = {}
@@ -621,9 +579,9 @@ def group_results_by_isp(results):
         final_grouped_results.append({
             'Target_IP': target_ip_display, 
             'Country': data['Country'], 
-            'Country_JP': data['Country_JP'], # 追加
+            'Country_JP': data['Country_JP'], 
             'ISP': data['ISP'],
-            'ISP_JP': data['ISP_JP'], # 追加
+            'ISP_JP': data['ISP_JP'], 
             'RIR_Link': data['RIR_Link'], 
             'Secondary_Security_Links': data['Secondary_Security_Links'],
             'Status': status_display
@@ -633,9 +591,10 @@ def group_results_by_isp(results):
 
     return final_grouped_results
 
-# --- リアルタイム集計関数 (全件データフレームも返すように修正) ---
+# --- リアルタイム集計関数 ---
 def summarize_in_realtime(raw_results):
     isp_counts = {}
+    country_counts = {}
     country_code_counts = {}
 
     target_frequency = st.session_state.get('target_freq_map', {})
@@ -657,46 +616,50 @@ def summarize_in_realtime(raw_results):
         ip = r.get('Target_IP')
         frequency = target_frequency.get(ip, 1) 
 
-        isp = r.get('ISP', 'N/A')
+        isp_name = r.get('ISP_JP', r.get('ISP', 'N/A'))
+        country_name = r.get('Country_JP', r.get('Country', 'N/A'))
         cc = r.get('CountryCode', 'N/A')
         
-        if isp and isp not in ['N/A', 'N/A (簡易モード)']:
-            isp_counts[isp] = isp_counts.get(isp, 0) + frequency
+        if isp_name and isp_name not in ['N/A', 'N/A (簡易モード)']:
+            isp_counts[isp_name] = isp_counts.get(isp_name, 0) + frequency
+        
+        if country_name and country_name != 'N/A':
+            country_counts[country_name] = country_counts.get(country_name, 0) + frequency
+            
         if cc and cc != 'N/A':
             country_code_counts[cc] = country_code_counts.get(cc, 0) + frequency
 
-    # --- ISP集計 (全件とTop10) ---
+    # --- ISP集計 ---
     isp_full_df = pd.DataFrame(list(isp_counts.items()), columns=['ISP', 'Count'])
     isp_full_df = isp_full_df.sort_values('Count', ascending=False)
     
-    # 画面表示用Top10
     if not isp_full_df.empty:
         isp_df = isp_full_df.head(10).copy()
         isp_df['ISP'] = isp_df['ISP'].str.wrap(25)
     else:
         isp_df = pd.DataFrame(columns=['ISP', 'Count'])
 
-    # --- 国集計 (全件とTop10) ---
-    country_full_df = pd.DataFrame(columns=['Country', 'Count']) # 初期化
+    # --- 国集計 ---
+    country_full_df = pd.DataFrame(list(country_counts.items()), columns=['Country', 'Count'])
+    country_full_df = country_full_df.sort_values('Count', ascending=False)
 
+    if not country_full_df.empty:
+        country_df = country_full_df.head(10).copy()
+        country_df['Country'] = country_df['Country'].str.wrap(25)
+    else:
+        country_df = pd.DataFrame(columns=['Country', 'Count'])
+
+    # ヒートマップ用
     if country_code_counts:
-        code_to_name = {
-            r['CountryCode']: r['Country'] 
-            for r in raw_results 
-            if r.get('CountryCode') and r['CountryCode'] != 'N/A'
-        }
-        code_to_name['JP'] = 'Japan'
-        code_to_name['US'] = 'United States'
-
-        # ヒートマップ用データ作成
         map_data = []
         for cc, cnt in country_code_counts.items():
             num = COUNTRY_CODE_TO_NUMERIC_ISO.get(cc)
             if num is not None:
+                name_for_map = COUNTRY_JP_NAME.get(cc, cc)
                 map_data.append({
                     'NumericCode': int(num), 
                     'Count': int(cnt),
-                    'Country': code_to_name.get(cc, cc)
+                    'Country': name_for_map
                 })
 
         country_all_df_raw = pd.DataFrame(map_data).astype({
@@ -704,27 +667,14 @@ def summarize_in_realtime(raw_results):
             'Count': 'int64'
         })
         
-        # 全件リスト作成
-        country_list_data = []
-        for cc, cnt in country_code_counts.items():
-             country_list_data.append({'Country': code_to_name.get(cc, cc), 'Count': cnt})
-        country_full_df = pd.DataFrame(country_list_data).sort_values('Count', ascending=False)
-
-        # Top10作成
-        country_df = country_full_df.head(10).copy()
-        country_df['Country'] = country_df['Country'].str.wrap(25)
-    else:
-        country_df = pd.DataFrame(columns=['Country', 'Count'])
-        
     st.session_state['debug_summary']['country_code_counts'] = country_code_counts
     st.session_state['debug_summary']['country_all_df'] = country_all_df_raw.to_dict('records')
 
-    # --- ターゲット頻度集計 (全件とTop10) ---
+    # --- ターゲット頻度集計 ---
     freq_map = st.session_state.get('target_freq_map', {})
     finished = st.session_state.get('finished_ips', set())
     freq_list = [{'Target_IP': t, 'Count': c} for t, c in freq_map.items() if t in finished]
     
-    # 【修正箇所】リストが空の場合の対処を追加
     if freq_list:
         freq_full_df = pd.DataFrame(freq_list).sort_values('Count', ascending=False)
     else:
@@ -735,10 +685,9 @@ def summarize_in_realtime(raw_results):
     else:
         freq_df = pd.DataFrame(columns=['Target_IP', 'Count'])
 
-    # 戻り値を拡張: 表示用DF群, ヒートマップ用DF, 全件DF群
     return isp_df, country_df, freq_df, country_all_df_raw, isp_full_df, country_full_df, freq_full_df
 
-# --- 集計結果描画ヘルパー関数 (変更なし) ---
+# --- 集計結果描画ヘルパー関数 ---
 def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df, country_all_df, title):
     st.subheader(title)
     
@@ -805,16 +754,28 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
 
     col_freq, col_isp, col_country = st.columns([1, 1, 1]) 
 
+    # 共通チャート生成関数
+    def create_labeled_bar_chart(df, x_field, y_field, title):
+        base = alt.Chart(df).encode(
+            x=alt.X(x_field, title='Count'),
+            y=alt.Y(y_field, sort='-x', title=y_field),
+            tooltip=[y_field, x_field]
+        )
+        bars = base.mark_bar()
+        text = base.mark_text(
+            align='left',
+            baseline='middle',
+            dx=3 
+        ).encode(
+            text=x_field
+        )
+        return (bars + text).properties(title=title).interactive()
+
     with col_freq:
         st.markdown("#### 🎯 対象IP別カウント (トップ10)")
         if not target_frequency_df.empty:
             st.caption(f"**集計対象ターゲット数 (重複なし):** {len(target_frequency_df)} 件")
-            
-            chart = alt.Chart(target_frequency_df).mark_bar().encode(
-                x=alt.X('Count', title='Count'),
-                y=alt.Y('Target_IP', sort='-x', title='Target IP'), 
-                tooltip=['Target_IP', 'Count']
-            ).properties(title='Target IP Counts').interactive()
+            chart = create_labeled_bar_chart(target_frequency_df, 'Count', 'Target_IP', 'Target IP Counts')
             st.altair_chart(chart, use_container_width=True)
 
             target_frequency_df_display = target_frequency_df.copy()
@@ -826,11 +787,7 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
     with col_isp:
         st.markdown("#### 🏢 ISP別カウント (トップ10)")
         if not isp_summary_df.empty:
-            chart = alt.Chart(isp_summary_df).mark_bar().encode(
-                x=alt.X('Count', title='Count'),
-                y=alt.Y('ISP', sort='-x', title='ISP'), 
-                tooltip=['ISP', 'Count']
-            ).properties(title='ISP Counts').interactive()
+            chart = create_labeled_bar_chart(isp_summary_df, 'Count', 'ISP', 'ISP Counts')
             st.altair_chart(chart, use_container_width=True)
             
             st.dataframe(isp_summary_df, hide_index=True, use_container_width=True)
@@ -840,56 +797,56 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
     with col_country:
         st.markdown("#### 🌍 国別カウント (トップ10)")
         if not country_summary_df.empty:
-            chart = alt.Chart(country_summary_df).mark_bar().encode(
-                x=alt.X('Count', title='Count'),
-                y=alt.Y('Country', sort='-x', title='Country'),
-                tooltip=['Country', 'Count']
-            ).properties(title='Country Counts').interactive()
+            chart = create_labeled_bar_chart(country_summary_df, 'Count', 'Country', 'Country Counts')
             st.altair_chart(chart, use_container_width=True)
             
             st.dataframe(country_summary_df, hide_index=True, use_container_width=True)
         else:
             st.info("データがありません")
 
+# 💡 HTMLレポート生成関数（改良版 v7.2）
 def generate_full_report_html(isp_full_df, country_full_df, freq_full_df):
-    """
-    全件データを含むグラフHTMLを生成するヘルパー関数
-    """
-    charts = []
-
-    # 1. Target IP Chart
-    if not freq_full_df.empty:
-        # 縦長になりすぎないようにスクロール対応のHTMLにするため、ここでは基本的な定義のみ
-        chart_freq = alt.Chart(freq_full_df).mark_bar().encode(
-            x=alt.X('Count', title='Count'),
-            y=alt.Y('Target_IP', sort='-x', title='Target IP'),
-            tooltip=['Target_IP', 'Count']
-        ).properties(title='Target IP Counts (All Data)', width=600)
-        charts.append(chart_freq.to_json())
-    else:
-        charts.append(None)
-
-    # 2. ISP Chart
-    if not isp_full_df.empty:
-        chart_isp = alt.Chart(isp_full_df).mark_bar().encode(
-            x=alt.X('Count', title='Count'),
-            y=alt.Y('ISP', sort='-x', title='ISP'),
-            tooltip=['ISP', 'Count']
-        ).properties(title='ISP Counts (All Data)', width=600)
-        charts.append(chart_isp.to_json())
-    else:
-        charts.append(None)
     
-    # 3. Country Chart
-    if not country_full_df.empty:
-        chart_country = alt.Chart(country_full_df).mark_bar().encode(
-            x=alt.X('Count', title='Count'),
-            y=alt.Y('Country', sort='-x', title='Country'),
-            tooltip=['Country', 'Count']
-        ).properties(title='Country Counts (All Data)', width=600)
-        charts.append(chart_country.to_json())
-    else:
-        charts.append(None)
+    def create_chunked_chart_specs(df, x_col, y_col, title_base, chunk_size=50):
+        specs = []
+        # データ全体での最大値を取得 (ページまたぎのスケール統一のため)
+        global_max = df[x_col].max() if not df.empty else 0
+
+        # データフレームを分割
+        chunks = [df[i:i + chunk_size] for i in range(0, df.shape[0], chunk_size)]
+        
+        for i, chunk in enumerate(chunks):
+            chart_title = f"{title_base} ({i+1}/{len(chunks)})" if len(chunks) > 1 else title_base
+            
+            # 数値ラベル付きチャート
+            # 💡 x軸のスケールを全体最大値で固定する
+            base = alt.Chart(chunk).encode(
+                x=alt.X(x_col, title='Count', scale=alt.Scale(domain=[0, global_max])),
+                y=alt.Y(y_col, sort='-x', title=y_col),
+                tooltip=[y_col, x_col]
+            )
+            bars = base.mark_bar()
+            text = base.mark_text(
+                align='left',
+                baseline='middle',
+                dx=5, 
+                fontSize=11,
+                fontWeight='bold'
+            ).encode(
+                text=x_col
+            )
+            chart = (bars + text).properties(
+                title=chart_title,
+                width=700,
+                height=alt.Step(20) 
+            )
+            specs.append(chart.to_dict())
+        return specs
+
+    # 各カテゴリのチャートスペックを生成
+    target_specs = create_chunked_chart_specs(freq_full_df, 'Count', 'Target_IP', 'Target IP Counts (All)')
+    isp_specs = create_chunked_chart_specs(isp_full_df, 'Count', 'ISP', 'ISP Counts (All)')
+    country_specs = create_chunked_chart_specs(country_full_df, 'Count', 'Country', 'Country Counts (All)')
 
     # HTMLテンプレート
     html_template = f"""
@@ -901,50 +858,87 @@ def generate_full_report_html(isp_full_df, country_full_df, freq_full_df):
       <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
       <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
       <style>
-        body {{ font-family: sans-serif; padding: 20px; }}
-        .chart-container {{ margin-bottom: 50px; padding: 20px; border: 1px solid #eee; border-radius: 8px; }}
-        h2 {{ color: #333; }}
+        body {{ font-family: "Helvetica Neue", Arial, sans-serif; padding: 40px; background-color: #fff; color: #333; }}
+        h1 {{ text-align: center; border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 30px; }}
+        h2 {{ 
+            color: #1e3a8a; 
+            margin-top: 50px; 
+            border-left: 5px solid #1e3a8a; 
+            padding-left: 15px; 
+            page-break-before: always; 
+        }}
+        h2:first-of-type {{ page-break-before: auto; }} 
+        
+        .chart-container {{ 
+            margin-bottom: 40px; 
+            padding: 10px; 
+            page-break-inside: avoid; 
+        }}
+        
+        @media print {{
+            body {{ padding: 0; background-color: #fff; }}
+            .no-print {{ display: none; }}
+            h2 {{ margin-top: 20px; }}
+        }}
       </style>
     </head>
     <body>
       <h1>Whois検索結果分析レポート</h1>
-      
-      <div class="chart-container">
-        <h2>対象IPアドレス　頻度 </h2>
-        <div id="vis1"></div>
-      </div>
-      
-      <div class="chart-container">
-        <h2>ISP別　カウント</h2>
-        <div id="vis2"></div>
-      </div>
-      
-      <div class="chart-container">
-        <h2>国別　カウント</h2>
-        <div id="vis3"></div>
-      </div>
+      <p style="text-align: center; color: #666;">Generated by Whois Search Tool</p>
+
+      <h2>対象IPアドレス カウント (全 {len(freq_full_df)} 件)</h2>
+      <div id="target_charts"></div>
+
+      <h2>ISP別 カウント (全 {len(isp_full_df)} 件)</h2>
+      <div id="isp_charts"></div>
+
+      <h2>国別 カウント (全 {len(country_full_df)} 件)</h2>
+      <div id="country_charts"></div>
 
       <script type="text/javascript">
-        var spec1 = {charts[0] if charts[0] else "{}"};
-        var spec2 = {charts[1] if charts[1] else "{}"};
-        var spec3 = {charts[2] if charts[2] else "{}"};
+        // Embed charts function
+        function embedCharts(containerId, specs) {{
+            const container = document.getElementById(containerId);
+            specs.forEach((spec, index) => {{
+                const div = document.createElement('div');
+                div.id = containerId + '_' + index;
+                div.className = 'chart-container';
+                container.appendChild(div);
+                vegaEmbed('#' + div.id, spec, {{actions: false}});
+            }});
+        }}
 
-        if (spec1.data) vegaEmbed('#vis1', spec1);
-        if (spec2.data) vegaEmbed('#vis2', spec2);
-        if (spec3.data) vegaEmbed('#vis3', spec3);
+        // Data from Python (Serialized to JSON)
+        const targetSpecs = {json.dumps(target_specs)};
+        const ispSpecs = {json.dumps(isp_specs)};
+        const countrySpecs = {json.dumps(country_specs)};
+
+        // Render
+        if (targetSpecs.length > 0) embedCharts('target_charts', targetSpecs);
+        else document.getElementById('target_charts').innerHTML = '<p>データなし</p>';
+
+        if (ispSpecs.length > 0) embedCharts('isp_charts', ispSpecs);
+        else document.getElementById('isp_charts').innerHTML = '<p>データなし</p>';
+
+        if (countrySpecs.length > 0) embedCharts('country_charts', countrySpecs);
+        else document.getElementById('country_charts').innerHTML = '<p>データなし</p>';
       </script>
     </body>
     </html>
     """
     return html_template
 
+# --- Excel生成ヘルパー関数 ---
+def convert_df_to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    return output.getvalue()
+
 
 def display_results(results, current_mode_full_text, display_mode):
-    # 外側に定義した get_copy_target を使用することを前提としています
-    
     st.markdown("### 📝 検索結果")
 
-    # --- ⚠️ 判定に関する説明注釈 ---
     with st.expander("⚠️ 判定アイコンと表示ルールについて"):
         st.info("""
         ### 🔍 判定ロジックの概要
@@ -973,17 +967,13 @@ def display_results(results, current_mode_full_text, display_mode):
         ※ 本判定はISP名称等に基づく推論であるため、実際の利用状況と異なる場合があります。
         """)
     
-    # 1. カラム幅の定義
     col_widths = [0.5, 1.5, 1.2, 2.0, 1.5, 1.5, 1.0, 1.2, 0.5] 
-    # 2. ヘッダー部分
     h_cols = st.columns(col_widths)
     headers = ["No.", "Target IP", "国名","ISP(日本語)", "RIR Link", "Security Links", "Proxy Type",  "Status", "✅"]
     for col, name in zip(h_cols, headers):
         col.markdown(f"**{name}**")
-    # 隙間を最小限にするための細い線
     st.markdown("<hr style='margin: 0px 0px 10px 0px;'>", unsafe_allow_html=True)
 
-    # 3. スタイルのスクロール可能なディスプレイ枠
     with st.container(height=800):
         if not results:
             st.info("検索結果がここに表示されます。")
@@ -991,55 +981,38 @@ def display_results(results, current_mode_full_text, display_mode):
 
         for idx, res in enumerate(results):
                 row_cols = st.columns(col_widths)
-                
-                # --- No. (普通の数字として表示) ---
                 row_cols[0].write(f"**{idx+1}**")
                 
-                # --- Target IP (IPv6絵文字化防止) ---
                 target_ip = res.get('Target_IP', 'N/A')
                 row_cols[1].markdown(f"`{target_ip}`")
                 
-                # --- 国名 ---
                 c_jp = res.get('Country_JP', 'N/A')
                 c_en = res.get('Country', 'N/A')
                 row_cols[2].write(f"{c_jp}\n({c_en})")
                 
-                # --- ISP ---
                 isp_display = res.get('ISP_JP', res.get('ISP', 'N/A'))
                 row_cols[3].write(isp_display)
                 
-                # --- RIR Link と コピー用枠 ---
                 rir_link = res.get('RIR_Link', 'N/A')
                 with row_cols[4]:
                     st.write(rir_link)
-                    # IPコピー用のコードブロック枠
                     clean_ip = get_copy_target(target_ip)
                     st.code(clean_ip, language=None)
                 
-                # --- Security Links ---
                 row_cols[5].write(res.get('Secondary_Security_Links', 'N/A'))
-
-                # --- Hosting ---
                 hosting_val = res.get('Proxy_Type', '')
                 row_cols[6].write(hosting_val)          
                 
-                # --- Status ---
                 status_val = res.get('Status', 'N/A')
                 if "Success" in status_val:
                     row_cols[7].markdown(f"<span style='color:green;'>{status_val}</span>", unsafe_allow_html=True)
                 else:
                     row_cols[7].write(status_val)
                     
-                # --- チェックボックス ---
-                row_cols[8].checkbox(
-                "選択", 
-                key=f"chk_{get_copy_target(target_ip)}_{idx}", 
-                label_visibility="collapsed"
-                )
+                row_cols[8].checkbox("選択", key=f"chk_{get_copy_target(target_ip)}_{idx}", label_visibility="collapsed")
 
 # --- メイン処理 ---
 def main():
-    # セッションステートの定義
     if 'cancel_search' not in st.session_state: st.session_state['cancel_search'] = False
     if 'raw_results' not in st.session_state: st.session_state['raw_results'] = []
     if 'targets_cache' not in st.session_state: st.session_state['targets_cache'] = []
@@ -1051,10 +1024,8 @@ def main():
     if 'cidr_cache' not in st.session_state: st.session_state['cidr_cache'] = {} 
     if 'debug_summary' not in st.session_state: st.session_state['debug_summary'] = {}
 
-    # 最新のTorノードリストを取得
     tor_nodes = fetch_tor_exit_nodes()
     
-    # --- サイドバーデザイン ---
     with st.sidebar:
         st.markdown("### 🛠️ Menu")
         selected_menu = option_menu(
@@ -1073,7 +1044,6 @@ def main():
             st.info("IP/CIDRキャッシュをクリアしました。")
             st.rerun()
 
-    # --- メインコンテンツ：仕様・解説タブ (省略) ---
     if selected_menu == "仕様・解説":
         st.title("📖 ツールの仕様と解説")
         st.markdown(f"""
@@ -1110,6 +1080,7 @@ def main():
         - **Requests/ThreadPoolExecutor**: HTTP通信とマルチスレッド並列処理
         - **IP Address/Socket/Struct**: IPアドレス操作およびCIDR対応
         - **Pandas/Altair/GeoJSON**: データ集計と可視化
+        - **Excel出力**: `openpyxl` ライブラリを使用して、集計結果や検索リストをExcelファイルとしてダウンロード可能になりました。
         - **Tor Exit Node 判定**:
             - 起動時にTor公式サイトから最新の出口ノードリストを自動取得・更新し、匿名化ネットワーク経由の通信かどうかを判定します。
 
@@ -1138,7 +1109,6 @@ def main():
     # --- メインコンテンツ：Whois検索タブ ---
     st.title("🌐 WhoisSearchTool")
 
-    # 入力エリア
     col_input1, col_input2 = st.columns([1, 1])
 
     with col_input1:
@@ -1149,23 +1119,30 @@ def main():
         )
 
     with col_input2:
-        uploaded_file = st.file_uploader("📂 リストをアップロード (txt/csv)", type=['txt', 'csv'])
-        st.caption("※ 1行に1つのターゲットを記載、またはCSVのIP列を自動検出します")
+        uploaded_file = st.file_uploader("📂 リストをアップロード (txt/csv/xlsx)", type=['txt', 'csv', 'xlsx', 'xls'])
+        st.caption("※ 1行に1つのターゲットを記載、またはCSV/ExcelのIP列を自動検出します")
 
-    # ターゲット解析
         raw_targets = []
         if manual_input:
             raw_targets.extend(manual_input.splitlines())
         
         if uploaded_file:
-            if uploaded_file.name.endswith('.csv'):
-                try:
+            df_orig = None
+            ip_col = None
+            try:
+                if uploaded_file.name.endswith('.csv'):
                     df_orig = pd.read_csv(uploaded_file)
+                elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+                    df_orig = pd.read_excel(uploaded_file)
+                else:
+                    # TXTファイル
+                    raw_targets.extend(uploaded_file.read().decode("utf-8").splitlines())
+                    st.session_state['original_df'] = None
+                    st.session_state['ip_column_name'] = None
+
+                if df_orig is not None:
                     st.session_state['original_df'] = df_orig
-                    # IPが含まれる列を自動判定
-                    ip_col = None
                     for col in df_orig.columns:
-                        # 最初の数行を確認してIPアドレスっぽいか判定
                         sample = df_orig[col].dropna().head(10).astype(str)
                         if any(is_valid_ip(val.strip()) for val in sample):
                             ip_col = col
@@ -1175,16 +1152,11 @@ def main():
                         st.session_state['ip_column_name'] = ip_col
                         raw_targets.extend(df_orig[ip_col].dropna().astype(str).tolist())
                     else:
-                        st.error("CSV内にIPアドレスの列が見つかりませんでした。")
-                except Exception as e:
-                    st.error(f"CSV読み込みエラー: {e}")
-            else:
-                # 従来のテキストファイル処理
-                raw_targets.extend(uploaded_file.read().decode("utf-8").splitlines())
-                st.session_state['original_df'] = None
-                st.session_state['ip_column_name'] = None
+                        st.error("ファイル内にIPアドレスの列が見つかりませんでした。")
+
+            except Exception as e:
+                st.error(f"ファイル読み込みエラー: {e}")
     
-    # 変数をあらかじめ空で初期化しておく
     cleaned_raw_targets_list = []
     target_freq_counts = {}
 
@@ -1224,7 +1196,6 @@ def main():
     
     if has_new_targets or 'target_freq_map' not in st.session_state:
         st.session_state['target_freq_map'] = target_freq_counts
-        # これにより、入力が空の状態でも安全に代入が行われます
         st.session_state['original_input_list'] = cleaned_raw_targets_list
     ip_targets = [t for t in targets if is_valid_ip(t)]
     domain_targets = [t for t in targets if not is_valid_ip(t)]
@@ -1234,7 +1205,6 @@ def main():
     st.markdown("---")
     st.markdown("### ⚙️ 検索表示設定")
     
-    # --- 表示モードの選択 (変更なし) ---
     display_mode = st.radio(
         "**表示モード:** (検索結果の表示形式とAPI使用有無を設定)",
         ("標準モード", "集約モード (IPv4 Group)", "簡易モード (APIなし)"),
@@ -1242,7 +1212,6 @@ def main():
         horizontal=True
     )
     
-    # --- API処理モードの選択 (新規追加) ---
     api_mode_selection = st.radio(
         "**API 処理モード:** (速度と安定性のトレードオフ)",
         list(MODE_SETTINGS.keys()),
@@ -1250,14 +1219,10 @@ def main():
         horizontal=True
     )
     
-    # 選択されたAPI設定の適用
     selected_settings = MODE_SETTINGS[api_mode_selection]
     max_workers = selected_settings["MAX_WORKERS"]
     delay_between_requests = selected_settings["DELAY_BETWEEN_REQUESTS"]
-    
-    # 固定値として定義されているレートリミット待機時間をローカル変数に格納
     rate_limit_wait_seconds = RATE_LIMIT_WAIT_SECONDS
-
 
     mode_mapping = {
         "標準モード": "標準モード (1ターゲット = 1行)",
@@ -1266,7 +1231,6 @@ def main():
     }
     current_mode_full_text = mode_mapping[display_mode]
 
-    # --- アクションエリア ---
     st.markdown("---")
     col_act1, col_act2 = st.columns([3, 1])
 
@@ -1292,7 +1256,6 @@ def main():
             disabled=(len(targets) == 0 and len(st.session_state.deferred_ips) == 0)
             )
 
-    # 検索開始/継続アクション
     if ('execute_search' in locals() and execute_search and (has_new_targets or len(st.session_state.deferred_ips) > 0)) or is_currently_searching:
         
         if ('execute_search' in locals() and execute_search and has_new_targets and len(targets) > 0):
@@ -1303,7 +1266,6 @@ def main():
             st.session_state.finished_ips = set()
             st.session_state.targets_cache = targets
             st.session_state.search_start_time = time.time()
-            
             st.rerun() 
             
         elif is_currently_searching:
@@ -1318,7 +1280,6 @@ def main():
             
             ip_targets_to_process = [ip for ip in ip_targets if ip not in st.session_state.finished_ips]
             
-            # 1. 遅延IPのチェックと復帰
             current_time = time.time()
             ready_to_retry_ips = []
             deferred_ips_new = {}
@@ -1330,7 +1291,6 @@ def main():
             
             st.session_state.deferred_ips = deferred_ips_new
             
-            # APIコールが必要なIPと、CIDRキャッシュチェックが必要なIPを抽出
             immediate_ip_queue_unique = []
             for ip in ip_targets_to_process:
                 if ip not in st.session_state.deferred_ips and ip not in immediate_ip_queue_unique:
@@ -1339,7 +1299,6 @@ def main():
             immediate_ip_queue = immediate_ip_queue_unique
             immediate_ip_queue.extend(ready_to_retry_ips)
             
-            # 簡易モードの場合はAPI処理をスキップ
             if "簡易" in current_mode_full_text:
                 if not st.session_state.raw_results:
                     results_list = []
@@ -1350,9 +1309,7 @@ def main():
                     st.session_state.is_searching = False
                     st.rerun()
 
-            # 標準/集約モード
             else:
-                
                 if not any(res['ISP'] == 'Domain/Host' for res in st.session_state.raw_results) and domain_targets:
                     st.session_state.raw_results.extend([get_domain_details(d) for d in domain_targets])
                     st.session_state.finished_ips.update(domain_targets)
@@ -1362,61 +1319,46 @@ def main():
                 summary_container = st.empty() 
 
                 if immediate_ip_queue:
-                    
-                    # キャッシュスナップショットの取得
                     cidr_cache_snapshot = st.session_state.cidr_cache.copy() 
                     
-                    # ユーザー設定に基づく MAX_WORKERS を使用
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        
-                        # ワーカ関数への引数に API設定値を渡す
                         future_to_ip = {
                             executor.submit(
                                 get_ip_details_from_api, 
                                 ip, 
                                 cidr_cache_snapshot, 
                                 delay_between_requests, 
-                                rate_limit_wait_seconds, # RATE_LIMIT_WAIT_SECONDSは固定
+                                rate_limit_wait_seconds,
                                 tor_nodes
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
                         
                         while remaining and not st.session_state.cancel_search:
-                            
                             done, remaining = wait(remaining, timeout=0.1, return_when=FIRST_COMPLETED)
                             
                             for f in done:
-                                # ワーカ関数の戻り値 (res, new_cache_entry) を受け取る
                                 res_tuple = f.result()
                                 res = res_tuple[0]
                                 new_cache_entry = res_tuple[1]
                                 ip = res['Target_IP']
                                 
-                                # メインスレッドで st.session_state.cidr_cache を安全に更新
                                 if new_cache_entry:
                                     st.session_state.cidr_cache.update(new_cache_entry)
                                 
-                                # 結果の処理 (変更なし)
                                 if res.get('Status', '').startswith('Success'):
                                     st.session_state.raw_results.append(res)
                                     st.session_state.finished_ips.add(ip)
-                                
                                 elif res.get('Defer_Until'):
                                     st.session_state.deferred_ips[ip] = res['Defer_Until']
-                                    
                                 else:
                                     st.session_state.raw_results.append(res)
                                     st.session_state.finished_ips.add(ip)
 
-                            
-                            # 進捗状況の更新 (変更なし)
                             if total_ip_api_targets > 0:
                                 processed_api_ips_count = len([ip for ip in st.session_state.finished_ips if is_valid_ip(ip)])
                                 pct = int(processed_api_ips_count / total_ip_api_targets * 100)
-                                
                                 elapsed_time = time.time() - st.session_state.search_start_time
-                                
                                 eta_seconds = 0
                                 if processed_api_ips_count > 0:
                                     rate = processed_api_ips_count / elapsed_time
@@ -1434,14 +1376,11 @@ def main():
                                 with status_text_container:
                                     st.caption(f"**Progress:** {processed_api_ips_count}/{total_ip_api_targets} | **Deferred:** {len(st.session_state.deferred_ips)} | **CIDR Cache:** {len(st.session_state.cidr_cache)} | **Remaining Time:** {eta_display}")
                                 
-                                # 戻り値の数が変更されたためアンパック変数を修正
                                 isp_df, country_df, freq_df, country_all_df, isp_full_df, country_full_df, freq_full_df = summarize_in_realtime(st.session_state.raw_results)
                                 with summary_container.container():
                                     st.markdown("---")
-                                    # 画面描画には Top 10 データ (isp_df等) を渡す
                                     draw_summary_content(isp_df, country_df, freq_df, country_all_df, "📊 Real-time analysis")
                                 st.markdown("---")
-
 
                             if not remaining and not st.session_state.deferred_ips:
                                 break
@@ -1462,9 +1401,7 @@ def main():
                 if len(st.session_state.finished_ips) == total_targets and not st.session_state.deferred_ips:
                     st.session_state.is_searching = False
                     st.info("✅ 全ての検索が完了しました。")
-                    
                     summary_container.empty()
-                    
                     st.rerun()
                 
                 elif st.session_state.deferred_ips and not st.session_state.cancel_search:
@@ -1475,7 +1412,6 @@ def main():
                     status_text_container.empty()
                     summary_container.empty()
                     st.warning(f"⚠️ **APIレートリミットに達しました。** 隔離中の **{len(st.session_state.deferred_ips)}** 件のIPアドレスは **{wait_time}** 秒後に再試行されます。")
-                    
                     time.sleep(min(5, wait_time)) 
                     st.rerun()
 
@@ -1492,34 +1428,23 @@ def main():
     if st.session_state.raw_results or st.session_state.deferred_ips:
         res = st.session_state.raw_results
         
-        # 🔔 デバッグ情報の表示 🔔
         if st.session_state.get('debug_summary'):
             with st.expander("🛠️ デバッグ情報 (集計データ確認用)", expanded=False):
                 st.markdown("**API 処理モード設定**")
                 st.write(f"MAX_WORKERS: {max_workers}")
                 st.write(f"DELAY_BETWEEN_REQUESTS: {delay_between_requests}")
                 st.markdown("---")
-                st.markdown("**country_code_counts (Alpha-2とカウント)** - **重複度を反映**")
                 st.json(st.session_state['debug_summary'].get('country_code_counts', {}))
-                
-                st.markdown("**country_all_df (Numeric ISO Codeとカウント - 整数型であるべき)** - **重複度を反映**")
                 st.json(st.session_state['debug_summary'].get('country_all_df', []))
-                
                 st.markdown("---")
-                if 'cidr_cache' in st.session_state:
-                    st.markdown("**CIDR Cache**")
-                    st.json(st.session_state.get('cidr_cache', {}))
-                else:
-                    st.markdown("**CIDR Cache**：初期化されていません")
+                st.json(st.session_state.get('cidr_cache', {}))
 
         
         successful_results = [r for r in res if r['Status'].startswith('Success') or r['Status'].startswith('Aggregated')]
         error_results = [r for r in res if not (r['Status'].startswith('Success') or r['Status'].startswith('Aggregated'))]
         
-        # 遅延中のIPをエラー結果として追加
         for ip, defer_time in st.session_state.deferred_ips.items():
             status = f"Pending (Retry in {max(0, int(defer_time - time.time()))}s)"
-
             error_results.append({
                 'Target_IP': ip, 'ISP': 'N/A', 'Country': 'N/A', 'CountryCode': 'N/A', 'RIR_Link': get_authoritative_rir_link(ip, 'N/A'),
                 'Secondary_Security_Links': create_secondary_links(ip), 
@@ -1534,18 +1459,15 @@ def main():
             target_order = {ip: i for i, ip in enumerate(targets)}
             display_res.sort(key=lambda x: target_order.get(get_copy_target(x['Target_IP']), float('inf')))
 
-        
         display_results(display_res, current_mode_full_text, display_mode)
         
-        # 検索完了時や通常表示時に集計を行う
         if not st.session_state.is_searching or st.session_state.cancel_search:
-            # 返り値が増えたため受け取り変数を修正
             isp_df, country_df, freq_df, country_all_df, isp_full_df, country_full_df, freq_full_df = summarize_in_realtime(st.session_state.raw_results)
             
             st.markdown("---")
             draw_summary_content(isp_df, country_df, freq_df, country_all_df, "✅ 集計結果")
 
-            # --- 全件集計データのダウンロードセクションを追加 ---
+            # --- 全件集計データのダウンロードセクション ---
             st.markdown("### 📊 集計データの完全版ダウンロード")
             st.caption("※ 上記グラフのTop10制限を解除した、すべての集計データとグラフをダウンロードできます。")
             
@@ -1590,7 +1512,7 @@ def main():
         
         st.markdown("### ⬇️ 検索結果リストのダウンロード")
         col_dl1, col_dl2, col_dl3 = st.columns(3)
-        # 1. 画面表示のまま
+        # 1. 画面表示順データ
         csv_display = pd.DataFrame(display_res).drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link'], errors='ignore').astype(str)
         with col_dl1:
             st.download_button("⬇️ 検索結果CSV (画面表示順)", csv_display.to_csv(index=False).encode('utf-8-sig'), "whois_results_display.csv", "text/csv", use_container_width=True)
