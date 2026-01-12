@@ -5,3 +5,4 @@ requests
 ipaddress
 altair>=5.0.0
 numpy
+openpyxl
