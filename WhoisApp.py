@@ -1393,50 +1393,37 @@ def main():
         )
 
     with col_input2:
-        uploaded_file = st.file_uploader("📂 リストをアップロード (txt/csv/xlsx)", type=['txt', 'csv', 'xlsx', 'xls'])
-        st.caption("※ 1行に1つのターゲットを記載、またはCSV/ExcelのIP列を自動検出します")
-
+        # 修正点1: typeを 'txt' のみに制限
+        uploaded_file = st.file_uploader("📂 IPリストをアップロード (.txtのみ)", type=['txt'])
+        st.caption("※ 1行に1つのターゲットを記載")
+        
         raw_targets = []
-        df_orig = None # 初期化
+        df_orig = None 
 
         if manual_input:
             raw_targets.extend(manual_input.splitlines())
         
         if uploaded_file:
-            ip_col = None
+            # 修正点3: CSV/Excelの判定ロジックを全削除し、テキスト読み込みのみにする
             try:
-                if uploaded_file.name.endswith('.csv'):
-                    df_orig = pd.read_csv(uploaded_file)
-                elif uploaded_file.name.endswith(('.xlsx', '.xls')):
-                    df_orig = pd.read_excel(uploaded_file)
-                else:
-                    # TXTファイル
-                    raw_targets.extend(uploaded_file.read().decode("utf-8").splitlines())
-                    st.session_state['original_df'] = None
-                    st.session_state['ip_column_name'] = None
-
-                if df_orig is not None:
-                    st.session_state['original_df'] = df_orig
-                    for col in df_orig.columns:
-                        sample = df_orig[col].dropna().head(10).astype(str)
-                        if any(is_valid_ip(val.strip()) for val in sample):
-                            ip_col = col
-                            break
-                    
-                    if ip_col:
-                        st.session_state['ip_column_name'] = ip_col
-                        raw_targets.extend(df_orig[ip_col].dropna().astype(str).tolist())
-                        
-                        # --- 新機能：アップロードデータのプレビュー ---
-                        st.info(f"📄 ファイル読み込み完了: {len(df_orig)} 行 / IP列: `{ip_col}`")
-                        with st.expander("👀 アップロードデータ・プレビュー", expanded=False):
-                            st.dataframe(df_orig)
-                        # ---------------------------------------------
-                    else:
-                        st.error("ファイル内にIPアドレスの列が見つかりませんでした。")
+                # シンプルにテキストとして読み込む
+                string_data = uploaded_file.read().decode("utf-8")
+                raw_targets.extend(string_data.splitlines())
+                
+                # 元データフレーム機能は無効化（クラウド版では結合機能を使わせない）
+                st.session_state['original_df'] = None
+                st.session_state['ip_column_name'] = None
+                
+                st.info(f"📄 テキスト読み込み完了: {len(raw_targets)} 行")
 
             except Exception as e:
                 st.error(f"ファイル読み込みエラー: {e}")
+            # 修正点2: セキュリティ警告の追加
+    st.warning("""
+    **🛡️ セキュリティ上の注意**
+    * **テキスト入力推奨**: ファイルアップロードよりも、左側のテキストエリアへの**コピー＆ペースト**の方が、メタデータ（作成者情報など）が含まれないため安全です。
+    * **ファイル名に注意**: アップロードする場合は、ファイル名に機密情報（例: `ClientA_Log.txt`）を含めず、`list.txt` などの無機質な名前を使用してください。
+    """)
     
     cleaned_raw_targets_list = []
     target_freq_counts = {}
@@ -1881,8 +1868,6 @@ def main():
                     use_container_width=True,
                     help="生データに加え、ISP別・時間帯別の集計表とグラフ（ピボット）が別シートに含まれます。"
                 )
-            else:
-                st.button("⬇️ Excel (CSVアップロード時のみ)", disabled=True, use_container_width=True)
 
 if __name__ == "__main__":
     main()
