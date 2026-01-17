@@ -22,6 +22,20 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 # ページ設定
 st.set_page_config(layout="wide", page_title="Whois Search Tool", page_icon="🌐")
 
+# ==========================================
+# 🛠️ 自動モード判定ロジック (st.secrets利用)
+# ==========================================
+# ローカル環境では secrets.toml がなくてもエラーにならないよう try-except で処理
+# Cloud側で ENV_MODE = "public" が設定されている場合のみ、機能制限モード(True)になる
+IS_PUBLIC_MODE = False
+try:
+    if "ENV_MODE" in st.secrets and st.secrets["ENV_MODE"] == "public":
+        IS_PUBLIC_MODE = True
+except FileNotFoundError:
+    # ローカルでsecretsファイル自体がない場合は全機能モード(False)とする
+    IS_PUBLIC_MODE = False
+# ==========================================
+
 # --- 設定 ---
 MODE_SETTINGS = {
     "安定性重視 (2.5秒待機/単一スレッド)": {
@@ -1393,37 +1407,88 @@ def main():
         )
 
     with col_input2:
-        # 修正点1: typeを 'txt' のみに制限
-        uploaded_file = st.file_uploader("📂 IPリストをアップロード (.txtのみ)", type=['txt'])
-        st.caption("※ 1行に1つのターゲットを記載")
+        # --- モードによるアップロード制限の切り替え ---
+        if IS_PUBLIC_MODE:
+            # 公開モード (st版の挙動): txtのみ許可、警告あり
+            allowed_types = ['txt']
+            label_text = "📂 IPリストをアップロード (.txtのみ)"
+            help_text = "※ 1行に1つのターゲットを記載"
+        else:
+            # ローカルモード (my版の挙動): csv/excel許可
+            allowed_types = ['txt', 'csv', 'xlsx', 'xls']
+            label_text = "📂 リストをアップロード (txt/csv/xlsx)"
+            help_text = "※ 1行に1つのターゲットを記載、またはCSV/ExcelのIP列を自動検出します"
+
+        uploaded_file = st.file_uploader(label_text, type=allowed_types)
+        st.caption(help_text)
         
         raw_targets = []
-        df_orig = None 
+        df_orig = None # 初期化
 
         if manual_input:
             raw_targets.extend(manual_input.splitlines())
         
         if uploaded_file:
-            # 修正点3: CSV/Excelの判定ロジックを全削除し、テキスト読み込みのみにする
-            try:
-                # シンプルにテキストとして読み込む
-                string_data = uploaded_file.read().decode("utf-8")
-                raw_targets.extend(string_data.splitlines())
-                
-                # 元データフレーム機能は無効化（クラウド版では結合機能を使わせない）
-                st.session_state['original_df'] = None
-                st.session_state['ip_column_name'] = None
-                
-                st.info(f"📄 テキスト読み込み完了: {len(raw_targets)} 行")
+            # --- 公開モードの場合の読み込み処理 (st版ロジック) ---
+            if IS_PUBLIC_MODE:
+                 try:
+                    # シンプルにテキストとして読み込む
+                    string_data = uploaded_file.read().decode("utf-8")
+                    raw_targets.extend(string_data.splitlines())
+                    
+                    # 元データフレーム機能は無効化
+                    st.session_state['original_df'] = None
+                    st.session_state['ip_column_name'] = None
+                    
+                    st.info(f"📄 テキスト読み込み完了: {len(raw_targets)} 行")
 
-            except Exception as e:
-                st.error(f"ファイル読み込みエラー: {e}")
-            # 修正点2: セキュリティ警告の追加
-    st.warning("""
-    **🛡️ セキュリティ上の注意**
-    * **テキスト入力推奨**: ファイルアップロードよりも、左側のテキストエリアへの**コピー＆ペースト**の方が、メタデータ（作成者情報など）が含まれないため安全です。
-    * **ファイル名に注意**: アップロードする場合は、ファイル名に機密情報（例: `ClientA_Log.txt`）を含めず、`list.txt` などの無機質な名前を使用してください。
-    """)
+                 except Exception as e:
+                    st.error(f"ファイル読み込みエラー: {e}")
+            
+            # --- ローカルモードの場合の読み込み処理 (my版ロジック) ---
+            else:
+                ip_col = None
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        df_orig = pd.read_csv(uploaded_file)
+                    elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+                        df_orig = pd.read_excel(uploaded_file)
+                    else:
+                        # TXTファイル
+                        raw_targets.extend(uploaded_file.read().decode("utf-8").splitlines())
+                        st.session_state['original_df'] = None
+                        st.session_state['ip_column_name'] = None
+
+                    if df_orig is not None:
+                        st.session_state['original_df'] = df_orig
+                        for col in df_orig.columns:
+                            sample = df_orig[col].dropna().head(10).astype(str)
+                            if any(is_valid_ip(val.strip()) for val in sample):
+                                ip_col = col
+                                break
+                        
+                        if ip_col:
+                            st.session_state['ip_column_name'] = ip_col
+                            raw_targets.extend(df_orig[ip_col].dropna().astype(str).tolist())
+                            
+                            # --- 新機能：アップロードデータのプレビュー ---
+                            st.info(f"📄 ファイル読み込み完了: {len(df_orig)} 行 / IP列: `{ip_col}`")
+                            with st.expander("👀 アップロードデータ・プレビュー", expanded=False):
+                                st.dataframe(df_orig)
+                            # ---------------------------------------------
+                        else:
+                            st.error("ファイル内にIPアドレスの列が見つかりませんでした。")
+
+                except Exception as e:
+                    st.error(f"ファイル読み込みエラー: {e}")
+
+    # --- 公開モード時のみセキュリティ警告を表示 ---
+    if IS_PUBLIC_MODE:
+        st.warning("""
+        **🛡️ セキュリティ上の注意**
+        * **テキスト入力推奨**: ファイルアップロードよりも、左側のテキストエリアへの**コピー＆ペースト**の方が、メタデータ（作成者情報など）が含まれないため安全です。
+        * **ファイル名に注意**: アップロードする場合は、ファイル名に機密情報（例: `ClientA_Log.txt`）を含めず、`list.txt` などの無機質な名前を使用してください。
+        """)
     
     cleaned_raw_targets_list = []
     target_freq_counts = {}
@@ -1843,7 +1908,7 @@ def main():
 
         with col_dl3:
             # 3. 元データ結合ダウンロード（共通処理で作成済みのdf_with_resを使用）
-            if not df_with_res.empty:
+            if not IS_PUBLIC_MODE and not df_with_res.empty:
                 st.markdown("**🔍 分析付きExcel (Pivot/Graph)**")
                 
                 # 時間帯分析用の列選択ボックス
@@ -1868,6 +1933,8 @@ def main():
                     use_container_width=True,
                     help="生データに加え、ISP別・時間帯別の集計表とグラフ（ピボット）が別シートに含まれます。"
                 )
+            else:
+                st.button("⬇️ Excel (CSVアップロード時のみ)", disabled=True, use_container_width=True)
 
 if __name__ == "__main__":
     main()
