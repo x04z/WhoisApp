@@ -20,7 +20,7 @@ from openpyxl.chart import BarChart, Reference, Series
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ページ設定
-st.set_page_config(layout="wide", page_title="Whois Search Tool", page_icon="🌐")
+st.set_page_config(layout="wide", page_title="検索大臣", page_icon="🌐")
 
 # ==========================================
 # 🛠️ 自動モード判定ロジック (st.secrets利用)
@@ -1395,7 +1395,7 @@ def main():
             
 
     # --- メインコンテンツ：Whois検索タブ ---
-    st.title("🌐 WhoisSearchTool")
+    st.title("🌐 検索大臣")
 
     col_input1, col_input2 = st.columns([1, 1])
 
