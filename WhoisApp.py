@@ -1395,7 +1395,7 @@ def main():
             
 
     # --- メインコンテンツ：Whois検索タブ ---
-    st.title("🌐 検索大臣")
+    st.title("🌐 検索大臣 - Whois & IP Intelligence")
 
     col_input1, col_input2 = st.columns([1, 1])
 
