@@ -1500,7 +1500,7 @@ def main():
             mode_compare_df = pd.DataFrame({
                 "機能 / 特徴": ["Excel/CSV アップロード", "機密情報の取扱", "実行環境", "主な用途"],
                 "☁️ Public Cloud版": ["❌ 不可 (.txtのみ)", "△ 推奨しない (共有サーバー)", "Streamlit Community Cloud", "手軽な単発検索・デモ利用"],
-                "🏠 Local Private版": ["✅ 可能 (簡易的なグラフ分析が可能)", "◎ 安全 (自PC内で完結)", "ローカルPC / 社内サーバー", "実務・ログ解析・大量処理"]
+                "🏠 Local Private版": ["✅ 可能 ", "◎ 安全 (自PC内で完結)", "ローカルPC / 社内サーバー", "実務・ログ解析・大量処理"]
             })
             st.table(mode_compare_df.set_index("機能 / 特徴"))
 
