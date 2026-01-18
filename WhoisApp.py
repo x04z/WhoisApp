@@ -2010,6 +2010,8 @@ def main():
 
             # --- 元データ結合処理（画面表示 & ダウンロード共通） ---
             df_with_res = pd.DataFrame() # 初期化
+            
+            # 1. CSV/Excelアップロードがある場合（元データと結合）
             if st.session_state.get('original_df') is not None and st.session_state.get('ip_column_name'):
                 df_with_res = st.session_state['original_df'].copy()
                 ip_col = st.session_state['ip_column_name']
@@ -2019,7 +2021,7 @@ def main():
                     res_dict = {r['Target_IP']: r for r in results}
 
                     # 各行のIPに基づいて結果をマッピング
-                    isps, isps_jp, countries, countries_jp, proxy_type, statuses = [], [], [], [], [], []
+                    isps, isps_jp, countries, countries_jp, proxy_type, statuses, rdaps = [], [], [], [], [], [], []
                     for ip_val in df_with_res[ip_col]:
                         ip_val_str = str(ip_val).strip()
                         info = res_dict.get(ip_val_str, {})
@@ -2029,15 +2031,36 @@ def main():
                         countries_jp.append(info.get('Country_JP', 'N/A'))
                         proxy_type.append(info.get('Proxy_Type', ''))
                         statuses.append(info.get('Status', 'N/A'))
+                        rdaps.append(info.get('RDAP', ''))
                     
-                    # 結合
+                    # 結合 (列の挿入)
                     insert_idx = df_with_res.columns.get_loc(ip_col) + 1
                     df_with_res.insert(insert_idx, 'Status', statuses)
                     df_with_res.insert(insert_idx, 'Proxy Type', proxy_type)
+                    df_with_res.insert(insert_idx, 'RDAP', rdaps) # RDAP列
                     df_with_res.insert(insert_idx, 'Country_JP', countries_jp)
                     df_with_res.insert(insert_idx, 'Country', countries)
                     df_with_res.insert(insert_idx, 'ISP_JP', isps_jp)
                     df_with_res.insert(insert_idx, 'ISP', isps)
+
+            # 2. アップロードがない場合（検索結果のみから分析データを作成）🆕
+            elif st.session_state.raw_results:
+                # 検索結果リストをベースにDataFrame化
+                temp_data = []
+                for res in st.session_state.raw_results:
+                    # 必要なカラムのみ抽出・リネーム
+                    row = {
+                        'Target_IP': res.get('Target_IP'),
+                        'ISP': res.get('ISP'),
+                        'ISP_JP': res.get('ISP_JP'),
+                        'Country': res.get('Country'),
+                        'Country_JP': res.get('Country_JP'),
+                        'RDAP': res.get('RDAP', ''),
+                        'Proxy Type': res.get('Proxy_Type', ''), # キー名を統一
+                        'Status': res.get('Status')
+                    }
+                    temp_data.append(row)
+                df_with_res = pd.DataFrame(temp_data)
 
             # --- 新機能：元データ x 検索結果 クロス分析表示 ---
             if not df_with_res.empty:
@@ -2047,8 +2070,7 @@ def main():
 
             # --- 全件集計データのダウンロードセクション ---
             st.markdown("### 📊 集計データの完全版ダウンロード")
-            st.caption("※ 上記グラフのTop10制限を解除した、すべての集計データとグラフをダウンロードできます。")
-            
+            # (中略: csvダウンロードボタン部分はそのまま)
             col_full_dl1, col_full_dl2, col_full_dl3, col_full_dl4 = st.columns(4)
             
             with col_full_dl1:
@@ -2115,20 +2137,24 @@ def main():
             st.download_button("⬇️ Excel (全入力データ順)", excel_full, "whois_results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
         with col_dl3:
-            # 3. 元データ結合ダウンロード（共通処理で作成済みのdf_with_resを使用）
-            if not IS_PUBLIC_MODE and not df_with_res.empty:
+            # 3. 分析付きExcel (全モードで有効化) 🆕
+            if not df_with_res.empty:
                 st.markdown("**🔍 分析付きExcel (Pivot/Graph)**")
                 
-                # 時間帯分析用の列選択ボックス
+                # 時間帯分析用の列選択ボックス (存在する場合のみ)
                 time_cols = [c for c in df_with_res.columns if 'date' in c.lower() or 'time' in c.lower() or 'jst' in c.lower()]
                 default_idx = df_with_res.columns.get_loc(time_cols[0]) if time_cols else 0
                 
-                selected_time_col = st.selectbox(
-                    "時間帯分析(Hour列)に使う日時列を選択:", 
-                    df_with_res.columns, 
-                    index=default_idx,
-                    key="time_col_selector"
-                )
+                selected_time_col = None
+                if time_cols:
+                    selected_time_col = st.selectbox(
+                        "時間帯分析(Hour列)に使う日時列を選択:", 
+                        df_with_res.columns, 
+                        index=default_idx,
+                        key="time_col_selector"
+                    )
+                else:
+                    st.caption("※ 日時列がないため時間帯分析はスキップされます")
 
                 # Advanced Excel生成 (v5.0)
                 excel_advanced = create_advanced_excel(df_with_res, selected_time_col)
@@ -2142,7 +2168,7 @@ def main():
                     help="生データに加え、ISP別・時間帯別の集計表とグラフ（ピボット）が別シートに含まれます。"
                 )
             else:
-                st.button("⬇️ Excel (CSVアップロード時のみ)", disabled=True, use_container_width=True)
+                st.button("⬇️ Excel (データなし)", disabled=True, use_container_width=True)
 
 if __name__ == "__main__":
     main()
