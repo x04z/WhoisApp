@@ -18,9 +18,9 @@ import re
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.chart import BarChart, Reference, Series
-from openpyxl.chart.label import DataLabelList  # 追加
-from openpyxl.chart.axis import ChartLines      # 追加
-from openpyxl.chart.layout import Layout, ManualLayout # 追加
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.axis import ChartLines
+from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ページ設定
@@ -421,7 +421,7 @@ def get_ip_details_pro(ip, token, tor_nodes):
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
-        'RDAP': '' # 🆕 追加: RDAP列用
+        'RDAP': '' # RDAP列用
     }
     try:
         url = IPINFO_API_URL.format(ip=ip)
@@ -490,7 +490,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
-        'RDAP': '' # 🆕 追加: RDAP列用
+        'RDAP': '' # RDAP列用
     }
     new_cache_entry = None
 
@@ -587,7 +587,7 @@ def get_domain_details(domain):
         'RIR_Link': icann_link,
         'Secondary_Security_Links': create_secondary_links(domain),
         'Status': 'Success (Domain)',
-        'RDAP': '' # 🆕 追加
+        'RDAP': ''
     }
 
 def get_simple_mode_details(target):
@@ -604,7 +604,7 @@ def get_simple_mode_details(target):
         'RIR_Link': rir_link_content,
         'Secondary_Security_Links': create_secondary_links(target),
         'Status': 'Success (簡易モード)',
-        'RDAP': '' # 🆕 追加
+        'RDAP': ''
     }
 # --- ヘルパー関数群 ---
 
@@ -891,7 +891,7 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
         else:
             st.info("データがありません")
 
-# 💡 HTMLレポート生成関数（改良版 v7.2）
+# 💡 HTMLレポート生成関数
 def generate_full_report_html(isp_full_df, country_full_df, freq_full_df):
     
     def create_chunked_chart_specs(df, x_col, y_col, title_base, chunk_size=50):
@@ -1060,7 +1060,7 @@ def convert_df_to_excel(df):
         df.to_excel(writer, index=False, sheet_name='Sheet1')
     return output.getvalue()
 
-# --- Advanced Excel Generator (Pivot & Chart) v6.0 ---
+# --- Advanced Excel Generator (Pivot & Chart) ---
 def create_advanced_excel(df, time_col_name=None):
     """
     1. Raw Data
@@ -1100,7 +1100,7 @@ def create_advanced_excel(df, time_col_name=None):
         df.to_excel(writer, index=False, sheet_name='Raw Data')
         wb = writer.book
         
-        # --- 共通チャート作成関数 (解説文付き・02zスタイル適用) ---
+        # --- 共通チャート作成関数 (解説文付き) ---
         def add_chart_sheet(pivot_df, sheet_name, chart_title, x_title, y_title, description, chart_type="col", stacked=False):
             if pivot_df.empty: return
 
@@ -1253,7 +1253,7 @@ def create_advanced_excel(df, time_col_name=None):
 def display_results(results, current_mode_full_text, display_mode):
     st.markdown("### 📝 検索結果")
 
-    # --- ⬇️ 追加箇所: ツール解説ガイド (Expander) ---
+    # --- ⬇️ ツール解説ガイド (Expander) ---
     with st.expander("ℹ️ リンク集の活用ガイド (表示条件と特徴)"):
         st.markdown("""
         ターゲットの種類（IPv4 / IPv6 / ドメイン）に応じて、最適なツールのみが自動で表示されます。
@@ -1787,7 +1787,7 @@ def main():
             key="api_mode_radio",
             horizontal=False
         )
-        # 🆕 RDAPオプション (07に合わせてスイッチを追加)
+        # RDAPオプション
         use_rdap_option = st.checkbox("🔍 高精度モード (RDAP公式台帳の併用 - 低速)", value=False, help="無料APIのISP情報に加え、RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
     
     selected_settings = MODE_SETTINGS[api_mode_selection]
