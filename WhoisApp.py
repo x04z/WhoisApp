@@ -18,6 +18,9 @@ import re
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.chart import BarChart, Reference, Series
+from openpyxl.chart.label import DataLabelList  # 追加
+from openpyxl.chart.axis import ChartLines      # 追加
+from openpyxl.chart.layout import Layout, ManualLayout # 追加
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ページ設定
@@ -1057,7 +1060,7 @@ def convert_df_to_excel(df):
         df.to_excel(writer, index=False, sheet_name='Sheet1')
     return output.getvalue()
 
-# --- Advanced Excel Generator (Pivot & Chart) v5.0 ---
+# --- Advanced Excel Generator (Pivot & Chart) v6.0 ---
 def create_advanced_excel(df, time_col_name=None):
     """
     1. Raw Data
@@ -1069,7 +1072,6 @@ def create_advanced_excel(df, time_col_name=None):
     output = io.BytesIO()
     
     # 1. データ前処理
-    # Proxy Typeの空欄を「Standard Connection」で埋める (用語変更)
     if 'Proxy Type' in df.columns:
         df['Proxy Type'] = df['Proxy Type'].fillna('Standard Connection')
         df['Proxy Type'] = df['Proxy Type'].replace('', 'Standard Connection')
@@ -1098,7 +1100,7 @@ def create_advanced_excel(df, time_col_name=None):
         df.to_excel(writer, index=False, sheet_name='Raw Data')
         wb = writer.book
         
-        # --- 共通チャート作成関数 (解説文付き) ---
+        # --- 共通チャート作成関数 (解説文付き・02zスタイル適用) ---
         def add_chart_sheet(pivot_df, sheet_name, chart_title, x_title, y_title, description, chart_type="col", stacked=False):
             if pivot_df.empty: return
 
@@ -1122,23 +1124,55 @@ def create_advanced_excel(df, time_col_name=None):
             ws.page_setup.fitToWidth = 1
             ws.print_options.horizontalCentered = True
             
-            # グラフ作成
+            # --- グラフ作成  ---
             chart = BarChart()
             chart.type = chart_type
-            chart.style = 10
+            chart.style = 10 # カラフルなスタイル
             chart.title = chart_title
-            chart.y_axis.title = y_title
-            chart.x_axis.title = x_title
+            chart.height = 15 # 高さを確保
+            chart.width = 25  # 幅を確保
+
+            # 凡例を下に配置
+            chart.legend.position = 'b'
+
             if stacked:
                 chart.grouping = "stacked"
                 chart.overlap = 100
-            
-            chart.height = 15 # 印刷用に見やすく大きく
-            chart.width = 25
+            else:
+                # 積み上げでない場合は、単一系列でも色を変えて見やすくする
+                chart.varyColors = True
 
-            # データ範囲設定 (startrow=4 なのでデータは5行目から)
-            # ヘッダーは 5行目
-            # データ開始は 6行目
+            # データラベルの設定 (値を表示 + 位置を外側上 'outEnd' に)
+            # ※ 積み上げの場合は内側、それ以外は外側が見やすい
+            chart.dataLabels = DataLabelList()
+            chart.dataLabels.showVal = True
+            chart.dataLabels.showCatName = False
+            chart.dataLabels.showSerName = False
+            chart.dataLabels.showPercent = False
+            if not stacked:
+                chart.dataLabels.position = 'outEnd'
+            
+            # 軸と目盛り線の設定
+            chart.x_axis.title = x_title
+            chart.y_axis.title = y_title
+            chart.y_axis.majorGridlines = ChartLines() # 目盛り線を表示
+            
+            # 縦軸の目盛ラベル（数値）を確実に表示・整形する設定
+            chart.y_axis.delete = False        
+            chart.y_axis.numFmt = '0'          # 整数表示
+            chart.y_axis.majorTickMark = 'out' # 目盛りを外側に出す
+            chart.y_axis.tickLblPos = 'nextTo' # 数値を軸の隣に配置
+
+            # レイアウトを手動設定して余白を作る (重なり防止 + スカスカ解消)
+            # x=0.03 (左寄せ), y=0.05 (上余白), h=0.75 (高さ確保), w=0.85 (右余白確保)
+            chart.layout = Layout(
+                manualLayout=ManualLayout(
+                    x=0.03, y=0.05, 
+                    h=0.75, w=0.85, 
+                )
+            )
+
+            # データ範囲設定
             data_start_row = 5 
             data_end_row = data_start_row + len(pivot_df)
             
