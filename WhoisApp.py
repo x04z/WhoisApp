@@ -208,7 +208,7 @@ ISP_REMAP_RULES = [
     ('k-opti', 'オプテージ'), ('ctc', '中部テレコミュニケーション'),
     ('vectant', 'アルテリア・ネットワークス'), ('arteria', 'アルテリア・ネットワークス'),
     ('softbank', 'ソフトバンク'), ('bbtec', 'ソフトバンク'),
-    ('ocn', 'OCN'), ('ntt', 'NTTグループ'), 
+    ('ocn', 'OCN'),
     ('so-net', 'ソニーネットワークコミュニケーションズ'), ('nuro', 'ソニー (NURO)'),
     ('biglobe', 'ビッグローブ'), ('iij', 'IIJ'),
     ('transix', 'インターネットマルチフィード (transix)'),
@@ -2206,3 +2206,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
