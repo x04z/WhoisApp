@@ -13,6 +13,7 @@ import altair as alt
 import json 
 import io 
 import re 
+import shodan # pip install shodan
 
 # --- Excelグラフ生成用ライブラリ ---
 from openpyxl import Workbook
@@ -24,7 +25,16 @@ from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ページ設定
-st.set_page_config(layout="wide", page_title="検索大臣", page_icon="🌐")
+st.set_page_config(layout="wide", page_title="検索大臣", page_icon="🔎")
+
+# ==========================================
+# ⚙️ [Local User Config] API Key Hardcoding
+# ==========================================
+# ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
+# 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
+HARDCODED_IPINFO_KEY = "" 
+HARDCODED_SHODAN_KEY = ""
+# ==========================================
 
 # ==========================================
 # 🛠️ 自動モード判定ロジック (st.secrets利用)
@@ -201,7 +211,7 @@ ISP_JP_NAME = {
     'KIBI Cable Television Co., Ltd.': '吉備ケーブルテレビ',
 }
 
-# 🆕 強力な名寄せルール (部分一致検索)
+# 強力な名寄せルール (部分一致検索)
 ISP_REMAP_RULES = [
     ('jcn', 'J:COM'), ('jupiter', 'J:COM'), ('cablenet', 'J:COM'),
     ('dion', 'KDDI'), ('au one', 'KDDI'), ('kddi', 'KDDI'),
@@ -399,7 +409,7 @@ def create_secondary_links(target):
     
     return link_html.rstrip(' | ')
 
-# 🆕 RDAPデータ取得関数 (公式台帳への照会)
+# RDAPデータ取得関数 (公式台帳への照会)
 def fetch_rdap_data(ip):
     try:
         url = RDAP_BOOTSTRAP_URL.format(ip=ip)
@@ -416,12 +426,69 @@ def fetch_rdap_data(ip):
         pass
     return None
 
-# 🆕 Proモード用 API取得関数 (ipinfo.io)
+# Shodan IoT/Risk Check Logic
+def check_shodan_risk(ip, api_key):
+    """
+    Shodan APIを使用してIoTデバイス(FireTV等)やプロキシ(Botnet)の露出をチェックし、
+    プロのインテリジェンス注釈を返す。
+    """
+
+# 1. APIキー未入力
+    if not api_key:
+        return "[Not Checked]" # 明示的に「未検査」とする
+
+    # 監視対象のリスクポート定義
+    RISK_PORTS = {
+        5555: "IoT:Android/ADB",
+        5554: "IoT:Android/Emu",
+        1080: "Proxy:SOCKS",
+        3128: "Proxy:Squid",
+        7547: "Vuln:TR-069",
+        1900: "Vuln:UPnP",
+        23:   "Vuln:Telnet", 
+    }
+    
+    try:
+        api = shodan.Shodan(api_key)
+        # タイムアウトと軽量化を意識
+        host = api.host(ip, minify=True)
+        
+        found_risks = []
+        open_ports = host.get('ports', [])
+        
+        # 開いているポートの中に、指定したリスクポートがあるか確認
+        for p in open_ports:
+            if p in RISK_PORTS:
+                found_risks.append(RISK_PORTS[p])
+        
+        if found_risks:
+            # 重複排除して結合
+            unique_risks = sorted(list(set(found_risks)))
+            return " / ".join(unique_risks)
+        else:
+            # 2. データはあるが、指定したリスクポートとは一致しなかった
+            return "[No Match]" 
+        
+    except shodan.APIError as e:
+        # 3. Shodanにデータがない場合 (No information available)
+        if "No information available" in str(e):
+            return "[No Data]" 
+        
+        # キー無効
+        if "Invalid API key" in str(e):
+            return "Error:Invalid Key"
+            
+        return f"Error:{str(e)}"
+        
+    except Exception:
+        return "Error:Connection"
+
+# Proモード用 API取得関数 (ipinfo.io)
 def get_ip_details_pro(ip, token, tor_nodes):
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
-        'RDAP': '' # RDAP列用
+        'RDAP': '', 'IoT_Risk': '' # IoT_Risk列
     }
     try:
         url = IPINFO_API_URL.format(ip=ip)
@@ -473,7 +540,7 @@ def get_ip_details_pro(ip, token, tor_nodes):
     return result
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, api_key=None):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, api_key=None, shodan_key=None):
     
     # 1. Proモード (APIキーあり)
     if api_key:
@@ -483,14 +550,18 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             rdap_res = fetch_rdap_data(ip)
             if rdap_res:
                 result['ISP'] += f" [RDAP: {rdap_res}]"
-                result['RDAP'] = rdap_res # 🆕 RDAP列に値をセット
+                result['RDAP'] = rdap_res
+        
+        # 常に実行（キー有無は関数内で判断）
+        result['IoT_Risk'] = check_shodan_risk(ip, shodan_key)
+            
         return result, None
 
     # 2. 通常モード (ip-api.com)
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
-        'RDAP': '' # RDAP列用
+        'RDAP': '', 'IoT_Risk': '' # IoT_Risk列
     }
     new_cache_entry = None
 
@@ -509,7 +580,11 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             result['ISP_JP'] = jp_isp
             result['Proxy_Type'] = f"{proxy_type}" if is_anonymous else ""
             result['Country_JP'] = jp_country
-            # キャッシュヒット時はRDAP再取得しない（遅くなるため）か、必要ならここで取得
+            
+            # キャッシュヒット時でもShodanチェックは個別に行う価値があるが、
+            # 頻度を抑えるため、ここではキャッシュがある場合はShodanスキップ（または必要なら実装）
+            # 今回は「キャッシュヒット時は高速化優先」としスキップ。
+            
             return result, None 
 
     try:
@@ -540,12 +615,15 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             result['CountryCode'] = country_code
             result['RIR_Link'] = get_authoritative_rir_link(ip, country_code)
             
-            # 🆕 RDAP取得ロジック
+            # RDAP取得ロジック
             if use_rdap:
                 rdap_res = fetch_rdap_data(ip)
                 if rdap_res:
                     result['ISP'] += f" [RDAP: {rdap_res}]"
-                    result['RDAP'] = rdap_res # 🆕 RDAP列に値をセット
+                    result['RDAP'] = rdap_res
+            
+            # 常に実行（キー有無は関数内で判断）
+            result['IoT_Risk'] = check_shodan_risk(ip, shodan_key)
 
             result['Status'] = 'Success (API)'
             
@@ -587,7 +665,7 @@ def get_domain_details(domain):
         'RIR_Link': icann_link,
         'Secondary_Security_Links': create_secondary_links(domain),
         'Status': 'Success (Domain)',
-        'RDAP': ''
+        'RDAP': '', 'IoT_Risk': ''
     }
 
 def get_simple_mode_details(target):
@@ -604,7 +682,7 @@ def get_simple_mode_details(target):
         'RIR_Link': rir_link_content,
         'Secondary_Security_Links': create_secondary_links(target),
         'Status': 'Success (簡易モード)',
-        'RDAP': ''
+        'RDAP': '', 'IoT_Risk': ''
     }
 # --- ヘルパー関数群 ---
 
@@ -671,7 +749,8 @@ def group_results_by_isp(results):
             'ISP_JP': data['ISP_JP'], 
             'RIR_Link': data['RIR_Link'], 
             'Secondary_Security_Links': data['Secondary_Security_Links'],
-            'Status': status_display
+            'Status': status_display,
+            'IoT_Risk': 'Aggr Mode (Skip)' # 集約時はShodan個別判定は省略
         })
     
     final_grouped_results.extend(non_aggregated_results)
@@ -1283,16 +1362,27 @@ def display_results(results, current_mode_full_text, display_mode):
         ---
         
         ### 📌 判定種別の定義と技術的背景
-        
-        - **⚠️ [Tor Node]**
+        - **🧅 [Tor Node]**
             - **定義**: Tor（The Onion Router）ネットワークにおける「Exit Node（出口ノード）」を指します。
             - **背景**: 起動時にTor Project公式サイトより最新のノードリストを取得し、照合を行っています。高い匿名性を維持した通信であるため、セキュリティリスクの検討が必要です。
+
+        - **💀 [IoT Risk]** (Shodan API連携時のみ)
+            - **定義**: 外部からアクセス可能な危険なポート（23, 5555, 7547, 1080等）が開放されています。
+            - **背景**: Shodanのポートスキャン履歴と照合し、ファイアウォールを通過して露出している以下の「踏み台リスク」を警告します。
+                - **Telnet (23)**: 暗号化されていない危険な旧式プロトコル
+                - **ADB (5555)**: 認証なしで操作可能なAndroid/FireTV端末
+                - **TR-069 (7547)**: 乗っ取りリスクのあるルーター管理機能
+                - **Proxy (1080/3128)**: 攻撃中継点として悪用されるプロキシ
             
-        - **⚠️ [VPN/Proxy]**
+        - **🍏 [iCloud Private Relay]**
+            - **定義**: Appleデバイス（iPhone/Mac）の標準プライバシー保護機能による通信です。
+            - **背景**: Appleの提携パートナー（Cloudflare, Akamai等）が提供する出口IPを使用します。ISP名称に含まれる特定のタグ（例: "iCloud Private Relay"）に基づき判別します。基本的には一般ユーザーですが、真のIPは隠蔽されています。
+            
+        - **☁️ [VPN/Proxy]**
             - **定義**: 商用VPNサービス、公開プロキシ、またはプライバシー保護を目的とした中継団体に属するIPです。
             - **背景**: ISP名称に含まれる特定のキーワード（VPN, Proxy等）および既知の匿名化サービス運営組織名に基づき判別します。
             
-        - **⚠️ [Hosting/Infra]**
+        - **☁️ [Hosting/Infra]**
             - **定義**: クラウドサービス（AWS, Azure, GCP等）や、データセンター、ホスティング事業者のインフラストラクチャです。
             - **背景**: 一般的なコンシューマ回線とは異なり、サーバー間通信やBot、クローラー、あるいは攻撃用インフラとして利用されるケースが多いノードです。
             
@@ -1301,9 +1391,10 @@ def display_results(results, current_mode_full_text, display_mode):
         ※ 本判定はISP名称等に基づく推論であるため、実際の利用状況と異なる場合があります。
         """)
     
-    col_widths = [0.5, 1.5, 1.2, 2.0, 1.5, 1.5, 1.0, 1.2, 0.5] 
+    # カラム定義修正 (IoT Risk追加)
+    col_widths = [0.5, 1.5, 1.2, 1.8, 1.5, 1.3, 1.0, 1.2, 0.8, 0.5] 
     h_cols = st.columns(col_widths)
-    headers = ["No.", "Target IP", "国名","ISP(日本語)", "RIR Link", "Security Links", "Proxy Type",  "Status", "✅"]
+    headers = ["No.", "Target IP", "国名","ISP(日本語)", "RIR Link", "Security Links", "Proxy Type", "IoT Risk", "Status", "✅"]
     for col, name in zip(h_cols, headers):
         col.markdown(f"**{name}**")
     st.markdown("<hr style='margin: 0px 0px 10px 0px;'>", unsafe_allow_html=True)
@@ -1334,16 +1425,29 @@ def display_results(results, current_mode_full_text, display_mode):
                     st.code(clean_ip, language=None)
                 
                 row_cols[5].write(res.get('Secondary_Security_Links', 'N/A'))
+                
                 hosting_val = res.get('Proxy_Type', '')
                 row_cols[6].write(hosting_val)          
-                
+
+
+                iot_risk = res.get('IoT_Risk', '')
+
+                if not iot_risk:
+                    row_cols[7].write("-")
+                elif "[Not Checked]" in iot_risk:
+                    row_cols[7].caption(iot_risk) # グレー（未実施）
+                elif "[No Data]" in iot_risk or "[No Match]" in iot_risk:
+                    row_cols[7].success(iot_risk) # 緑（確認済み・該当なし）
+                else:
+                    row_cols[7].error(iot_risk)   # 赤（リスク検知！）
+
                 status_val = res.get('Status', 'N/A')
                 if "Success" in status_val:
-                    row_cols[7].markdown(f"<span style='color:green;'>{status_val}</span>", unsafe_allow_html=True)
+                    row_cols[8].markdown(f"<span style='color:green;'>{status_val}</span>", unsafe_allow_html=True)
                 else:
-                    row_cols[7].write(status_val)
+                    row_cols[8].write(status_val)
                     
-                row_cols[8].checkbox("選択", key=f"chk_{get_copy_target(target_ip)}_{idx}", label_visibility="collapsed")
+                row_cols[9].checkbox("選択", key=f"chk_{get_copy_target(target_ip)}_{idx}", label_visibility="collapsed")
 
 # 📊 元データ結合分析機能
 def render_merged_analysis(df_merged):
@@ -1352,9 +1456,9 @@ def render_merged_analysis(df_merged):
     
     # グラフ設定用カラム
     # 元データのカラム（Statusなど後付けのカラムを除く）
-    original_cols = [c for c in df_merged.columns if c not in ['ISP', 'ISP_JP', 'Country', 'Country_JP', 'Proxy Type', 'Status']]
+    original_cols = [c for c in df_merged.columns if c not in ['ISP', 'ISP_JP', 'Country', 'Country_JP', 'Proxy Type', 'Status', 'IoT_Risk']]
     # Whois結果のカラム
-    whois_cols = ['Country_JP', 'ISP_JP', 'Proxy Type', 'Status']
+    whois_cols = ['Country_JP', 'ISP_JP', 'Proxy Type', 'IoT_Risk', 'Status']
     
     col_x, col_grp, col_chart_type = st.columns(3)
     
@@ -1443,9 +1547,22 @@ def main():
             }
         )
         st.markdown("---")
-        # 🆕 Proモード設定 (APIキー入力)
+        
+        # Proモード設定 (APIキー入力)
         st.markdown("#### 🔑 Pro Mode (Optional)")
-        pro_api_key = st.text_input("ipinfo.io API Key", type="password", help="入力するとipinfo.ioの高精度データベースを使用します。空欄の場合はip-api.com(無料)を使用します。").strip()
+        if HARDCODED_IPINFO_KEY:
+            pro_api_key = HARDCODED_IPINFO_KEY
+            st.success(f"✅ API Key Loaded (Code): {pro_api_key[:4]}***")
+        else:
+            pro_api_key = st.text_input("ipinfo.io API Key", type="password", help="入力するとipinfo.ioの高精度データベースを使用します。空欄の場合はip-api.com(無料)を使用します。").strip()
+        
+        # Shodan連携設定
+        st.markdown("#### 🔎 IoT Risk Check (Shodan)")
+        if HARDCODED_SHODAN_KEY:
+            shodan_api_key = HARDCODED_SHODAN_KEY
+            st.success(f"✅ API Key Loaded (Code): {shodan_api_key[:4]}***")
+        else:
+            shodan_api_key = st.text_input("Shodan API Key", type="password", help="Shodan APIキーを入力すると、FireStick等のIoT脆弱性やProxy等による踏み台リスクを検知します。").strip()
         
         st.markdown("---")
         if st.button("🔄 IPキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
@@ -1456,7 +1573,7 @@ def main():
     if selected_menu == "仕様・解説":
         st.title("📖 マニュアル & ガイド")
         
-        # 🆕 タブで情報を整理して見やすくする
+        # タブで情報を整理して見やすくする
         tab1, tab2, tab3 = st.tabs(["🔰 使い方・モード選択", "⚙️ 仕様・技術詳細", "❓ FAQ"])
 
         with tab1:
@@ -1515,11 +1632,12 @@ def main():
             - **🔍 高精度モード (RDAP)**
                 - `ip-api.com` (無料版) の情報に加え、各地域の**公式レジストリ(RDAP)** にも問い合わせを行います。
                 - **メリット**: 「運用者(ISP)」だけでなく「法的な保有組織(Org)」まで特定できる確率が上がります。
-                - **デメリット**: 通信回数が増えるため、検索スピードが大幅に低下します。徹底的に裏取りをしたい場合のみONにしてください。
             
-            - **🔑 Pro Mode (API Key)**
-                - サイドバーに `ipinfo.io` のAPIキーを入力すると自動で有効になります。
+            - **🔑 Pro Mode (ipinfo Key)**
                 - **メリット**: VPN/Proxy/Hostingの判定精度が劇的に向上し、企業名の特定精度も高まります。
+
+            - **🔎 IoT Risk Check (Shodan Key)**
+                - **メリット**: ポート5555(ADB/FireStick)や1080(Proxy)等の露出を検知し、踏み台リスクを警告します。
             """)
 
             st.markdown("---")
@@ -1548,7 +1666,7 @@ def main():
             
             **2. 必要なライブラリのインストール**
             ```bash
-            pip install streamlit pandas requests streamlit-option-menu altair openpyxl
+            pip install streamlit pandas requests streamlit-option-menu altair openpyxl shodan
             ```
             
             **3. アプリの起動**
@@ -1556,7 +1674,6 @@ def main():
             ```bash
             streamlit run WhoisAppxxxx.py
             ```
-            これでブラウザが立ち上がり、**「🏠 Local Private Edition」** としてExcelアップロード機能などが解放された状態で起動します。
             """)
  
         with tab2:
@@ -1566,9 +1683,10 @@ def main():
                 - 無料版: `ip-api.com` (毎分45リクエスト制限)
                 - Pro版: `ipinfo.io` (APIキーに基づく制限)
             - **Whois (RDAP)**: APNIC等の各地域レジストリ公式サーバー
-            - **Tor出口ノード**: Tor Project公式サイトより起動時に最新リストを取得
+            - **IoT Risk Intelligence**: Shodan API (ポートスキャン履歴)
+            - **Tor出口ノード**: Tor Project公式サイト
 
-            #### 2. ハイブリッド検索の仕組み (API vs RDAP)
+            #### 2. ハイブリッド検索の仕組み (API・RDAP)
             - **API (ip-api/ipinfo)**: 
                 - **役割**: 「今、誰がそのIPを運用しているか？」(Service Provider) を答えます。
                 - **特徴**: 高速で、CloudflareやAmazonなどのサービス名が表示されやすいです。
@@ -1578,15 +1696,31 @@ def main():
             - **メリット**: この2つを見比べることで、「運用の委託関係」や「インフラの裏側」が見えてきます。
 
             #### 3. 技術的仕様
-            - **並列処理**: マルチスレッドによる高速検索（APIレートリミット自動調整機能付き）
-            - **CIDRキャッシュ**: 同一ネットワーク帯域（/24など）への重複リクエストを回避し、高速化
+            - **並列処理**: マルチスレッドによる高速検索
+            - **CIDRキャッシュ**: 同一ネットワーク帯域への重複リクエスト回避
             """)
-            
             st.markdown("#### 4. 判定ステータスの意味")
-            st.warning("⚠️ **Hosting/VPN/Proxy**")
-            st.markdown("データセンター、VPNサービス、プロキシサーバー経由の通信です。一般家庭からのアクセスではなく、ボットや匿名化ツールを使用している可能性があります。")
-            st.error("⚠️ **Tor Node**")
-            st.markdown("Tor匿名化ネットワークの出口ノードです。攻撃の前兆や、高い匿名性を必要とする通信の可能性があります。")
+            
+            st.error("🧅 **Tor Node**")
+            st.markdown("Tor（The Onion Router）匿名化ネットワークの出口ノードです。発信元の完全な隠蔽を目的としており、攻撃の前兆や違法取引に関連する通信である可能性が高いです。")
+
+            st.error("⚠️ **IoT露出 / 高リスクポート検知**")
+            st.markdown("""
+            Shodan APIにより、以下の危険なポート開放が確認されたIPです。
+            
+            - **Telnet (23)**: 暗号化されていない古いプロトコル。**「開いているだけで高リスク」**とみなされます。
+            - **ADB (5555/5554)**: Android端末（FireTVなど）のデバッグ機能が認証なしで公開されています。
+            - **TR-069 (7547)**: ルーター管理用プロトコル。脆弱性がある場合、ルーターごと乗っ取られる恐れがあります。
+            - **Proxy (1080/3128)**: 踏み台として悪用されるプロキシサーバー（SOCKS/Squid）が稼働しています。
+            - **UPnP (1900)**: ネットワーク内の機器探索用プロトコルが外部に漏れています。
+            """)
+
+            st.warning("🍏 **iCloud Private Relay**")
+            st.markdown("Appleデバイス（iPhone/Mac）のプライバシー保護機能による通信です。IPアドレスはAppleの提携パートナー（Cloudflare/Akamai等）のものに置き換わっており、真の発信元は隠蔽されていますが、基本的には一般ユーザーによるアクセスです。")
+
+            st.warning("☁️ **Hosting/VPN/Proxy**")
+            st.markdown("データセンター、商用VPN、プロキシ経由の通信です。一般家庭からのアクセスではなく、ボットや匿名化ツールを使用している可能性があります。")
+            
 
         with tab3:
             # --- モード別案内: FAQ ---
@@ -1607,6 +1741,9 @@ def main():
 
             **Q. ipinfoのAPIキーはどこで手に入りますか？**\n
             A. [ipinfo.io](https://ipinfo.io/signup) から無料で登録・取得できます（無料枠あり）。
+                        
+            **Q. ShodanのAPIキーはどこで手に入りますか？**\n
+            A. [shodan.io](https://account.shodan.io/register) から無料で登録・取得できます（無料枠あり）。
 
             **Q. ISP名と [RDAP: 〇〇] の名前が違うのですが？**\n
             A. **それは「運用者」と「持ち主」の違いです。** 例えば `1.1.1.1` というIPアドレスの場合：
@@ -1616,11 +1753,32 @@ def main():
             
             **Q. ISP名とRDAPの名前が異なる場合、発信者情報開示をどちらに請求すればいいでしょうか？**\n
             A. 個人（契約者）の情報を持っているのは**表の運用者である「ISP / プロバイダ」**の方です。RDAPの情報はあくまで「そのIPアドレスブロックを管理している組織」の情報であり、実際の利用者情報は持っていないことが多いです。発信者情報開示請求を行う場合は、**ISP名を使って手続きを行ってください**。
+
+            **Q. IoT Risk判定が出ましたが、これは確定ですか？**\n
+            A. いいえ。そのIPアドレスを共有している**多数人の中の1人**がFireStick等の脆弱性を露出させているだけで、それ以外の人の通信も同じIPに見える可能性があります。あくまで「そのIPからの通信にはリスク端末が混在している」という指標として使ってください。
+            
+            **Q. 検知されるポートのリスク詳細を教えてください**\n
+            A. 本ツールでは、以下のポート開放状況をShodan API経由で監視しています。
+                        
+            * **⚠️ 23 (Telnet)**
+                * **判定**: **極めて危険な古いプロトコル** です。通信が暗号化されないため、パスワード等が盗聴されるリスクがあります。現代のインターネットで意図的に公開する正当な理由はほぼありません。
+            
+            * **🔥 1080 (SOCKS) / 3128 (Squid)**
+                * **判定**: **住宅用プロキシ (Residential Proxy)** として悪用される典型的なポートです。一般家庭の回線でこれが開いている場合、Fire StickやPCに意図しないプロキシ機能が植え付けられている可能性が極めて高いです。
+            
+            * **💀 7547 (CWMP)**
+                * **判定**: **ルーター乗っ取りの兆候** です。ISPが管理するためのポートですが、脆弱性がある場合、ルーターそのものがボット化され、「ネットワークの出口」全体が支配されている深刻な状態を示唆します。
+            
+            * **🤖 5555 / 5554 (ADB)**
+                * **判定**: **Androidデバイスの露出** です。Fire TV StickやAndroid TV、開発用エミュレータなどが、認証なしで外部操作可能な状態で放置されています。
+            
+            * **📡 1900 (UPnP) / 47808 (BACnet)**
+                * **判定**: **スマート家電・産業機器の偵察拠点** です。これらが露出していると、攻撃者がネットワーク内の他のデバイスを探査するための入り口として利用されるリスクがあります。
             """)
         return
 
     # --- メインコンテンツ：Whois検索タブ ---   
-    # 🆕 モード表示ロジック
+    # モード表示ロジック
     if IS_PUBLIC_MODE:
         mode_title = "☁️ Public Cloud Edition (機能制限あり)"
         mode_color = "gray"
@@ -1628,8 +1786,17 @@ def main():
         mode_title = "🏠 Local Private Edition (フル機能版)"
         mode_color = "green"
 
-    st.title("🌐 検索大臣 - Whois & IP Intelligence -")
+    st.title("🔎 検索大臣 - Whois & IP Intelligence -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
+    # --- アップデート通知エリア  ---
+    with st.expander("🆕 Update Info (2026.02.17) - 新機能と変更点", expanded=True):
+        st.markdown("""
+        **Update:**
+        **💀 IoTリスク検知 (Shodan連携)**: 
+        * Shodan APIを利用し、**Telnet(23)**や**ADB(5555)**など、攻撃の踏み台になり得る危険なポート開放を検知可能になりました。
+        * ※ 利用にはサイドバーでの **Shodan API Key** 入力が必要です。
+        """)
+    # ------------------------------------------------
     col_input1, col_input2 = st.columns([1, 1])
 
     with col_input1:
@@ -1813,6 +1980,10 @@ def main():
         st.success(f"**Target:** IPv4: {ipv4_count} / IPv6: {ipv6_count} / Domain: {len(domain_targets)} (Pending: {len(st.session_state.deferred_ips)}) / **CIDR Cache:** {len(st.session_state.cidr_cache)}")
         if pro_api_key:
             st.info("🔑 **Pro Mode Active:** ipinfo.io データベースを使用します")
+        if shodan_api_key:
+            st.warning("🔎 **IoT Check Active:** Shodan APIによる脆弱性スキャン履歴を参照します")
+        else:
+            st.info("ℹ️ **IoT Check Inactive:** Shodan APIキー未設定のため、IoT/脆弱性リスク検知はスキップされます")
 
     with col_act2:
         if is_currently_searching:
@@ -1903,8 +2074,9 @@ def main():
                                 delay_between_requests, 
                                 rate_limit_wait_seconds,
                                 tor_nodes,
-                                use_rdap_option, # RDAPオプションを渡す
-                                pro_api_key # APIキーを渡す
+                                use_rdap_option, # RDAPオプション
+                                pro_api_key,     # IPinfo Key
+                                shodan_api_key   # Shodan Key
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
@@ -2055,7 +2227,7 @@ def main():
                     res_dict = {r['Target_IP']: r for r in results}
 
                     # 各行のIPに基づいて結果をマッピング
-                    isps, isps_jp, countries, countries_jp, proxy_type, statuses, rdaps = [], [], [], [], [], [], []
+                    isps, isps_jp, countries, countries_jp, proxy_type, iot_risks, statuses, rdaps = [], [], [], [], [], [], [], []
                     for ip_val in df_with_res[ip_col]:
                         ip_val_str = str(ip_val).strip()
                         info = res_dict.get(ip_val_str, {})
@@ -2064,20 +2236,22 @@ def main():
                         countries.append(info.get('Country', 'N/A'))
                         countries_jp.append(info.get('Country_JP', 'N/A'))
                         proxy_type.append(info.get('Proxy_Type', ''))
+                        iot_risks.append(info.get('IoT_Risk', '')) 
                         statuses.append(info.get('Status', 'N/A'))
                         rdaps.append(info.get('RDAP', ''))
                     
                     # 結合 (列の挿入)
                     insert_idx = df_with_res.columns.get_loc(ip_col) + 1
                     df_with_res.insert(insert_idx, 'Status', statuses)
+                    df_with_res.insert(insert_idx, 'IoT_Risk', iot_risks) 
                     df_with_res.insert(insert_idx, 'Proxy Type', proxy_type)
-                    df_with_res.insert(insert_idx, 'RDAP', rdaps) # RDAP列
+                    df_with_res.insert(insert_idx, 'RDAP', rdaps)
                     df_with_res.insert(insert_idx, 'Country_JP', countries_jp)
                     df_with_res.insert(insert_idx, 'Country', countries)
                     df_with_res.insert(insert_idx, 'ISP_JP', isps_jp)
                     df_with_res.insert(insert_idx, 'ISP', isps)
 
-            # 2. アップロードがない場合（検索結果のみから分析データを作成）🆕
+            # 2. アップロードがない場合（検索結果のみから分析データを作成）
             elif st.session_state.raw_results:
                 # 検索結果リストをベースにDataFrame化
                 temp_data = []
@@ -2090,7 +2264,8 @@ def main():
                         'Country': res.get('Country'),
                         'Country_JP': res.get('Country_JP'),
                         'RDAP': res.get('RDAP', ''),
-                        'Proxy Type': res.get('Proxy_Type', ''), # キー名を統一
+                        'Proxy Type': res.get('Proxy_Type', ''), 
+                        'IoT_Risk': res.get('IoT_Risk', ''), 
                         'Status': res.get('Status')
                     }
                     temp_data.append(row)
@@ -2171,7 +2346,7 @@ def main():
             st.download_button("⬇️ Excel (全入力データ順)", excel_full, "whois_results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
         with col_dl3:
-            # 3. 分析付きExcel (全モードで有効化) 🆕
+            # 3. 分析付きExcel (全モードで有効化) 
             if not df_with_res.empty:
                 st.markdown("**🔍 分析付きExcel (Pivot/Graph)**")
                 
@@ -2206,4 +2381,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
