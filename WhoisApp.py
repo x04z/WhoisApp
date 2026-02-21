@@ -1561,7 +1561,7 @@ def main():
             pro_api_key = HARDCODED_IPINFO_KEY
             st.success(f"✅ API Key Loaded (Code): {pro_api_key[:4]}***")
         else:
-            pro_api_key = st.text_input("ipinfo.io API Key", type="password", help="入力するとipinfo.ioの高精度データベースを使用します。空欄の場合はip-api.com(無料)を使用します。").strip()
+            pro_api_key = st.text_input("ipinfo.io API Key", type="password", help="入力するとipinfo.ioの高精度データベースを使用します。空欄の場合はip-api.com(無料)を使用します。無料版で「Deferred（保留）」が多発し、検索が進まない場合の回避策として有効です。").strip()
         
         st.markdown("---")
         if st.button("🔄 IPキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
@@ -1736,8 +1736,7 @@ def main():
 
             st.markdown("""
             **Q. 検索が途中で止まりました。**\n
-            A. APIの制限（レートリミット）にかかった可能性があります。ツールは自動的に待機して再開しますが、大量（数千件）の検索を行う場合は時間がかかります。「待機中」の表示が出ている場合はそのままお待ちください。
-
+            A. APIの制限（レートリミット）にかかった可能性があります。ツールは自動的に待機して再開しますが、大量（数千件）の検索を行う場合は時間がかかります。「待機中」の表示が出ている場合はそのままお待ちください。なお、無料版API（ip-api）は流量制限が厳しく、数十件程度のバーストで保留（Deferred）状態になることがあります。スムーズな解析が必要な場合は「Local版」の利用、または「Pro Mode (IPinfo)」の適用を検討してください。\n
             **Q. ipinfoのAPIキーはどこで手に入りますか？**\n
             A. [ipinfo.io](https://ipinfo.io/signup) から無料で登録・取得できます（無料枠あり）。
 
