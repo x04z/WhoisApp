@@ -25,7 +25,7 @@ pip install streamlit pandas requests streamlit-option-menu altair openpyxl
 ### 2. アプリの起動
 
 ```bash
-streamlit run WhoisApp260221-04.py
+streamlit run xxxxx.py
 
 ```
 
