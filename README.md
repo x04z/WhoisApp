@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="img/logo.PNG" width="250" alt="検索大臣ロゴ">
+</p>
+
 # 🔎 検索大臣 - Whois & IP Intelligence Tool -
 
 `検索大臣` は、IPアドレスやドメインから、所有者情報（Whois）、地理的位置、ISP属性、および潜在的なIoT露出リスクを一括解析する実務特化型のインフラ調査ツールです。
@@ -82,3 +86,4 @@ streamlit run xxxxx.py
 
 * **Q. IoT Risk判定は確定ですか？**
 * A. いいえ。Shodanの過去のスキャン履歴に基づく指標であり、リアルタイムの確定情報ではありません。
+
