@@ -297,7 +297,7 @@ WORLD_MAP_GEOJSON = get_world_map_data()
 
 # --- ヘルパー関数群 ---
 def clean_ocr_error_chars(target):
-    cleaned_target = target.replace('Ⅱ', '11').replace('I', '1').replace('l', '1').replace('|', '1').replace('O', '0').replace('o', '0')
+    cleaned_target = target.replace('Ⅱ', '11').replace('I', '1').replace('l', '1').replace('|', '1').replace('O', '0').replace('o', '0').replace(';', '.').replace(',', '.')
     if ':' not in cleaned_target:
         cleaned_target = cleaned_target.replace('S', '5').replace('s', '5')
     return cleaned_target
@@ -1887,6 +1887,9 @@ def main():
     
     cleaned_raw_targets_list = []
     target_freq_counts = {}
+
+    # 生データからすべての空白文字（半角・全角スペース、タブ等）を完全に除去し、空行を排除する
+    raw_targets = [re.sub(r'\s+', '', t) for t in raw_targets if t.strip()]
 
     if raw_targets:
         cleaned_raw_targets_list = [clean_ocr_error_chars(t) for t in raw_targets]
