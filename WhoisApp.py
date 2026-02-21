@@ -13,7 +13,6 @@ import altair as alt
 import json 
 import io 
 import re 
-import shodan # pip install shodan
 
 # --- Excelグラフ生成用ライブラリ ---
 from openpyxl import Workbook
@@ -33,7 +32,6 @@ st.set_page_config(layout="wide", page_title="検索大臣", page_icon="🔎")
 # ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
 # 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
 HARDCODED_IPINFO_KEY = "" 
-HARDCODED_SHODAN_KEY = ""
 # ==========================================
 
 # ==========================================
@@ -413,8 +411,8 @@ def create_secondary_links(target):
 def fetch_rdap_data(ip):
     try:
         url = RDAP_BOOTSTRAP_URL.format(ip=ip)
-        # RDAPはリダイレクトされることが多いため allow_redirects=True, Timeoutは短めに
-        response = session.get(url, timeout=4, allow_redirects=True)
+        # 海外レジストリ(AFRINIC等)の遅延を考慮し、タイムアウトを8秒に設定
+        response = session.get(url, timeout=8, allow_redirects=True)
         if response.status_code == 200:
             data = response.json()
             # 汎用的なRDAPレスポンスから名前を探す (name, handle, remarks)
@@ -426,62 +424,66 @@ def fetch_rdap_data(ip):
         pass
     return None
 
-# Shodan IoT/Risk Check Logic
-def check_shodan_risk(ip, api_key):
+# Shodan InternetDB API Logic (No API Key Required)
+def check_internetdb_risk(ip, max_retries=3):
     """
-    Shodan APIを使用してIoTデバイス(FireTV等)やプロキシ(Botnet)の露出をチェックし、
-    プロのインテリジェンス注釈を返す。
+    Shodan InternetDB APIを使用して、ポートスキャン結果と脆弱性をチェックする。
+    タイムアウトによるデータ欠損を防ぐため、リトライ機構とバックオフを実装。
     """
-
-# 1. APIキー未入力
-    if not api_key:
-        return "[Not Checked]" # 明示的に「未検査」とする
-
-    # 監視対象のリスクポート定義
     RISK_PORTS = {
-        5555: "IoT:Android/ADB",
-        5554: "IoT:Android/Emu",
+        21: "Vuln:FTP",
+        23: "Vuln:Telnet (High Risk)",
         1080: "Proxy:SOCKS",
         3128: "Proxy:Squid",
+        5554: "IoT:Android/Emu",
+        5555: "IoT:Android/ADB (High Risk)",
         7547: "Vuln:TR-069",
         1900: "Vuln:UPnP",
-        23:   "Vuln:Telnet", 
+        8080: "Proxy:HTTP",
     }
     
-    try:
-        api = shodan.Shodan(api_key)
-        # タイムアウトと軽量化を意識
-        host = api.host(ip, minify=True)
-        
-        found_risks = []
-        open_ports = host.get('ports', [])
-        
-        # 開いているポートの中に、指定したリスクポートがあるか確認
-        for p in open_ports:
-            if p in RISK_PORTS:
-                found_risks.append(RISK_PORTS[p])
-        
-        if found_risks:
-            # 重複排除して結合
-            unique_risks = sorted(list(set(found_risks)))
-            return " / ".join(unique_risks)
-        else:
-            # 2. データはあるが、指定したリスクポートとは一致しなかった
-            return "[No Match]" 
-        
-    except shodan.APIError as e:
-        # 3. Shodanにデータがない場合 (No information available)
-        if "No information available" in str(e):
-            return "[No Data]" 
-        
-        # キー無効
-        if "Invalid API key" in str(e):
-            return "Error:Invalid Key"
+    for attempt in range(max_retries):
+        try:
+            url = f"https://internetdb.shodan.io/{ip}"
+            # タイムアウトを5秒に延長し、猶予を持たせる
+            response = requests.get(url, timeout=5)
             
-        return f"Error:{str(e)}"
-        
-    except Exception:
-        return "Error:Connection"
+            if response.status_code == 404:
+                return "[No Data]"
+            elif response.status_code == 429:
+                return "Error: Rate Limit (Shodan)"
+            elif 500 <= response.status_code < 600:
+                return f"Error: Shodan Server ({response.status_code})"
+            elif response.status_code != 200:
+                return f"Error: HTTP {response.status_code}"
+                
+            data = response.json()
+            found_risks = []
+            open_ports = data.get('ports', [])
+            vulns = data.get('vulns', [])
+            
+            for p in open_ports:
+                if p in RISK_PORTS:
+                    found_risks.append(RISK_PORTS[p])
+            
+            if vulns:
+                found_risks.append(f"CVEs({len(vulns)})")
+                
+            if found_risks:
+                unique_risks = sorted(list(set(found_risks)))
+                return " / ".join(unique_risks)
+            else:
+                if open_ports:
+                    return "[No Match (Other Ports)]"
+                return "[No Match]"
+            
+        except requests.exceptions.Timeout:
+            # 最終試行でもタイムアウトした場合のみエラーを返す
+            if attempt == max_retries - 1:
+                return "Error:Timeout"
+            time.sleep(1.5) # リトライ前に1.5秒の待機を挟む（バックオフ）
+        except Exception:
+            return "Error:Connection"
 
 # Proモード用 API取得関数 (ipinfo.io)
 def get_ip_details_pro(ip, token, tor_nodes):
@@ -540,7 +542,7 @@ def get_ip_details_pro(ip, token, tor_nodes):
     return result
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, api_key=None, shodan_key=None):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, api_key=None):
     
     # 1. Proモード (APIキーあり)
     if api_key:
@@ -552,8 +554,11 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
                 result['ISP'] += f" [RDAP: {rdap_res}]"
                 result['RDAP'] = rdap_res
         
-        # 常に実行（キー有無は関数内で判断）
-        result['IoT_Risk'] = check_shodan_risk(ip, shodan_key)
+        # InternetDBオプション有効時
+        if use_internetdb:
+            result['IoT_Risk'] = check_internetdb_risk(ip)
+        else:
+            result['IoT_Risk'] = "[Not Checked]"
             
         return result, None
 
@@ -621,9 +626,10 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
                 if rdap_res:
                     result['ISP'] += f" [RDAP: {rdap_res}]"
                     result['RDAP'] = rdap_res
-            
-            # 常に実行（キー有無は関数内で判断）
-            result['IoT_Risk'] = check_shodan_risk(ip, shodan_key)
+            if use_internetdb:
+                result['IoT_Risk'] = check_internetdb_risk(ip)
+            else:
+                result['IoT_Risk'] = "[Not Checked]" 
 
             result['Status'] = 'Success (API)'
             
@@ -1366,13 +1372,14 @@ def display_results(results, current_mode_full_text, display_mode):
             - **定義**: Tor（The Onion Router）ネットワークにおける「Exit Node（出口ノード）」を指します。
             - **背景**: 起動時にTor Project公式サイトより最新のノードリストを取得し、照合を行っています。高い匿名性を維持した通信であるため、セキュリティリスクの検討が必要です。
 
-        - **💀 [IoT Risk]** (Shodan API連携時のみ)
-            - **定義**: 外部からアクセス可能な危険なポート（23, 5555, 7547, 1080等）が開放されています。
+        - **💀 [IoT Risk]** (Shodan InternetDB連携時のみ)
+            - **定義**: 外部からアクセス可能な危険なポートが開放されています。
             - **背景**: Shodanのポートスキャン履歴と照合し、ファイアウォールを通過して露出している以下の「踏み台リスク」を警告します。
-                - **Telnet (23)**: 暗号化されていない危険な旧式プロトコル
-                - **ADB (5555)**: 認証なしで操作可能なAndroid/FireTV端末
+                - **Telnet (23) / FTP (21)**: 暗号化されていない危険な旧式プロトコル
+                - **ADB (5555/5554)**: 認証なしで操作可能なAndroid/FireTV端末・エミュレータ
                 - **TR-069 (7547)**: 乗っ取りリスクのあるルーター管理機能
-                - **Proxy (1080/3128)**: 攻撃中継点として悪用されるプロキシ
+                - **Proxy (1080/3128/8080)**: 攻撃中継点として悪用されるプロキシ
+                - **UPnP (1900)**: 外部からLAN内機器を探査される恐れのある機能
             
         - **🍏 [iCloud Private Relay]**
             - **定義**: Appleデバイス（iPhone/Mac）の標準プライバシー保護機能による通信です。
@@ -1436,8 +1443,8 @@ def display_results(results, current_mode_full_text, display_mode):
                     row_cols[7].write("-")
                 elif "[Not Checked]" in iot_risk:
                     row_cols[7].caption(iot_risk) # グレー（未実施）
-                elif "[No Data]" in iot_risk or "[No Match]" in iot_risk:
-                    row_cols[7].success(iot_risk) # 緑（確認済み・該当なし）
+                elif "[No Data]" in iot_risk or "No Match" in iot_risk:
+                    row_cols[7].success(iot_risk) # 緑（確認済み・該当なし・その他ポート開）
                 else:
                     row_cols[7].error(iot_risk)   # 赤（リスク検知！）
 
@@ -1556,14 +1563,6 @@ def main():
         else:
             pro_api_key = st.text_input("ipinfo.io API Key", type="password", help="入力するとipinfo.ioの高精度データベースを使用します。空欄の場合はip-api.com(無料)を使用します。").strip()
         
-        # Shodan連携設定
-        st.markdown("#### 🔎 IoT Risk Check (Shodan)")
-        if HARDCODED_SHODAN_KEY:
-            shodan_api_key = HARDCODED_SHODAN_KEY
-            st.success(f"✅ API Key Loaded (Code): {shodan_api_key[:4]}***")
-        else:
-            shodan_api_key = st.text_input("Shodan API Key", type="password", help="Shodan APIキーを入力すると、FireStick等のIoT脆弱性やProxy等による踏み台リスクを検知します。").strip()
-        
         st.markdown("---")
         if st.button("🔄 IPキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
             st.session_state['cidr_cache'] = {} 
@@ -1636,8 +1635,8 @@ def main():
             - **🔑 Pro Mode (ipinfo Key)**
                 - **メリット**: VPN/Proxy/Hostingの判定精度が劇的に向上し、企業名の特定精度も高まります。
 
-            - **🔎 IoT Risk Check (Shodan Key)**
-                - **メリット**: ポート5555(ADB/FireStick)や1080(Proxy)等の露出を検知し、踏み台リスクを警告します。
+            - **🔎 IoT Risk Check (InternetDB)**
+                - **メリット**: ポート5555(ADB/FireStick)や1080(Proxy)等の露出を検知し、踏み台リスクを警告します（APIキー不要）。
             """)
 
             st.markdown("---")
@@ -1666,7 +1665,7 @@ def main():
             
             **2. 必要なライブラリのインストール**
             ```bash
-            pip install streamlit pandas requests streamlit-option-menu altair openpyxl shodan
+            pip install streamlit pandas requests streamlit-option-menu altair openpyxl
             ```
             
             **3. アプリの起動**
@@ -1683,7 +1682,7 @@ def main():
                 - 無料版: `ip-api.com` (毎分45リクエスト制限)
                 - Pro版: `ipinfo.io` (APIキーに基づく制限)
             - **Whois (RDAP)**: APNIC等の各地域レジストリ公式サーバー
-            - **IoT Risk Intelligence**: Shodan API (ポートスキャン履歴)
+            - **IoT Risk Intelligence**: Shodan InternetDB (ポートスキャン履歴/キャッシュ)
             - **Tor出口ノード**: Tor Project公式サイト
 
             #### 2. ハイブリッド検索の仕組み (API・RDAP)
@@ -1706,7 +1705,7 @@ def main():
 
             st.error("⚠️ **IoT露出 / 高リスクポート検知**")
             st.markdown("""
-            Shodan APIにより、以下の危険なポート開放が確認されたIPです。
+            Shodan InternetDBにより、以下の危険なポート開放が確認されたIPです。
             
             - **Telnet (23)**: 暗号化されていない古いプロトコル。**「開いているだけで高リスク」**とみなされます。
             - **ADB (5555/5554)**: Android端末（FireTVなど）のデバッグ機能が認証なしで公開されています。
@@ -1741,9 +1740,6 @@ def main():
 
             **Q. ipinfoのAPIキーはどこで手に入りますか？**\n
             A. [ipinfo.io](https://ipinfo.io/signup) から無料で登録・取得できます（無料枠あり）。
-                        
-            **Q. ShodanのAPIキーはどこで手に入りますか？**\n
-            A. [shodan.io](https://account.shodan.io/register) から無料で登録・取得できます（無料枠あり）。
 
             **Q. ISP名と [RDAP: 〇〇] の名前が違うのですが？**\n
             A. **それは「運用者」と「持ち主」の違いです。** 例えば `1.1.1.1` というIPアドレスの場合：
@@ -1755,25 +1751,25 @@ def main():
             A. 個人（契約者）の情報を持っているのは**表の運用者である「ISP / プロバイダ」**の方です。RDAPの情報はあくまで「そのIPアドレスブロックを管理している組織」の情報であり、実際の利用者情報は持っていないことが多いです。発信者情報開示請求を行う場合は、**ISP名を使って手続きを行ってください**。
 
             **Q. IoT Risk判定が出ましたが、これは確定ですか？**\n
-            A. いいえ。そのIPアドレスを共有している**多数人の中の1人**がFireStick等の脆弱性を露出させているだけで、それ以外の人の通信も同じIPに見える可能性があります。あくまで「そのIPからの通信にはリスク端末が混在している」という指標として使ってください。
+            A. いいえ。まず、本機能はリアルタイムのスキャンではなく、**「Shodanが過去に実施したポートスキャン結果（履歴）」**を参照しています。そのため、現在すでにポートが塞がれている可能性（または新たに開いている可能性）が常に存在します。また、一般回線の場合、そのIPを共有している**多数人の中の1人**が脆弱性を露出させているだけで、無関係な利用者の通信も同じIPとして判定されます。絶対的な証拠ではなく、あくまで「過去にリスクが確認されたノードである」という調査優先度の指標として扱ってください。
             
             **Q. 検知されるポートのリスク詳細を教えてください**\n
-            A. 本ツールでは、以下のポート開放状況をShodan API経由で監視しています。
+            A. 本ツールでは、以下のポート開放状況を監視しています。
                         
-            * **⚠️ 23 (Telnet)**
+            * **⚠️ 23 (Telnet) / 21 (FTP)**
                 * **判定**: **極めて危険な古いプロトコル** です。通信が暗号化されないため、パスワード等が盗聴されるリスクがあります。現代のインターネットで意図的に公開する正当な理由はほぼありません。
             
-            * **🔥 1080 (SOCKS) / 3128 (Squid)**
-                * **判定**: **住宅用プロキシ (Residential Proxy)** として悪用される典型的なポートです。一般家庭の回線でこれが開いている場合、Fire StickやPCに意図しないプロキシ機能が植え付けられている可能性が極めて高いです。
+            * **🔥 1080 (SOCKS) / 3128 (Squid) / 8080 (HTTP)**
+                * **判定**: **プロキシ (Proxy)** として悪用される典型的なポートです。一般家庭の回線でこれが開いている場合、意図しないプロキシ機能が植え付けられ、踏み台化している可能性が極めて高いです。
             
             * **💀 7547 (CWMP)**
                 * **判定**: **ルーター乗っ取りの兆候** です。ISPが管理するためのポートですが、脆弱性がある場合、ルーターそのものがボット化され、「ネットワークの出口」全体が支配されている深刻な状態を示唆します。
             
-            * **🤖 5555 / 5554 (ADB)**
+            * **🤖 5555 / 5554 (ADB/Emu)**
                 * **判定**: **Androidデバイスの露出** です。Fire TV StickやAndroid TV、開発用エミュレータなどが、認証なしで外部操作可能な状態で放置されています。
             
-            * **📡 1900 (UPnP) / 47808 (BACnet)**
-                * **判定**: **スマート家電・産業機器の偵察拠点** です。これらが露出していると、攻撃者がネットワーク内の他のデバイスを探査するための入り口として利用されるリスクがあります。
+            * **📡 1900 (UPnP)**
+                * **判定**: **ネットワーク機器の偵察拠点** です。これらが露出していると、攻撃者がネットワーク内の他のデバイスを探査するための入り口として利用されるリスクがあります。
             """)
         return
 
@@ -1789,12 +1785,11 @@ def main():
     st.title("🔎 検索大臣 - Whois & IP Intelligence -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🆕 Update Info (2026.02.17) - 新機能と変更点", expanded=True):
+    with st.expander("🆕 Update Info (2026.02.21) - 新機能と変更点", expanded=True):
         st.markdown("""
         **Update:**
-        **💀 IoTリスク検知 (Shodan連携)**: 
-        * Shodan APIを利用し、**Telnet(23)**や**ADB(5555)**など、攻撃の踏み台になり得る危険なポート開放を検知可能になりました。
-        * ※ 利用にはサイドバーでの **Shodan API Key** 入力が必要です。
+        **💀 IoTリスク検知 (InternetDB連携)**: 
+        * Shodan InternetDB APIに移行し、**APIキー不要**で**Telnet(23)**や**ADB(5555)**など、攻撃の踏み台になり得る危険なポート開放を自動検知可能になりました。
         """)
     # ------------------------------------------------
     col_input1, col_input2 = st.columns([1, 1])
@@ -1858,7 +1853,7 @@ def main():
                         raw_targets.extend(uploaded_file.read().decode("utf-8").splitlines())
                         st.session_state['original_df'] = None
                         st.session_state['ip_column_name'] = None
-
+                    
                     if df_orig is not None:
                         st.session_state['original_df'] = df_orig
                         for col in df_orig.columns:
@@ -1954,6 +1949,8 @@ def main():
             key="api_mode_radio",
             horizontal=False
         )
+        # InternetDBオプション
+        use_internetdb_option = st.checkbox("💀 IoTリスク検知 (InternetDBを利用)", value=True, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。不要な場合はオフにすることで処理を最適化できます。")
         # RDAPオプション
         use_rdap_option = st.checkbox("🔍 高精度モード (RDAP公式台帳の併用 - 低速)", value=False, help="無料APIのISP情報に加え、RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
     
@@ -1980,10 +1977,10 @@ def main():
         st.success(f"**Target:** IPv4: {ipv4_count} / IPv6: {ipv6_count} / Domain: {len(domain_targets)} (Pending: {len(st.session_state.deferred_ips)}) / **CIDR Cache:** {len(st.session_state.cidr_cache)}")
         if pro_api_key:
             st.info("🔑 **Pro Mode Active:** ipinfo.io データベースを使用します")
-        if shodan_api_key:
-            st.warning("🔎 **IoT Check Active:** Shodan APIによる脆弱性スキャン履歴を参照します")
+        if use_internetdb_option:
+            st.info("🔎 **IoT Check Active:** Shodan InternetDBによるスキャン履歴を参照します")
         else:
-            st.info("ℹ️ **IoT Check Inactive:** Shodan APIキー未設定のため、IoT/脆弱性リスク検知はスキップされます")
+            st.info("ℹ️ **IoT Check Inactive:** IoT/脆弱性リスク検知はスキップされます")
 
     with col_act2:
         if is_currently_searching:
@@ -2075,8 +2072,8 @@ def main():
                                 rate_limit_wait_seconds,
                                 tor_nodes,
                                 use_rdap_option, # RDAPオプション
-                                pro_api_key,     # IPinfo Key
-                                shodan_api_key   # Shodan Key
+                                use_internetdb_option, # InternetDBオプション
+                                pro_api_key      # IPinfo Key
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
