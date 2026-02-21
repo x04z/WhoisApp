@@ -24,7 +24,7 @@ from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ページ設定
-st.set_page_config(layout="wide", page_title="検索大臣", page_icon="img/logo.png")
+st.set_page_config(layout="wide", page_title="検索大臣", page_icon="🔎")
 
 # ==========================================
 # ⚙️ [Local User Config] API Key Hardcoding
