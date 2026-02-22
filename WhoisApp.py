@@ -916,7 +916,7 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
             orient='right'
         ).interactive()
         
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
         
     else:
         st.info("ヒートマップデータまたはGeoJSONがロードされていないか、成功したIPv4データが存在しないため表示できません。")
@@ -948,11 +948,11 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
         if not target_frequency_df.empty:
             st.caption(f"**集計対象ターゲット数 (重複なし):** {len(target_frequency_df)} 件")
             chart = create_labeled_bar_chart(target_frequency_df, 'Count', 'Target_IP', 'Target IP Counts')
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
 
             target_frequency_df_display = target_frequency_df.copy()
             target_frequency_df_display['Target_IP'] = target_frequency_df_display['Target_IP'].str.wrap(25)
-            st.dataframe(target_frequency_df_display, hide_index=True, use_container_width=True)
+            st.dataframe(target_frequency_df_display, hide_index=True, width="stretch")
         else:
             st.info("データがありません")
             
@@ -960,9 +960,9 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
         st.markdown("#### 🏢 ISP別カウント (トップ10)")
         if not isp_summary_df.empty:
             chart = create_labeled_bar_chart(isp_summary_df, 'Count', 'ISP', 'ISP Counts')
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
             
-            st.dataframe(isp_summary_df, hide_index=True, use_container_width=True)
+            st.dataframe(isp_summary_df, hide_index=True, width="stretch")
         else:
             st.info("データがありません")
             
@@ -970,9 +970,9 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
         st.markdown("#### 🌍 国別カウント (トップ10)")
         if not country_summary_df.empty:
             chart = create_labeled_bar_chart(country_summary_df, 'Count', 'Country', 'Country Counts')
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
             
-            st.dataframe(country_summary_df, hide_index=True, use_container_width=True)
+            st.dataframe(country_summary_df, hide_index=True, width="stretch")
         else:
             st.info("データがありません")
 
@@ -1579,7 +1579,7 @@ def render_merged_analysis(df_merged):
                      st.warning("ヒートマップには「積み上げ/色分け」項目の選択が必要です。")
 
             if chart:
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
                 chart_json = chart.to_dict()
                 html_content = generate_cross_analysis_html(chart_json, x_col, group_col if group_col != '(なし)' else 'Count')
                 st.download_button(
@@ -2056,7 +2056,7 @@ def main():
 
     with col_act2:
         if is_currently_searching:
-            if st.button("❌ 中止", type="secondary", use_container_width=True):
+            if st.button("❌ 中止", type="secondary", width="stretch"):
                 st.session_state.cancel_search = True
                 st.session_state.is_searching = False
                 st.session_state.deferred_ips = {}
@@ -2065,7 +2065,7 @@ def main():
             execute_search = st.button(
             "🚀 検索開始",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=(len(targets) == 0 and len(st.session_state.deferred_ips) == 0)
             )
 
@@ -2360,7 +2360,7 @@ def main():
                     freq_full_df.to_csv(index=False).encode('utf-8-sig'),
                     "target_ip_frequency_all.csv",
                     "text/csv",
-                    use_container_width=True
+                    width="stretch"
                 )
             with col_full_dl2:
                 st.download_button(
@@ -2368,7 +2368,7 @@ def main():
                     isp_full_df.to_csv(index=False).encode('utf-8-sig'),
                     "isp_counts_all.csv",
                     "text/csv",
-                    use_container_width=True
+                    width="stretch"
                 )
             with col_full_dl3:
                 st.download_button(
@@ -2376,7 +2376,7 @@ def main():
                     country_full_df.to_csv(index=False).encode('utf-8-sig'),
                     "country_counts_all.csv",
                     "text/csv",
-                    use_container_width=True
+                    width="stretch"
                 )
             
             with col_full_dl4:
@@ -2387,7 +2387,7 @@ def main():
                     html_report,
                     "whois_analysis_report.html",
                     "text/html",
-                    use_container_width=True
+                    width="stretch"
                 )
 
         
@@ -2396,10 +2396,10 @@ def main():
         # 1. 画面表示順データ
         csv_display = pd.DataFrame(display_res).drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link'], errors='ignore').astype(str)
         with col_dl1:
-            st.download_button("⬇️ CSV (画面表示順)", csv_display.to_csv(index=False).encode('utf-8-sig'), "whois_results_display.csv", "text/csv", use_container_width=True)
+            st.download_button("⬇️ CSV (画面表示順)", csv_display.to_csv(index=False).encode('utf-8-sig'), "whois_results_display.csv", "text/csv", width="stretch")
             # Excel (Display)
             excel_display = convert_df_to_excel(csv_display)
-            st.download_button("⬇️ Excel (画面表示順)", excel_display, "whois_results_display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            st.download_button("⬇️ Excel (画面表示順)", excel_display, "whois_results_display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
         # 2. 全入力データ（入力順）
         result_lookup = {r['Target_IP']: r for r in st.session_state.raw_results}
@@ -2412,10 +2412,10 @@ def main():
         
         csv_full = pd.DataFrame(full_output_data).drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link'], errors='ignore').astype(str)
         with col_dl2:
-            st.download_button("⬇️ CSV (全入力データ順)", csv_full.to_csv(index=False).encode('utf-8-sig'), "whois_results_full.csv", "text/csv", use_container_width=True)
+            st.download_button("⬇️ CSV (全入力データ順)", csv_full.to_csv(index=False).encode('utf-8-sig'), "whois_results_full.csv", "text/csv", width="stretch")
             # Excel (Full)
             excel_full = convert_df_to_excel(csv_full)
-            st.download_button("⬇️ Excel (全入力データ順)", excel_full, "whois_results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            st.download_button("⬇️ Excel (全入力データ順)", excel_full, "whois_results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
         with col_dl3:
             # 3. 分析付きExcel (全モードで有効化) 
@@ -2445,11 +2445,11 @@ def main():
                     excel_advanced, 
                     "whois_analysis_master.xlsx", 
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-                    use_container_width=True,
+                    width="stretch",
                     help="生データに加え、ISP別・時間帯別の集計表とグラフ（ピボット）が別シートに含まれます。"
                 )
             else:
-                st.button("⬇️ Excel (データなし)", disabled=True, use_container_width=True)
+                st.button("⬇️ Excel (データなし)", disabled=True, width="stretch")
 
 if __name__ == "__main__":
     main()
