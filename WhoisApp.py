@@ -1456,75 +1456,142 @@ def display_results(results, current_mode_full_text, display_mode):
                     
                 row_cols[9].checkbox("選択", key=f"chk_{get_copy_target(target_ip)}_{idx}", label_visibility="collapsed")
 
-# 📊 元データ結合分析機能
+# --- リンク分析エンジン ---
+def render_spider_web_analysis(df):
+    """
+    ノードベースの相関グラフ表示機能。Graphvizを使用して描画する。
+    """
+    st.info("IPアドレス、ISP、国、およびリスクの繋がりを視覚化します。共通のISPやリスクを持つIPが中心に集まり、攻撃インフラの『ハブ』を特定できます。")
+
+    if df.empty:
+        st.warning("データがありません。")
+        return
+
+    # GraphvizのDOT言語でグラフ構造を定義
+    dot_lines = [
+        'graph {',
+        '  layout=neato;', # ノードを物理的な反発力で自動配置するエンジン
+        '  overlap=false;',
+        '  splines=true;',
+        '  node [fontname="Helvetica", fontsize=10];'
+    ]
+    
+    nodes = set()
+    edges = set()
+    
+    # 描画負荷を考慮し、上位50件程度でプロット
+    plot_df = df.head(50).fillna("N/A")
+
+    for _, row in plot_df.iterrows():
+        ip = row.get('Target_IP', 'Unknown')
+        isp = row.get('ISP_JP', row.get('ISP', 'N/A'))
+        country = row.get('Country_JP', row.get('Country', 'N/A'))
+        risk = row.get('IoT_Risk', '')
+        proxy = row.get('Proxy Type', '')
+
+        # 1. IPノード (水色の丸)
+        nodes.add(f'"{ip}" [shape=circle, style=filled, fillcolor="#E0F2F1", width=0.8];')
+
+        # 2. ISPノード (オレンジの四角) - IPと線を結ぶ
+        if isp != "N/A":
+            nodes.add(f'"{isp}" [shape=box, style=filled, fillcolor="#FFF3E0", color="#FF9800", penwidth=2];')
+            edges.add(f'"{ip}" -- "{isp}" [color="#FF9800", alpha=0.5];')
+
+        # 3. 国ノード (緑の楕円)
+        if country != "N/A":
+            nodes.add(f'"{country}" [shape=ellipse, style=filled, fillcolor="#F1F8E9", color="#8BC34A"];')
+            edges.add(f'"{ip}" -- "{country}" [style=dotted, color="#8BC34A"];')
+
+        # 4. リスクノード (赤の二重丸) - 複数リスクは分割して線を結ぶ
+        if risk and risk not in ["[No Match]", "[Not Checked]", "[No Data]", "N/A", ""]:
+            for r in risk.split(" / "):
+                nodes.add(f'"{r}" [shape=doublecircle, style=filled, fillcolor="#FFEBEE", color="#F44336", fontcolor="#B71C1C", penwidth=3];')
+                edges.add(f'"{ip}" -- "{r}" [color="#F44336", penwidth=2];')
+
+        # 5. プロキシノード (紫の六角形)
+        if proxy and proxy != "Standard Connection":
+            nodes.add(f'"{proxy}" [shape=hexagon, style=filled, fillcolor="#F3E5F5", color="#9C27B0"];')
+            edges.add(f'"{ip}" -- "{proxy}" [color="#9C27B0"];')
+
+    dot_lines.extend(list(nodes))
+    dot_lines.extend(list(edges))
+    dot_lines.append('}')
+    
+    dot_string = "\n".join(dot_lines)
+    
+    # Streamlit標準のGraphviz描画機能を使用
+    st.graphviz_chart(dot_string)
+    
+    with st.expander("💡 読み解きのヒント"):
+        st.write("""
+        - **大きな塊（ハブ）**: 複数のIPから線が集まっているノード（ISPやリスク）は、今回の調査対象に共通するインフラです。
+        - **赤い二重丸**: 危険なポートが露出している共通のリスク要因です。攻撃者の踏み台リストの可能性があります。
+        - **独立したノード**: 他と繋がりのないIPは、今回のグループとは別の背景を持つ可能性があります。
+        """)
+
+# 📊 元データ結合分析機能 (タブ化対応)
 def render_merged_analysis(df_merged):
-    st.markdown("### 📈 元データ x 検索結果 クロス分析")
-    st.info("アップロードされたファイルの元の列と、検索で得られたWhois情報を組み合わせて可視化します。印刷用にグラフ単体のダウンロードも可能です。")
+    st.markdown("### 📈 分析センター")
     
-    # グラフ設定用カラム
-    # 元データのカラム（Statusなど後付けのカラムを除く）
-    original_cols = [c for c in df_merged.columns if c not in ['ISP', 'ISP_JP', 'Country', 'Country_JP', 'Proxy Type', 'Status', 'IoT_Risk']]
-    # Whois結果のカラム
-    whois_cols = ['Country_JP', 'ISP_JP', 'Proxy Type', 'IoT_Risk', 'Status']
+    # Streamlitのタブ機能で表示を切り替える
+    tab_cross, tab_spider = st.tabs(["📊 クロス分析 (マクロ視点)", "🕸️ リンク分析 (ミクロ視点)"])
     
-    col_x, col_grp, col_chart_type = st.columns(3)
-    
-    with col_x:
-        x_col = st.selectbox("X軸 (カテゴリ/元の列)", original_cols + whois_cols, index=0)
-    
-    with col_grp:
-        group_col = st.selectbox("積み上げ/色分け (Whois情報など)", ['(なし)'] + whois_cols + original_cols, index=1)
+    with tab_cross:
+        st.info("アップロードされたファイルの元の列と、検索で得られたWhois情報を組み合わせて可視化します。")
+        original_cols = [c for c in df_merged.columns if c not in ['ISP', 'ISP_JP', 'Country', 'Country_JP', 'Proxy Type', 'Status', 'IoT_Risk']]
+        whois_cols = ['Country_JP', 'ISP_JP', 'Proxy Type', 'IoT_Risk', 'Status']
         
-    with col_chart_type:
-        chart_type = st.radio("グラフタイプ", ["バーチャート (集計)", "ヒートマップ"], horizontal=True)
+        col_x, col_grp, col_chart_type = st.columns(3)
+        with col_x:
+            x_col = st.selectbox("X軸 (カテゴリ/元の列)", original_cols + whois_cols, index=0)
+        with col_grp:
+            group_col = st.selectbox("積み上げ/色分け (Whois情報など)", ['(なし)'] + whois_cols + original_cols, index=1)
+        with col_chart_type:
+            chart_type = st.radio("グラフタイプ", ["バーチャート (集計)", "ヒートマップ"], horizontal=True)
 
-    if not df_merged.empty:
-        chart = None
-        
-        # データ前処理: NaNを文字列に置換してAltairのエラー回避
-        chart_df = df_merged.fillna("N/A").astype(str)
+        if not df_merged.empty:
+            chart = None
+            chart_df = df_merged.fillna("N/A").astype(str)
 
-        if chart_type == "バーチャート (集計)":
-            if group_col != '(なし)':
-                chart = alt.Chart(chart_df).mark_bar().encode(
-                    x=alt.X(x_col, title=x_col),
-                    y=alt.Y('count()', title='件数'),
-                    color=alt.Color(group_col, title=group_col),
-                    tooltip=[x_col, group_col, 'count()']
-                ).properties(height=400)
-            else:
-                chart = alt.Chart(chart_df).mark_bar().encode(
-                    x=alt.X(x_col, title=x_col),
-                    y=alt.Y('count()', title='件数'),
-                    tooltip=[x_col, 'count()']
-                ).properties(height=400)
-                
-        elif chart_type == "ヒートマップ":
-             if group_col != '(なし)':
-                chart = alt.Chart(chart_df).mark_rect().encode(
-                    x=alt.X(x_col, title=x_col),
-                    y=alt.Y(group_col, title=group_col),
-                    color=alt.Color('count()', title='件数', scale=alt.Scale(scheme='viridis')),
-                    tooltip=[x_col, group_col, 'count()']
-                ).properties(height=400)
-             else:
-                 st.warning("ヒートマップには「積み上げ/色分け」項目の選択が必要です。")
+            if chart_type == "バーチャート (集計)":
+                if group_col != '(なし)':
+                    chart = alt.Chart(chart_df).mark_bar().encode(
+                        x=alt.X(x_col, title=x_col),
+                        y=alt.Y('count()', title='件数'),
+                        color=alt.Color(group_col, title=group_col),
+                        tooltip=[x_col, group_col, 'count()']
+                    ).properties(height=400)
+                else:
+                    chart = alt.Chart(chart_df).mark_bar().encode(
+                        x=alt.X(x_col, title=x_col),
+                        y=alt.Y('count()', title='件数'),
+                        tooltip=[x_col, 'count()']
+                    ).properties(height=400)
+            elif chart_type == "ヒートマップ":
+                 if group_col != '(なし)':
+                    chart = alt.Chart(chart_df).mark_rect().encode(
+                        x=alt.X(x_col, title=x_col),
+                        y=alt.Y(group_col, title=group_col),
+                        color=alt.Color('count()', title='件数', scale=alt.Scale(scheme='viridis')),
+                        tooltip=[x_col, group_col, 'count()']
+                    ).properties(height=400)
+                 else:
+                     st.warning("ヒートマップには「積み上げ/色分け」項目の選択が必要です。")
 
-        if chart:
-            st.altair_chart(chart, use_container_width=True)
-            
-            # HTMLダウンロード用
-            chart_json = chart.to_dict()
-            html_content = generate_cross_analysis_html(chart_json, x_col, group_col if group_col != '(なし)' else 'Count')
-            
-            st.download_button(
-                label="⬇️ クロス分析レポート(HTML)をダウンロード",
-                data=html_content,
-                file_name=f"cross_analysis_{x_col}_vs_{group_col}.html",
-                mime="text/html",
-                help="グラフをブラウザで全画面表示し、印刷するのに適しています。"
-            )
+            if chart:
+                st.altair_chart(chart, use_container_width=True)
+                chart_json = chart.to_dict()
+                html_content = generate_cross_analysis_html(chart_json, x_col, group_col if group_col != '(なし)' else 'Count')
+                st.download_button(
+                    label="⬇️ クロス分析レポート(HTML)をダウンロード",
+                    data=html_content,
+                    file_name=f"cross_analysis_{x_col}_vs_{group_col}.html",
+                    mime="text/html"
+                )
 
+    with tab_spider:
+        # リンク分析関数を呼び出す
+        render_spider_web_analysis(df_merged)
 
 # --- メイン処理 ---
 def main():
@@ -1786,9 +1853,12 @@ def main():
     # --- アップデート通知エリア  ---
     with st.expander("🆕 Update Info (2026.02.21) - 新機能と変更点", expanded=True):
         st.markdown("""
-        **Update:**
+        **Update:**\n
         **💀 IoTリスク検知 (InternetDB連携)**: 
         * Shodan InternetDB APIに移行し、**APIキー不要**で**Telnet(23)**や**ADB(5555)**など、攻撃の踏み台になり得る危険なポート開放を自動検知可能になりました。
+        
+        **🕸️ リンク分析 (Link Analysis / 相関図可視化)**:
+        * 複数のIP、ISP、国、およびIoTリスクの相関関係を可視化するグラフエンジンを搭載しました。「分析センター」タブから利用可能です。共通の攻撃インフラを直感的に特定できます。
         """)
     # ------------------------------------------------
     col_input1, col_input2 = st.columns([1, 1])
@@ -1865,7 +1935,7 @@ def main():
                             st.session_state['ip_column_name'] = ip_col
                             raw_targets.extend(df_orig[ip_col].dropna().astype(str).tolist())
                             
-                            # --- 新機能：アップロードデータのプレビュー ---
+                            # --- アップロードデータのプレビュー ---
                             st.info(f"📄 ファイル読み込み完了: {len(df_orig)} 行 / IP列: `{ip_col}`")
                             with st.expander("👀 アップロードデータ・プレビュー", expanded=False):
                                 st.dataframe(df_orig)
@@ -2270,15 +2340,18 @@ def main():
                     temp_data.append(row)
                 df_with_res = pd.DataFrame(temp_data)
 
-            # --- 新機能：元データ x 検索結果 クロス分析表示 ---
+            # --- 元データ x 検索結果 クロス分析表示 ---
             if not df_with_res.empty:
                 st.markdown("---")
+                if st.session_state.get('ip_column_name') and st.session_state['ip_column_name'] in df_with_res.columns:
+                    df_with_res['Target_IP'] = df_with_res[st.session_state['ip_column_name']].astype(str)
+                    
                 render_merged_analysis(df_with_res)
             # ------------------------------------------------
 
             # --- 全件集計データのダウンロードセクション ---
             st.markdown("### 📊 集計データの完全版ダウンロード")
-            # (中略: csvダウンロードボタン部分はそのまま)
+            # (csvダウンロードボタン部分はそのまま)
             col_full_dl1, col_full_dl2, col_full_dl3, col_full_dl4 = st.columns(4)
             
             with col_full_dl1:
