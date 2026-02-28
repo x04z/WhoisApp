@@ -1599,8 +1599,8 @@ def display_results(results, current_mode_full_text, display_mode):
                             <div id="{tab_id}" class="tab-content">
                                 <h1 class="theme-rdap">RDAP取得結果 ({clean_ip})</h1>
                                 <div class="description">
-                                    <strong>RDAP（Registration Data Access Protocol）の定義及び運用目的：</strong><br>
-                                    RDAPは、インターネット上のIPアドレスやドメイン名等のインターネット資源が、法的にどの組織又は個人に割り当てられているかを確認するための標準的な通信規約（プロトコル）である。<br>
+                                    <strong>登録データアクセスプロトコル（Registration Data Access Protocol、以下「RDAP」と記載する。）の定義及び運用目的：</strong><br>
+                                    RDAPとは、インターネット資源（ドメイン名、IPアドレス、自治システム番号等）の登録主体（組織又は個人）を法的に特定し得る登録情報を取得するための、IETF（Internet Engineering Task Force：インターネット技術の標準化を担う国際的な組織）により標準化された通信プロトコルである。本プロトコルは、従来のWHOISプロトコルが有する非構造化テキスト形式に起因する機械可読性及び解析の困難さ、国際化対応の不足、セキュリティ上の脆弱性等の課題を克服すべく策定され、JSON（JavaScript Object Notation：テキストベースのデータ交換フォーマット）ベースの構造化データ表現及び標準化されたクエリ・レスポンス形式により、厳密かつ効率的な登録データアクセスを実現する次世代の公式仕様として、現在運用されている。<br>
                                     従来のWHOISプロトコルが抱えていた非構造化データによる解析の困難さを解消し、JSON形式による構造化された厳密な登録情報を提供する次世代の公式仕様として運用されている。
                                 </div>
                                 <h2>対象IPアドレス及び回答元レジストリ情報等</h2>
