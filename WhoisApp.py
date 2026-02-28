@@ -32,6 +32,7 @@ st.set_page_config(layout="wide", page_title="検索大臣", page_icon="🔎")
 # ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
 # 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
 HARDCODED_IPINFO_KEY = "" 
+HARDCODED_IP2PROXY_KEY = ""
 # ==========================================
 
 # ==========================================
@@ -58,6 +59,7 @@ MODE_SETTINGS = {
 }
 IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,country,countryCode,isp,org,query,message"
 IPINFO_API_URL = "https://ipinfo.io/{ip}" 
+IP2PROXY_API_URL = "https://api.ip2location.io/?key={key}&ip={ip}&format=json"
 RDAP_BOOTSTRAP_URL = "https://rdap.apnic.net/ip/{ip}" 
 
 RATE_LIMIT_WAIT_SECONDS = 120 
@@ -132,94 +134,96 @@ COUNTRY_CODE_TO_NUMERIC_ISO = {
     'VU': 548, 'VE': 862, 'VN': 704, 'VI': 850, 'WF': 876, 'EH': 732, 'YE': 887, 'ZM': 894, 'ZW': 716
 }
 
+# --- 修正後：COUNTRY_JP_NAME 全体 ---
 COUNTRY_JP_NAME = {
-    "AF": "アフガニスタン","AL": "アルバニア","DZ": "アルジェリア","AS": "アメリカ領サモア","AD": "アンドラ","AO": "アンゴラ",
-    "AI": "アンギラ","AQ": "南極","AG": "アンティグア・バーブーダ","AR": "アルゼンチン","AM": "アルメニア","AW": "アルバ","AU": "オーストラリア",
-    "AT": "オーストリア","AZ": "アゼルバイジャン","BS": "バハマ","BH": "バーレーン","BD": "バングラデシュ","BB": "バルバドス","BY": "ベラルーシ",
-    "BE": "ベルギー","BZ": "ベリーズ","BJ": "ベナン","BM": "バミューダ","BT": "ブータン","BO": "ボリビア","BA": "ボスニア・ヘルツェゴビナ",
-    "BW": "ボツワナ","BR": "ブラジル","BN": "ブルネイ","BG": "ブルガリア","BF": "ブルキナファソ","BI": "ブルンジ","KH": "カンボジア","CM": "カメルーン",
-    "CA": "カナダ","CV": "カーボベルデ","CF": "中央アフリカ共和国","TD": "チャド","CL": "チリ","CN": "中国","CO": "コロンビア","CR": "コスタリカ",
-    "HR": "クロアチア","CU": "キューバ","CY": "キプロス","CZ": "チェコ","DK": "デンマーク","DJ": "ジブチ","DM": "ドミニカ国","DO": "ドミニカ共和国",
-    "EC": "エクアドル","EG": "エジプト","SV": "エルサルバドル","EE": "エストニア","ET": "エチオピア","FI": "フィンランド","FR": "フランス","DE": "ドイツ",
-    "GR": "ギリシャ","GL": "グリーンランド","GT": "グアテマラ","GY": "ガイアナ","HK": "香港","HU": "ハンガリー","IN": "インド","ID": "インドネシア",
-    "IR": "イラン","IQ": "イラク","IE": "アイルランド","IL": "イスラエル","IT": "イタリア","JP": "日本","KR": "韓国","TW": "台湾","MY": "マレーシア",
-    "MX": "メキシコ","NL": "オランダ","NZ": "ニュージーランド","NO": "ノルウェー","PK": "パキスタン","PA": "パナマ","PE": "ペルー","PH": "フィリピン",
-    "PL": "ポーランド","PT": "ポルトガル","QA": "カタール","RO": "ルーマニア","RU": "ロシア","SA": "サウジアラビア","SG": "シンガポール","ZA": "南アフリカ",
-    "ES": "スペイン","SE": "スウェーデン","CH": "スイス","TH": "タイ","TR": "トルコ","UA": "ウクライナ","AE": "アラブ首長国連邦","GB": "イギリス",
-    "US": "アメリカ","VN": "ベトナム","YE": "イエメン","ZM": "ザンビア","ZW": "ジンバブエ"
+    "AF": "アフガニスタン・イスラム首長国","AL": "アルバニア共和国","DZ": "アルジェリア民主人民共和国","AS": "アメリカ領サモア","AD": "アンドラ公国","AO": "アンゴラ共和国",
+    "AI": "アンギラ","AQ": "南極","AG": "アンティグア・バーブーダ","AR": "アルゼンチン共和国","AM": "アルメニア共和国","AW": "アルバ","AU": "オーストラリア連邦",
+    "AT": "オーストリア共和国","AZ": "アゼルバイジャン共和国","BS": "バハマ国","BH": "バーレーン王国","BD": "バングラデシュ人民共和国","BB": "バルバドス","BY": "ベラルーシ共和国",
+    "BE": "ベルギー王国","BZ": "ベリーズ","BJ": "ベナン共和国","BM": "バミューダ","BT": "ブータン王国","BO": "ボリビア多民族国","BA": "ボスニア・ヘルツェゴビナ",
+    "BW": "ボツワナ共和国","BR": "ブラジル連邦共和国","BN": "ブルネイ・ダルサラーム国","BG": "ブルガリア共和国","BF": "ブルキナファソ","BI": "ブルンジ共和国","KH": "カンボジア王国","CM": "カメルーン共和国",
+    "CA": "カナダ","CV": "カーボベルデ共和国","CF": "中央アフリカ共和国","TD": "チャド共和国","CL": "チリ共和国","CN": "中華人民共和国","CO": "コロンビア共和国","CR": "コスタリカ共和国",
+    "HR": "クロアチア共和国","CU": "キューバ共和国","CY": "キプロス共和国","CZ": "チェコ共和国","DK": "デンマーク王国","DJ": "ジブチ共和国","DM": "ドミニカ国","DO": "ドミニカ共和国",
+    "EC": "エクアドル共和国","EG": "エジプト・アラブ共和国","SV": "エルサルバドル共和国","EE": "エストニア共和国","ET": "エチオピア連邦民主共和国","FI": "フィンランド共和国","FR": "フランス共和国","DE": "ドイツ連邦共和国",
+    "GR": "ギリシャ共和国","GL": "グリーンランド","GT": "グアテマラ共和国","GY": "ガイアナ共和国","HK": "中華人民共和国香港特別行政区","HU": "ハンガリー","IN": "インド共和国","ID": "インドネシア共和国",
+    "IR": "イラン・イスラム共和国","IQ": "イラク共和国","IE": "アイルランド","IL": "イスラエル国","IT": "イタリア共和国","JP": "日本国","KR": "大韓民国","TW": "台湾","MY": "マレーシア",
+    "MX": "メキシコ合衆国","NL": "オランダ王国","NZ": "ニュージーランド","NO": "ノルウェー王国","PK": "パキスタン・イスラム共和国","PA": "パナマ共和国","PE": "ペルー共和国","PH": "フィリピン共和国",
+    "PL": "ポーランド共和国","PT": "ポルトガル共和国","QA": "カタール国","RO": "ルーマニア","RU": "ロシア連邦","SA": "サウジアラビア王国","SG": "シンガポール共和国","ZA": "南アフリカ共和国",
+    "ES": "スペイン王国","SE": "スウェーデン王国","CH": "スイス連邦","TH": "タイ王国","TR": "トルコ共和国","UA": "ウクライナ","AE": "アラブ首長国連邦","GB": "グレートブリテン及び北アイルランド連合王国",
+    "US": "アメリカ合衆国","VN": "ベトナム社会主義共和国","YE": "イエメン共和国","ZM": "ザンビア共和国","ZW": "ジンバブエ共和国"
 }
 
 # --- ISP名称の日本語マッピング (企業名統一版) ---
 ISP_JP_NAME = {
     # --- NTT Group ---
-    'NTT Communications Corporation': 'NTTドコモビジネス', 
-    'NTT COMMUNICATIONS CORPORATION': 'NTTドコモビジネス',
-    'NTT DOCOMO BUSINESS,Inc.': 'NTTドコモビジネス',
-    'NTT DOCOMO, INC.': 'NTTドコモ',
-    'NTT PC Communications, Inc.': 'NTTPCコミュニケーションズ',
+# --- NTT Group ---
+    'NTT Communications Corporation': 'NTTドコモビジネス株式会社', 
+    'NTT COMMUNICATIONS CORPORATION': 'NTTドコモビジネス株式会社',
+    'NTT DOCOMO BUSINESS,Inc.': 'NTTドコモビジネス株式会社',
+    'NTT DOCOMO, INC.': '株式会社NTTドコモ',
+    'NTT PC Communications, Inc.': '株式会社エヌ・ティ・ティ・ピー・シーコミュニケーションズ',
     
     # --- KDDI Group ---
-    'Kddi Corporation': 'KDDI',
-    'KDDI CORPORATION': 'KDDI',
-    'Chubu Telecommunications Co., Inc.': '中部テレコミュニケーション',
-    'Chubu Telecommunications Company, Inc.': '中部テレコミュニケーション',
-    'Hokkaido Telecommunication Network Co., Inc.': 'HOTnet',
-    'Energia Communications, Inc.': 'エネコム',
-    'STNet, Inc.': 'STNet',
-    'QTNet, Inc.': 'QTNet',
-    'BIGLOBE Inc.': 'ビッグローブ',
+    'Kddi Corporation': 'KDDI株式会社',
+    'KDDI CORPORATION': 'KDDI株式会社',
+    'Chubu Telecommunications Co., Inc.': '中部テレコミュニケーション株式会社',
+    'Chubu Telecommunications Company, Inc.': '中部テレコミュニケーション株式会社',
+    'Hokkaido Telecommunication Network Co., Inc.': '北海道総合通信網株式会社',
+    'Energia Communications, Inc.': '株式会社エネルギア・コミュニケーションズ',
+    'STNet, Inc.': '株式会社STNet',
+    'QTNet, Inc.': '株式会社QTnet',
+    'BIGLOBE Inc.': 'ビッグローブ株式会社',
     
     # --- SoftBank Group ---
-    'SoftBank Corp.': 'ソフトバンク',
-    'Yahoo Japan Corporation': 'LINEヤフー',
-    'LY Corporation': 'LINEヤフー',
-    'LINE Corporation': 'LINEヤフー',
+    'SoftBank Corp.': 'ソフトバンク株式会社',
+    'Yahoo Japan Corporation': 'LINEヤフー株式会社',
+    'LY Corporation': 'LINEヤフー株式会社',
+    'LINE Corporation': 'LINEヤフー株式会社',
     
     # --- Rakuten Group ---
-    'Rakuten Group, Inc.': '楽天グループ',
-    'Rakuten Mobile, Inc.': '楽天モバイル',
-    'Rakuten Communications Corp.': '楽天コミュニケーションズ',
+    'Rakuten Group, Inc.': '楽天グループ株式会社',
+    'Rakuten Mobile, Inc.': '楽天モバイル株式会社',
+    'Rakuten Communications Corp.': '楽天コミュニケーションズ株式会社',
     
     # --- Sony Group ---
-    'Sony Network Communications Inc.': 'ソニーネットワークコミュニケーションズ',
-    'So-net Entertainment Corporation': 'ソニーネットワークコミュニケーションズ', 
-    'So-net Corporation': 'ソニーネットワークコミュニケーションズ',
+    'Sony Network Communications Inc.': 'ソニーネットワークコミュニケーションズ株式会社',
+    'So-net Entertainment Corporation': 'ソニーネットワークコミュニケーションズ株式会社', 
+    'So-net Corporation': 'ソニーネットワークコミュニケーションズ株式会社',
     
     # --- Major ISPs / VNEs ---
-    'Internet Initiative Japan Inc.': 'IIJ',
-    'NIFTY Corporation': 'ニフティ',
-    'FreeBit Co., Ltd.': 'フリービット',
-    'TOKAI Communications Corporation': 'TOKAIコミュニケーションズ',
-    'DREAM TRAIN INTERNET INC.': 'ドリーム・トレイン・インターネット (DTI)',
-    'ASAHI Net, Inc.': '朝日ネット',
-    'Asahi Net': '朝日ネット',
-    'Optage Inc.': 'オプテージ',
-    'Jupiter Telecommunications Co., Ltd.': 'J:COM', 
-    'JCOM Co., Ltd.': 'J:COM',
-    'JCN': 'J:COM', 
-    'SAKURA Internet Inc.': 'さくらインターネット',
-    'GMO Internet, Inc.': 'GMOインターネット',
-    'INTERNET MULTIFEED CO.': 'インターネットマルチフィード',
-    'IDC Frontier Inc.': 'IDCフロンティア',
+    'Internet Initiative Japan Inc.': '株式会社インターネットイニシアティブ',
+    'NIFTY Corporation': 'ニフティ株式会社',
+    'FreeBit Co., Ltd.': 'フリービット株式会社',
+    'TOKAI Communications Corporation': '株式会社TOKAIコミュニケーションズ',
+    'DREAM TRAIN INTERNET INC.': '株式会社ドリーム・トレイン・インターネット',
+    'ASAHI Net, Inc.': '株式会社朝日ネット',
+    'Asahi Net': '株式会社朝日ネット',
+    'Optage Inc.': '株式会社オプテージ',
+    'Jupiter Telecommunications Co., Ltd.': 'JCOM株式会社', 
+    'JCOM Co., Ltd.': 'JCOM株式会社',
+    'JCN': 'JCOM株式会社', 
+    'SAKURA Internet Inc.': 'さくらインターネット株式会社',
+    'GMO Internet, Inc.': 'GMOインターネットグループ株式会社',
+    'INTERNET MULTIFEED CO.': 'インターネットマルチフィード株式会社',
+    'IDC Frontier Inc.': '株式会社アイディーシーフロンティア',
     
     # --- Others ---
-    'ARTERIA Networks Corporation': 'アルテリア・ネットワークス',
-    'UCOM Corporation': 'アルテリア・ネットワークス',
-    'VECTANT Ltd.': 'アルテリア・ネットワークス',
-    'KIBI Cable Television Co., Ltd.': '吉備ケーブルテレビ',
+    'ARTERIA Networks Corporation': 'アルテリア・ネットワークス株式会社',
+    'UCOM Corporation': 'アルテリア・ネットワークス株式会社',
+    'VECTANT Ltd.': 'アルテリア・ネットワークス株式会社',
+    'KIBI Cable Television Co., Ltd.': '株式会社吉備ケーブルテレビ',
 }
 
 # 強力な名寄せルール (部分一致検索)
 ISP_REMAP_RULES = [
-    ('jcn', 'J:COM'), ('jupiter', 'J:COM'), ('cablenet', 'J:COM'),
-    ('dion', 'KDDI'), ('au one', 'KDDI'), ('kddi', 'KDDI'),
-    ('k-opti', 'オプテージ'), ('ctc', '中部テレコミュニケーション'),
-    ('vectant', 'アルテリア・ネットワークス'), ('arteria', 'アルテリア・ネットワークス'),
-    ('softbank', 'ソフトバンク'), ('bbtec', 'ソフトバンク'),
-    ('ocn', 'OCN'),
-    ('so-net', 'ソニーネットワークコミュニケーションズ'), ('nuro', 'ソニー (NURO)'),
-    ('biglobe', 'ビッグローブ'), ('iij', 'IIJ'),
-    ('transix', 'インターネットマルチフィード (transix)'),
+    ('jcn', 'JCOM株式会社'), ('jupiter', 'JCOM株式会社'), ('cablenet', 'JCOM株式会社'),
+    ('dion', 'KDDI株式会社'), ('au one', 'KDDI株式会社'), ('kddi', 'KDDI株式会社'),
+    ('k-opti', 'オプテージ株式会社'), ('ctc', '中部テレコミュニケーションズ株式会社'),
+    ('vectant', 'アルテリア・ネットワークス株式会社'), ('arteria', 'アルテリア・ネットワークス株式会社'),
+    ('softbank', 'ソフトバンク株式会社'), ('bbtec', 'ソフトバンク株式会社'),
+    ('ocn', 'OCN株式会社'),
+    ('so-net', 'ソニーネットワークコミュニケーションズ株式会社'), ('nuro', 'ソニー (NURO)'),
+    ('biglobe', 'ビッグローブ株式会社'), ('iij', 'IIJ'),
+    ('transix', 'インターネットマルチフィード株式会社 (transix)'),
     ('v6plus', 'JPNE (v6プラス)'),
     ('rakuten', '楽天グループ'),
 ]
@@ -419,7 +423,7 @@ def fetch_rdap_data(ip):
             network_name = data.get('name', '')
             if not network_name and 'handle' in data:
                 network_name = data['handle']
-            return network_name
+            return {'name': network_name, 'json': data, 'url': url}
     except:
         pass
     return None
@@ -484,13 +488,32 @@ def check_internetdb_risk(ip, max_retries=3):
             time.sleep(1.5) # リトライ前に1.5秒の待機を挟む（バックオフ）
         except Exception:
             return "Error:Connection"
+        
+# IP2Proxy API取得関数
+def get_ip2proxy_data(ip, api_key):
+    """
+    IP2Proxy Web Service APIを使用してプロキシ判定の詳細データを取得する。
+    """
+    if not api_key:
+        return None
+    try:
+        url = IP2PROXY_API_URL.format(ip=ip, key=api_key)
+        response = session.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            # ip2location.io の仕様：is_proxy キーが存在するかで判定
+            if "is_proxy" in data:
+                return data
+    except Exception:
+        pass
+    return None
 
 # Proモード用 API取得関数 (ipinfo.io)
-def get_ip_details_pro(ip, token, tor_nodes):
+def get_ip_details_pro(ip, token, tor_nodes, ip2proxy_api_key=None):
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
-        'RDAP': '', 'IoT_Risk': '' # IoT_Risk列
+        'RDAP': '', 'RDAP_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IP2PROXY_JSON': None, 'IoT_Risk': ''
     }
     try:
         url = IPINFO_API_URL.format(ip=ip)
@@ -507,6 +530,8 @@ def get_ip_details_pro(ip, token, tor_nodes):
 
         response.raise_for_status()
         data = response.json()
+        
+        result['IPINFO_JSON'] = data 
         
         org_raw = data.get('org', '')
         isp_name = re.sub(r'^AS\d+\s+', '', org_raw) if org_raw else 'N/A'
@@ -538,21 +563,30 @@ def get_ip_details_pro(ip, token, tor_nodes):
     except Exception as e:
         result['Status'] = f'Error: Pro API ({type(e).__name__})'
     
+    is_suspicious = result.get('Proxy_Type', '') != "Standard Connection"
+    if is_suspicious and ip2proxy_api_key:
+        ip2_data = get_ip2proxy_data(ip, ip2proxy_api_key)
+        if ip2_data:
+            result['IP2PROXY_JSON'] = ip2_data
+            if ip2_data.get('isProxy') == 'YES':
+                result['ISP'] += f" [IP2P:{ip2_data.get('proxyType')}]"
     result['Secondary_Security_Links'] = create_secondary_links(ip)
     return result
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, api_key=None):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, api_key=None, ip2proxy_api_key=None):
     
     # 1. Proモード (APIキーあり)
     if api_key:
-        result = get_ip_details_pro(ip, api_key, tor_nodes)
+        result = get_ip_details_pro(ip, api_key, tor_nodes, ip2proxy_api_key)
         # RDAPオプション有効時
         if use_rdap:
             rdap_res = fetch_rdap_data(ip)
             if rdap_res:
-                result['ISP'] += f" [RDAP: {rdap_res}]"
-                result['RDAP'] = rdap_res
+                result['ISP'] += f" [RDAP: {rdap_res['name']}]"
+                result['RDAP'] = rdap_res['name']
+                result['RDAP_JSON'] = rdap_res['json']
+                result['RDAP_URL'] = rdap_res['url']
         
         # InternetDBオプション有効時
         if use_internetdb:
@@ -566,7 +600,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
-        'RDAP': '', 'IoT_Risk': '' # IoT_Risk列
+        'RDAP': '', 'RDAP_JSON': None, 'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': ''
     }
     new_cache_entry = None
 
@@ -603,7 +637,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             result['Status'] = 'Error: Rate Limit (429)'
             result['Defer_Until'] = defer_until
             result['Secondary_Security_Links'] = create_secondary_links(ip)
-            return result, new_cache_entry 
+            return result, new_cache_entry
         
         response.raise_for_status()
         data = response.json()
@@ -624,8 +658,10 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             if use_rdap:
                 rdap_res = fetch_rdap_data(ip)
                 if rdap_res:
-                    result['ISP'] += f" [RDAP: {rdap_res}]"
-                    result['RDAP'] = rdap_res
+                    result['ISP'] += f" [RDAP: {rdap_res['name']}]"
+                    result['RDAP'] = rdap_res['name']
+                    result['RDAP_JSON'] = rdap_res['json']
+                    result['RDAP_URL'] = rdap_res['url']
             if use_internetdb:
                 result['IoT_Risk'] = check_internetdb_risk(ip)
             else:
@@ -660,7 +696,20 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             
     except requests.exceptions.RequestException as e:
         result['Status'] = f'Error: Network/Timeout ({type(e).__name__})'
+
+    is_suspicious = False
+    p_type = result.get('Proxy_Type', '')
+    
+    if p_type and p_type != "Standard Connection":
+        is_suspicious = True
         
+    if is_suspicious and ip2proxy_api_key: # locals().get()を使わず直接引数を参照
+        ip2_data = get_ip2proxy_data(ip, ip2proxy_api_key)
+        if ip2_data:
+            result['IP2PROXY_JSON'] = ip2_data
+            if ip2_data.get('isProxy') == 'YES':
+                result['ISP'] += f" [IP2P:{ip2_data.get('proxyType')}]"
+
     result['Secondary_Security_Links'] = create_secondary_links(ip)
     return result, new_cache_entry
 
@@ -671,7 +720,7 @@ def get_domain_details(domain):
         'RIR_Link': icann_link,
         'Secondary_Security_Links': create_secondary_links(domain),
         'Status': 'Success (Domain)',
-        'RDAP': '', 'IoT_Risk': ''
+        'RDAP': '', 'RDAP_JSON': None,'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': ''
     }
 
 def get_simple_mode_details(target):
@@ -688,7 +737,7 @@ def get_simple_mode_details(target):
         'RIR_Link': rir_link_content,
         'Secondary_Security_Links': create_secondary_links(target),
         'Status': 'Success (簡易モード)',
-        'RDAP': '', 'IoT_Risk': ''
+        'RDAP': '', 'RDAP_JSON': None, 'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': ''
     }
 # --- ヘルパー関数群 ---
 
@@ -1350,7 +1399,7 @@ def display_results(results, current_mode_full_text, display_mode):
         | 📍 **場所・回線特定** | **ipinfo.io** | `v4` `v6` | 地図上の位置、ホスティング(クラウド)かどうかの詳細判定に強い。 |
         | 🕵️ **VPN/Proxy判定** | **IP2Proxy** | `v4` `v6` | 匿名プロキシやVPNからのアクセスかどうかを専門的に判定。 |
         | 🗺️ **地図表示** | **IP Location** | `v4` `v6` | IPアドレスの地理的位置をGoogleマップ等で視覚的に表示。 |
-        | 📝 **登録者情報** | **Whois.com** | `Dom` | ドメインの所有者情報（英語）を確認するのに最適。IP検索時は非表示。 |
+        | 📝 **登録者情報** | **Whois.com** | `Dom` | ドメインの保有者情報（英語）を確認するのに最適。IP検索時は非表示。 |
         | 📡 **伝播確認** | **DNS Checker** | `v6` | IPv6のWhois情報が世界中でどう見えているかを確認。 |
         | 📚 **公式情報** | **CP-WHOIS** | `ALL` | 利用者認証が必要な検索ツール。ここでの検索結果はデータとして信頼性が高い。 |
         
@@ -1398,10 +1447,10 @@ def display_results(results, current_mode_full_text, display_mode):
         ※ 本判定はISP名称等に基づく推論であるため、実際の利用状況と異なる場合があります。
         """)
     
-    # カラム定義修正 (IoT Risk追加)
-    col_widths = [0.5, 1.5, 1.2, 1.8, 1.5, 1.3, 1.0, 1.2, 0.8, 0.5] 
+    # カラム定義
+    col_widths = [0.5, 1.4, 1.1, 1.7, 1.2, 1.2, 1.0, 1.1, 0.8, 0.8, 0.5] 
     h_cols = st.columns(col_widths)
-    headers = ["No.", "Target IP", "国名","ISP(日本語)", "RIR Link", "Security Links", "Proxy Type", "IoT Risk", "Status", "✅"]
+    headers = ["No.", "Target IP", "国名","ISP(日本語)", "RIR Link", "Security Links", "Proxy Type", "IoT Risk", "Status", "Report", "✅"]
     for col, name in zip(h_cols, headers):
         col.markdown(f"**{name}**")
     st.markdown("<hr style='margin: 0px 0px 10px 0px;'>", unsafe_allow_html=True)
@@ -1416,6 +1465,7 @@ def display_results(results, current_mode_full_text, display_mode):
                 row_cols[0].write(f"**{idx+1}**")
                 
                 target_ip = res.get('Target_IP', 'N/A')
+                clean_ip = get_copy_target(target_ip)
                 row_cols[1].markdown(f"`{target_ip}`")
                 
                 c_jp = res.get('Country_JP', 'N/A')
@@ -1428,14 +1478,12 @@ def display_results(results, current_mode_full_text, display_mode):
                 rir_link = res.get('RIR_Link', 'N/A')
                 with row_cols[4]:
                     st.write(rir_link)
-                    clean_ip = get_copy_target(target_ip)
                     st.code(clean_ip, language=None)
                 
                 row_cols[5].write(res.get('Secondary_Security_Links', 'N/A'))
                 
                 hosting_val = res.get('Proxy_Type', '')
                 row_cols[6].write(hosting_val)          
-
 
                 iot_risk = res.get('IoT_Risk', '')
 
@@ -1446,15 +1494,392 @@ def display_results(results, current_mode_full_text, display_mode):
                 elif "[No Data]" in iot_risk or "No Match" in iot_risk:
                     row_cols[7].success(iot_risk) # 緑（確認済み・該当なし・その他ポート開）
                 else:
-                    row_cols[7].error(iot_risk)   # 赤（リスク検知！）
+                    row_cols[7].error(iot_risk)   # 赤（リスク検知）
 
                 status_val = res.get('Status', 'N/A')
                 if "Success" in status_val:
                     row_cols[8].markdown(f"<span style='color:green;'>{status_val}</span>", unsafe_allow_html=True)
                 else:
                     row_cols[8].write(status_val)
+                
+                # --- Report列 ---
+                with row_cols[9]:
+                    rdap_url = res.get('RDAP_URL')
+                    rdap_json = res.get('RDAP_JSON')
+                    ipinfo_json = res.get('IPINFO_JSON')
+                    ip2proxy_json = res.get('IP2PROXY_JSON')
                     
-                row_cols[9].checkbox("選択", key=f"chk_{get_copy_target(target_ip)}_{idx}", label_visibility="collapsed")
+                    if (rdap_url and rdap_json) or ipinfo_json:
+                        import json
+                        import html
+                        import re
+                        import datetime
+                        from urllib.parse import urlparse
+                        
+                        now = datetime.datetime.now()
+                        current_time_str = now.strftime("%Y年%m月%d日 %H時%M分")
+
+                        tabs_html = ""
+                        contents_html = ""
+                        first_tab_id = None
+
+                        # --- 1. RDAP コンテンツ生成 ---
+                        if rdap_url and rdap_json:
+                            tab_id = "tab-rdap"
+                            if not first_tab_id: first_tab_id = tab_id
+                            
+                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">RDAP情報</button>\n'
+                            
+                            # RDAPの真のURL取得
+                            actual_rdap_url = rdap_url
+                            for link in rdap_json.get("links", []):
+                                if link.get("rel") == "self":
+                                    actual_rdap_url = link.get("href", actual_rdap_url)
+                                    break
+                            
+                            name_val = rdap_json.get("name", "情報なし")
+                            country_val = rdap_json.get("country", "情報なし")
+                            start_ip = rdap_json.get("startAddress", "情報なし")
+                            end_ip = rdap_json.get("endAddress", "情報なし")
+                            
+                            remarks_list = rdap_json.get("remarks", [])
+                            descriptions = []
+                            for remark in remarks_list:
+                                desc = remark.get("description", [])
+                                if isinstance(desc, list):
+                                    descriptions.extend(desc)
+                                elif isinstance(desc, str):
+                                    descriptions.append(desc)
+                            
+                            remarks_html = ""
+                            if descriptions:
+                                remarks_text = "<br>".join(descriptions)
+                                remarks_html = f"""
+                                    <tr>
+                                        <th>備考・プロジェクト情報<br>(Remarks / Description)</th>
+                                        <td><strong>{remarks_text}</strong><span class="help-text">RDAPデータの備考欄に記載されている付加情報であり、保有者と運用者が異なる理由（共同プロジェクト、クラウド基盤の利用など）が記載されている場合がある。</span></td>
+                                    </tr>
+                                """
+
+                            if country_val == "情報なし":
+                                country_display = "情報なし"
+                            else:
+                                country_jp_name = COUNTRY_JP_NAME.get(country_val, "不明")
+                                country_display = f"{country_val}（{country_jp_name}）"
+                            
+                            parsed_url = urlparse(actual_rdap_url)
+                            short_domain = parsed_url.netloc if parsed_url.netloc else "RDAP"
+
+                            registry_name = "不明"
+                            if "apnic" in short_domain.lower(): registry_name = "APNIC"
+                            elif "arin" in short_domain.lower(): registry_name = "ARIN"
+                            elif "ripe" in short_domain.lower(): registry_name = "RIPE NCC"
+                            elif "lacnic" in short_domain.lower(): registry_name = "LACNIC"
+                            elif "afrinic" in short_domain.lower(): registry_name = "AFRINIC"
+                            else: registry_name = short_domain
+
+                            raw_json_str = json.dumps(rdap_json, indent=4, ensure_ascii=False)
+                            escaped_json = html.escape(raw_json_str)
+                            
+                            highlight_keys = ['name', 'country', 'startAddress', 'endAddress']
+                            for hk in highlight_keys:
+                                simple_pattern = r'(&quot;' + hk + r'&quot;:\s*&quot;.*?&quot;)'
+                                escaped_json = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json)
+                            
+                            if descriptions:
+                                escaped_json = re.sub(r'(&quot;(remarks|description)&quot;\s*:)', r'<span class="json-hl">\1</span>', escaped_json)
+                                for desc in descriptions:
+                                    esc_desc = html.escape(desc)
+                                    target_str = f"&quot;{esc_desc}&quot;"
+                                    replacement = f'<span class="json-hl">{target_str}</span>'
+                                    escaped_json = escaped_json.replace(target_str, replacement)
+
+                            rdap_content = f"""
+                            <div id="{tab_id}" class="tab-content">
+                                <h1 class="theme-rdap">RDAP取得結果 ({clean_ip})</h1>
+                                <div class="description">
+                                    <strong>RDAP（Registration Data Access Protocol）の定義及び運用目的：</strong><br>
+                                    RDAPは、インターネット上のIPアドレスやドメイン名等のインターネット資源が、法的にどの組織又は個人に割り当てられているかを確認するための標準的な通信規約（プロトコル）である。<br>
+                                    従来のWHOISプロトコルが抱えていた非構造化データによる解析の困難さを解消し、JSON形式による構造化された厳密な登録情報を提供する次世代の公式仕様として運用されている。
+                                </div>
+                                <h2>対象IPアドレス及び回答元レジストリ情報等</h2>
+                                <table>
+                                    <tr><th>対象IPアドレス<br>(Target IP)</th><td><strong>{clean_ip}</strong></td></tr>
+                                    <tr><th>回答日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>回答元レジストリ<br>(Registry)</th><td><strong>{registry_name}</strong></td></tr>
+                                    <tr><th>参照元URL<br>(Source)</th><td><a href="{actual_rdap_url}" target="_blank" style="color: #0066cc; word-break: break-all; font-weight: bold;">{actual_rdap_url}</a><span class="help-text">上記URLは、地域インターネットレジストリ（RIR）から取得したJSONデータを示す。</span></td></tr>
+                                </table>
+                                <h2>RDAP取得結果</h2>
+                                <table>
+                                    <tr><th>法的保有者<br>(RDAP Name)</th><td><strong>{name_val}</strong><span class="help-text">対象のIPアドレスブロックを公式に管理・保有している組織名（レジストリ登録情報）を示す。</span></td></tr>
+                                    {remarks_html}
+                                    <tr><th>登録国コード<br>(Country)</th><td><strong>{country_display}</strong><span class="help-text">当該IPアドレス資源が法的に割り当てられている管轄国を示す。</span></td></tr>
+                                    <tr><th>IPアドレス割当範囲<br>(Range)</th><td><strong>{start_ip} ～ {end_ip}</strong><span class="help-text">対象のIPアドレスを包含する、レジストリから当該組織に対して運用および管理権限が委譲（割り当て）された一連のIPアドレス帯域を示す。</span></td></tr>
+                                </table>
+                                <h2>参照元データ (JSON形式)</h2>
+                                <div class="raw-data">{escaped_json}</div>
+                            </div>
+                            """
+                            contents_html += rdap_content
+
+                        # --- 2. IPinfo コンテンツ生成 ---
+                        if ipinfo_json:
+                            tab_id = "tab-ipinfo"
+                            if not first_tab_id: first_tab_id = tab_id
+                            
+                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">IPinfo情報</button>\n'
+                            
+                            raw_json_str = json.dumps(ipinfo_json, indent=4, ensure_ascii=False)
+                            escaped_json = html.escape(raw_json_str)
+                            
+                            highlight_keys = ['ip', 'hostname', 'city', 'region', 'country', 'loc', 'org']
+                            for hk in highlight_keys:
+                                simple_pattern = r'(&quot;' + hk + r'&quot;:\s*&quot;.*?&quot;)'
+                                escaped_json = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json)
+
+                            ip_val = ipinfo_json.get("ip", "情報なし")
+                            hostname_val = ipinfo_json.get("hostname", "情報なし")
+                            city_val = ipinfo_json.get("city", "情報なし")
+                            region_val = ipinfo_json.get("region", "情報なし")
+                            country_val = ipinfo_json.get("country", "情報なし")
+                            loc_val = ipinfo_json.get("loc", "情報なし")
+                            org_val = ipinfo_json.get("org", "情報なし")
+
+                            map_html = ""
+                            if loc_val != "情報なし" and "," in loc_val:
+                                map_html = ""
+                            if loc_val != "情報なし" and "," in loc_val:
+                                # URLの構造を標準的な Embed API 形式に変更
+                                map_url = f"https://maps.google.com/maps?q={loc_val}&hl=ja&z=14&output=embed"
+                                map_html = f"""
+                                <h2>位置情報マップ</h2>
+                                <div class="map-container" style="width: 100%; height: 400px; margin-bottom: 20px; border: 1px solid #ccc; border-radius: 5px; overflow: hidden;">
+                                    <iframe 
+                                        width="100%" 
+                                        height="100%" 
+                                        frameborder="0" 
+                                        scrolling="no" 
+                                        marginheight="0" 
+                                        marginwidth="0" 
+                                        src="{map_url}">
+                                    </iframe>
+                                </div>
+                                """
+
+                            ipinfo_content = f"""
+                            <div id="{tab_id}" class="tab-content">
+                                <h1 class="theme-ipinfo">IPinfo詳細情報 ({clean_ip})</h1>
+                                <div class="description">
+                                    <strong>IPinfo（IP Geolocation Data）：</strong><br>
+                                    当該IPアドレスの現在の地理的位置や組織情報など、現在の利用形態に焦点を当てた情報を提供する。RDAPが法的・歴史的な割り当て情報を示すのに対し、IPinfoは現在のネットワーク上のルーティングや利用状況に基づくリアルタイム性の高いデータである。
+                                </div>
+                                <h2>基本情報</h2>
+                                <table>
+                                    <tr><th>対象IPアドレス<br>(IP)</th><td><strong>{ip_val}</strong></td></tr>
+                                    <tr><th>回答日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>ホストネーム<br>(Hostname)</th><td><strong>{hostname_val}</strong></td></tr>
+                                    <tr><th>組織/ISP<br>(Organization)</th><td><strong>{org_val}</strong><span class="help-text">現在このIPをネットワーク上でルーティング（運用）しているプロバイダや組織の名称。</span></td></tr>
+                                </table>
+                                <h2>地理的情報</h2>
+                                <table>
+                                    <tr><th>地域<br>(Location)</th><td><strong>{country_val}, {region_val}, {city_val}</strong></td></tr>
+                                    <tr><th>座標<br>(Coordinates)</th><td><strong>{loc_val}</strong><span class="help-text">IPアドレスの割り当てに基づく推測座標であり、正確なGPS位置ではない。</span></td></tr>
+                                </table>
+                                {map_html}
+                                <h2>参照元データ (JSON形式)</h2>
+                                <div class="raw-data">{escaped_json}</div>
+                            </div>
+                            """
+                            contents_html += ipinfo_content
+
+                        # --- 3. IP2Proxy  ---
+                        if ip2proxy_json:
+                            tab_id = "tab-ip2proxy"
+                            if not first_tab_id: first_tab_id = tab_id
+                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">IP2Proxy</button>\n'
+                            
+                            # 1. 判定結果の正規化
+                            is_proxy_val = ip2proxy_json.get('is_proxy')
+                            if is_proxy_val is True:
+                                proxy_status_text = "該当あり (プロキシ検知)"
+                                status_color = "red"
+                            elif is_proxy_val is False:
+                                proxy_status_text = "該当なし"
+                                status_color = "green"
+                            else:
+                                proxy_status_text = "情報なし"
+                                status_color = "gray"
+
+                            # 2. Proxyタイプと解説文の生成
+                            p_type_val = ip2proxy_json.get('proxy_type', '情報なし')
+                            if p_type_val == "-" or p_type_val is None: 
+                                p_type_val = "情報なし"
+                                p_type_desc = ""
+                            else:
+                                # 種別に応じた説明マッピング
+                                proxy_descriptions = {
+                                    "VPN": "【VPN Anonymizer】 自身のIPアドレスを隠蔽し、匿名性を確保するために利用される。",
+                                    "PUB": "【Open Proxies】 公開プロキシ。ユーザーの代わりに接続要求を行うが、VPNより機能が制限される。",
+                                    "WEB": "【Web Proxies】 Webベースのプロキシ。ブラウザ経由でユーザーの代わりにWebリクエストを送信する。",
+                                    "TOR": "【Tor Exit Nodes】 Tor匿名化ネットワークの出口ノード。通信の匿名性を極めて高く保つために利用される。",
+                                    "SES": "【Search Engine Spider】 検索エンジンのクローラーやボット。Webサイトの巡回・収集を目的としている。",
+                                    "DCH": "【Data Center Ranges】 ホスティング事業者やデータセンター。匿名性を提供できるインフラ基盤であることを示す。",
+                                    "RES": "【Residential Proxies】 一般家庭のISP回線を経由したプロキシ。通常のユーザーを装うために悪用される場合もある。",
+                                    "CPN": "【Consumer Privacy Network】 リレー経由で通信を暗号化し、IP・位置・閲覧活動を隠蔽するプライバシーネットワークを示す。",
+                                    "EPN": "【Enterprise Private Network】 SASEやSD-WANなど、企業の安全なリモートアクセスのための専用ネットワークを示す。"
+                                }
+                                # 該当する説明があれば取得、なければコードのみ表示
+                                p_type_desc = proxy_descriptions.get(p_type_val, "")
+
+                            c_name_val = ip2proxy_json.get('country_name', '情報なし')
+                            if c_name_val == "-": c_name_val = "情報なし"
+
+                            # 3. JSON文字列の生成とエスケープ、ハイライト
+                            raw_json_str = json.dumps(ip2proxy_json, indent=4, ensure_ascii=False)
+                            escaped_json = html.escape(raw_json_str)
+                            highlight_keys_ip2p = ['is_proxy', 'proxy_type', 'country_name', 'ip', 'as', 'isp']
+                            for hk in highlight_keys_ip2p:
+                                simple_pattern = r'(&quot;' + hk + r'&quot;:\s*.*?,?\n)'
+                                escaped_json = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json)
+
+                            # 4. HTMLコンテンツ構築
+                            ip2p_content = f"""
+                            <div id="{tab_id}" class="tab-content">
+                                <h1 style="color: #6a1b9a; border-bottom: 2px solid #6a1b9a;">IP2Proxy 匿名通信判定結果</h1>
+                                <div class="description" style="background-color: #f3e5f5; border-color: #ce93d8;">
+                                    <strong>IP2Proxy / IP2Location.io (PX1):</strong><br>
+                                    このレポートは、IPアドレスがVPN、オープンプロキシ、Tor、データセンター等の匿名ネットワーク識別情報を提供する。IP2Location.ioの最新データベースに基づき、通信経路の匿名性を評価した結果となる。
+                                </div>
+                                <table>
+                                    <tr><th>判定対象IP</th><td><strong>{ip2proxy_json.get('ip', clean_ip)}</strong></td></tr>
+                                    <tr><th>プロキシ判定</th><td><strong style="color:{status_color};">{proxy_status_text}</strong></td></tr>
+                                    <tr>
+                                        <th>種別 (Proxy Type)</th>
+                                        <td>
+                                            <strong>{p_type_val}</strong>
+                                            <span class="help-text">{p_type_desc}</span>
+                                        </td>
+                                    </tr>
+                                    <tr><th>判定国名</th><td><strong>{c_name_val}</strong></td></tr>
+                                </table>
+                                <h2>解析用生データ (JSON形式)</h2>
+                                <div class="raw-data">{escaped_json}</div>
+                            </div>
+                            """
+                            contents_html += ip2p_content
+
+                        # --- 統合HTMLの構築 ---
+                        full_html = f"""
+                        <!DOCTYPE html>
+                        <html lang="ja">
+                        <head>
+                            <meta charset="UTF-8">
+                            <title>統合詳細レポート - {clean_ip}</title>
+                            <style>
+                                body {{ font-family: 'Helvetica Neue', Arial, sans-serif; padding: 30px; color: #333; line-height: 1.6; max-width: 800px; margin: 0 auto; }}
+                                
+                                /* タブUIのスタイル */
+                                .tab-container {{ margin-bottom: 20px; border-bottom: 2px solid #ccc; display: flex; }}
+                                .tab-button {{ background-color: #f8f9fa; border: 1px solid #ccc; border-bottom: none; outline: none; cursor: pointer; padding: 10px 20px; font-size: 16px; font-weight: bold; color: #555; border-radius: 5px 5px 0 0; margin-right: 5px; transition: 0.3s; }}
+                                .tab-button:hover {{ background-color: #e9ecef; }}
+                                .tab-button.active {{ background-color: #1e3a8a; color: white; border-color: #1e3a8a; }}
+                                .tab-content {{ display: none; animation: fadeEffect 0.4s; }}
+                                @keyframes fadeEffect {{ from {{opacity: 0;}} to {{opacity: 1;}} }}
+
+                                /* 共通コンテンツスタイル */
+                                h1 {{ font-size: 24px; border-bottom: 2px solid; padding-bottom: 5px; }}
+                                h1.theme-rdap {{ color: #1e3a8a; border-color: #1e3a8a; }}
+                                h1.theme-ipinfo {{ color: #00897b; border-color: #00897b; }}
+                                
+                                h2 {{ font-size: 18px; margin-top: 30px; border-left: 4px solid #666; padding-left: 10px; }}
+                                .description {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; border: 1px solid #e9ecef; margin-bottom: 20px; font-size: 14px; text-align: justify; }}
+                                table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
+                                th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; font-size: 14px; vertical-align: top; }}
+                                th {{ background-color: #f2f2f2; width: 30%; }}
+                                .help-text {{ font-size: 12px; color: #666; display: block; margin-top: 4px; line-height: 1.4; }}
+                                .raw-data {{ font-family: monospace; background-color: #f4f4f4; padding: 15px; border-radius: 5px; white-space: pre-wrap; font-size: 12px; border: 1px solid #ccc; word-break: break-all; }}
+                                
+                                /* スイッチ連動クラス */
+                                .json-hl {{ background-color: #fff59d; color: #c62828; font-weight: bold; border-radius: 2px; padding: 1px 3px; transition: 0.3s; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+                                body.hide-hl .json-hl {{ background-color: transparent; color: inherit; font-weight: normal; padding: 0; }}
+                                body.hide-desc .description, body.hide-desc .help-text {{ display: none; }}
+                                body.compress-json .raw-data {{ white-space: normal; word-break: break-all; }}
+                                
+                                /* コントロールパネル */
+                                .controls {{ margin-bottom: 20px; text-align: right; background: #e3f2fd; padding: 10px; border-radius: 5px; border: 1px solid #bbdefb; }}
+                                .controls label {{ font-size: 14px; cursor: pointer; font-weight: bold; color: #1565c0; margin-right: 15px; display: inline-block; margin-bottom: 5px; }}
+                                .controls button {{ padding: 8px 16px; font-size: 14px; cursor: pointer; background-color: #1e3a8a; color: white; border: none; border-radius: 3px; transition: background 0.3s; margin-top: 5px; }}
+                                .controls button:hover {{ background-color: #1565c0; }}
+                                
+                                /* 印刷時設定 (超重要) */
+                                @media print {{
+                                    body {{ padding: 0; max-width: 100%; }}
+                                    .no-print, .tab-container {{ display: none !important; }}
+                                    
+                                    /* 印刷時は全タブを強制表示し、タブごとに改ページする */
+                                    .tab-content {{ display: block !important; page-break-after: always; }}
+                                    .tab-content:last-child {{ page-break-after: auto; }}
+                                    .raw-data {{ page-break-inside: auto; }}
+                                    
+                                    /* 地図のiframeが印刷で途切れないようにする */
+                                    .map-container iframe {{ width: 100% !important; }}
+                                }}
+                            </style>
+                        </head>
+                        <body>
+                            <div class="controls no-print">
+                                <div>
+                                    <label><input type="checkbox" checked onchange="document.body.classList.toggle('hide-desc', !this.checked)"> 解説・ヘルプテキストを表示</label>
+                                    <label><input type="checkbox" checked onchange="document.body.classList.toggle('hide-hl', !this.checked)"> JSONのハイライトを有効化</label>
+                                    <label><input type="checkbox" onchange="document.body.classList.toggle('compress-json', this.checked)"> 生データ(JSON)を圧縮表示</label>
+                                </div>
+                                <button onclick="window.print()">🖨️ すべての情報を一括印刷</button>
+                            </div>
+                            
+                            <div class="tab-container no-print">
+                                {tabs_html}
+                            </div>
+                            
+                            {contents_html}
+
+                            <script>
+                                function openTab(evt, tabId) {{
+                                    var i, tabcontent, tablinks;
+                                    tabcontent = document.getElementsByClassName("tab-content");
+                                    for (i = 0; i < tabcontent.length; i++) {{
+                                        tabcontent[i].style.display = "none";
+                                    }}
+                                    tablinks = document.getElementsByClassName("tab-button");
+                                    for (i = 0; i < tablinks.length; i++) {{
+                                        tablinks[i].className = tablinks[i].className.replace(" active", "");
+                                    }}
+                                    document.getElementById(tabId).style.display = "block";
+                                    if(evt) {{
+                                        evt.currentTarget.className += " active";
+                                    }} else {{
+                                        document.getElementById("btn-" + tabId).className += " active";
+                                    }}
+                                }}
+                                // 初期状態で最初のタブを開く
+                                if('{first_tab_id}' !== 'None') {{
+                                    openTab(null, '{first_tab_id}');
+                                }}
+                            </script>
+                        </body>
+                        </html>
+                        """
+
+                        st.download_button(
+                            label="詳細レポート(HTML)",
+                            data=full_html,
+                            file_name=f"Report_{clean_ip}.html",
+                            mime="text/html",
+                            key=f"full_report_dl_{clean_ip}_{idx}"
+                        )
+                    else:
+                        st.write("-")
+                    
+                row_cols[10].checkbox("選択", key=f"chk_{get_copy_target(target_ip)}_{idx}", label_visibility="collapsed")
 
 # --- リンク分析エンジン ---
 def render_spider_web_analysis(df):
@@ -1624,12 +2049,18 @@ def main():
         
         # Proモード設定 (APIキー入力)
         st.markdown("#### 🔑 Pro Mode (Optional)")
+        # IPinfo用の処理
         if HARDCODED_IPINFO_KEY:
             pro_api_key = HARDCODED_IPINFO_KEY
-            st.success(f"✅ API Key Loaded (Code): {pro_api_key[:4]}***")
+            st.success(f"✅ IPinfo Key Loaded: {pro_api_key[:4]}***")
         else:
-            pro_api_key = st.text_input("ipinfo.io API Key", type="password", help="入力するとipinfo.ioの高精度データベースを使用します。空欄の場合はip-api.com(無料)を使用します。無料版で「Deferred（保留）」が多発し、検索が進まない場合の回避策として有効です。").strip()
-        
+            pro_api_key = st.text_input("ipinfo.io API Key", type="password", key="input_ipinfo", help="入力するとipinfo.ioの高精度データベースを使用します。空欄の場合はip-api.com(無料)を使用します。無料版で「Deferred（保留）」が多発し、検索が進まない場合の回避策として有効です。").strip()
+        # IP2Proxy (IP2Location.io) 用の処理
+        if HARDCODED_IP2PROXY_KEY:
+            ip2proxy_api_key = HARDCODED_IP2PROXY_KEY
+            st.success(f"✅ IP2Proxy Key Loaded: {ip2proxy_api_key[:4]}***")
+        else:
+            ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力します。判定が不審な場合にのみ自動で詳細データを取得します。").strip()
         st.markdown("---")
         if st.button("🔄 IPキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
             st.session_state['cidr_cache'] = {} 
@@ -1695,12 +2126,15 @@ def main():
 
             st.markdown("#### 3. 詳細オプション")
             st.markdown("""
-            - **🔍 高精度モード (RDAP)**
+            - **🔍 公式レジストリ情報 (RDAP)**
                 - `ip-api.com` (無料版) の情報に加え、各地域の**公式レジストリ(RDAP)** にも問い合わせを行います。
                 - **メリット**: 「運用者(ISP)」だけでなく「法的な保有組織(Org)」まで特定できる確率が上がります。
             
-            - **🔑 Pro Mode (ipinfo Key)**
+            - **🔑 高精度判定 (ipinfo Key)**
                 - **メリット**: VPN/Proxy/Hostingの判定精度が劇的に向上し、企業名の特定精度も高まります。
+                        
+            - **🕵️ 匿名通信客観判定 (IP2Proxy Key)**
+                - **メリット**: VPN、Proxy、Tor等の利用が疑われる不審なIPに対し、IP2Location.ioの専門データベースから「匿名通信該当結果」を自動取得します。
 
             - **🔎 IoT Risk Check (InternetDB)**
                 - **メリット**: ポート5555(ADB/FireStick)や1080(Proxy)等の露出を検知し、踏み台リスクを警告します（APIキー不要）。
@@ -1747,19 +2181,23 @@ def main():
             #### 1. データソース
             - **IP Geolocation / ISP 情報**: 
                 - 無料版: `ip-api.com` (毎分45リクエスト制限)
-                - Pro版: `ipinfo.io` (APIキーに基づく制限)
+                - 高精度版: `ipinfo.io` (APIキーに基づく制限)
+            - **匿名通信判定 (Proxy/VPN)**: `IP2Location.io` (不審なIPのみ実行)
             - **Whois (RDAP)**: APNIC等の各地域レジストリ公式サーバー
             - **IoT Risk Intelligence**: Shodan InternetDB (ポートスキャン履歴/キャッシュ)
             - **Tor出口ノード**: Tor Project公式サイト
 
-            #### 2. ハイブリッド検索の仕組み (API・RDAP)
-            - **API (ip-api/ipinfo)**: 
+            #### 2. 多角的解析の仕組み (API・RDAP・ProxyEvidence)
+            - **運用者判定 (ip-api/ipinfo)**: 
                 - **役割**: 「今、誰がそのIPを運用しているか？」(Service Provider) を答えます。
-                - **特徴**: 高速で、CloudflareやAmazonなどのサービス名が表示されやすいです。
-            - **RDAP (公式台帳)**: 
+                - **特徴**: 高速。ISPやクラウド事業者名（Cloudflare, Amazon等）を特定します。
+            - **法的保有者判定 (RDAP公式台帳)**: 
                 - **役割**: 「そのIPアドレス(土地)の法的な持ち主は誰か？」(Registry Owner) を答えます。
-                - **特徴**: 正確ですが、APNIC-LABSなどの組織名が表示されることがあります。
-            - **メリット**: この2つを見比べることで、「運用の委託関係」や「インフラの裏側」が見えてきます。
+                - **特徴**: 厳密。各地域のレジストリに登録された組織名を特定します。
+            - **匿名性客観判定 (IP2Proxy)**: 
+                - **役割**: 「そのIPは意図的に隠蔽（VPN/Proxy等）されているか？」を答えます。
+                - **特徴**: 証拠能力。不審な判定時に専門DBから詳細な証拠JSONを取得します。
+            - **メリット**: これらを統合することで、単なる「場所の特定」を超え、「通信主体の隠蔽意図」までを浮き彫りにします。
 
             #### 3. 技術的仕様
             - **並列処理**: マルチスレッドによる高速検索
@@ -1804,14 +2242,17 @@ def main():
             st.markdown("""
             **Q. 検索が途中で止まりました。**\n
             A. APIの制限（レートリミット）にかかった可能性があります。ツールは自動的に待機して再開しますが、大量（数千件）の検索を行う場合は時間がかかります。「待機中」の表示が出ている場合はそのままお待ちください。なお、無料版API（ip-api）は流量制限が厳しく、数十件程度のバーストで保留（Deferred）状態になることがあります。スムーズな解析が必要な場合は「Local版」の利用、または「Pro Mode (IPinfo)」の適用を検討してください。\n
-            **Q. ipinfoのAPIキーはどこで手に入りますか？**\n
-            A. [ipinfo.io](https://ipinfo.io/signup) から無料で登録・取得できます（無料枠あり）。
+                        
+            **Q. 各種APIキーはどこで手に入りますか？**\n
+            A. 本ツールで利用可能な高度判定用APIキーは、以下の公式サイトから無料で登録・取得できます（いずれも無料枠が存在します）。
+            * **高精度判定 (ipinfo)**: [ipinfo.io サインアップ](https://ipinfo.io/signup)
+            * **匿名通信客観判定 (IP2Proxy)**: [IP2Location.io サインアップ](https://www.ip2location.io/sign-up)
 
             **Q. ISP名と [RDAP: 〇〇] の名前が違うのですが？**\n
             A. **それは「運用者」と「持ち主」の違いです。** 例えば `1.1.1.1` というIPアドレスの場合：
             * **ISP (API)**: `Cloudflare, Inc.` (DNSサービスを提供している運用者)
             * **RDAP (台帳)**: `APNIC-LABS` (IPアドレスブロックを保有している研究組織)
-            このように表示されるのはバグではなく、このツールの「高精度モード」が、**IPアドレスの「表の運用者」と「裏の所有者」の両方を正しく表している証拠**です。
+            このように表示されるのはバグではなく、公式レジストリ情報 (RDAP)が、**IPアドレスの「表の運用者」と「裏の保有者」の両方を正しく表している証拠**です。
             
             **Q. ISP名とRDAPの名前が異なる場合、発信者情報開示をどちらに請求すればいいでしょうか？**\n
             A. 個人（契約者）の情報を持っているのは**表の運用者である「ISP / プロバイダ」**の方です。RDAPの情報はあくまで「そのIPアドレスブロックを管理している組織」の情報であり、実際の利用者情報は持っていないことが多いです。発信者情報開示請求を行う場合は、**ISP名を使って手続きを行ってください**。
@@ -1851,14 +2292,13 @@ def main():
     st.title("🔎 検索大臣 - Whois & IP Intelligence -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🆕 Update Info (2026.02.21) - 新機能と変更点", expanded=True):
+    with st.expander("🆕 Update Info (2026.02.28) - 匿名通信判定の強化と詳細レポート実装", expanded=True):
         st.markdown("""
         **Update:**\n
-        **💀 IoTリスク検知 (InternetDB連携)**: 
-        * Shodan InternetDB APIに移行し、**APIキー不要**で**Telnet(23)**や**ADB(5555)**など、攻撃の踏み台になり得る危険なポート開放を自動検知可能になりました。
-        
-        **🕸️ リンク分析 (Link Analysis / 相関図可視化)**:
-        * 複数のIP、ISP、国、およびIoTリスクの相関関係を可視化するグラフエンジンを搭載しました。「分析センター」タブから利用可能です。共通の攻撃インフラを直感的に特定できます。
+        **🕵️ 匿名通信客観判定 (IP2Proxy / IP2Location.io 連携)**: 
+        * VPN、Proxy、Tor、データセンター等の利用を専門データベースで照合可能になりました。不審なIPを検知した際、自動で「匿名通信判定情報」を取得します。\n  
+        **📄 詳細レポート (HTML)**:
+        * RDAP、ipinfoに加え、IP2Proxyの判定結果を一つのHTMLファイルに集約。タブ切り替えによるシームレスな閲覧と、書類提出に最適な「一括印刷機能」を搭載しました。
         """)
     # ------------------------------------------------
     col_input1, col_input2 = st.columns([1, 1])
@@ -1909,7 +2349,7 @@ def main():
                  except Exception as e:
                     st.error(f"ファイル読み込みエラー: {e}")
             
-            # --- ローカルモードの場合の読み込み処理 (my版ロジック) ---
+            # --- ローカルモードの場合の読み込み処理  ---
             else:
                 ip_col = None
                 try:
@@ -2015,21 +2455,32 @@ def main():
         )
     
     with col_set2:
+        # 1. API 処理モードの選択
+        api_mode_options = list(MODE_SETTINGS.keys()) + ["⚙️ カスタム設定 (任意調整)"]
         api_mode_selection = st.radio(
             "**API 処理モード:** (速度と安定性のトレードオフ)",
-            list(MODE_SETTINGS.keys()),
+            api_mode_options,
             key="api_mode_radio",
             horizontal=False
         )
+        
+        # 2. 変数の確定ロジック (KeyError 回避策)
+        if api_mode_selection == "⚙️ カスタム設定 (任意調整)":
+            st.markdown("---")
+            max_workers = st.slider("並列スレッド数 (同時処理数)", 1, 5, 2, help="数を増やすと速くなりますが、API制限にかかりやすくなります。")
+            delay_between_requests = st.slider("リクエスト間待機時間 (秒)", 0.1, 5.0, 1.5, 0.1, help="値を増やすほど安全ですが、検索に時間がかかります。")
+        else:
+            selected_settings = MODE_SETTINGS[api_mode_selection]
+            max_workers = selected_settings["MAX_WORKERS"]
+            delay_between_requests = selected_settings["DELAY_BETWEEN_REQUESTS"]
+        
+        # 3. 共通定数の設定
+        rate_limit_wait_seconds = RATE_LIMIT_WAIT_SECONDS
+        st.markdown("---") 
         # InternetDBオプション
         use_internetdb_option = st.checkbox("💀 IoTリスク検知 (InternetDBを利用)", value=True, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。不要な場合はオフにすることで処理を最適化できます。")
         # RDAPオプション
-        use_rdap_option = st.checkbox("🔍 高精度モード (RDAP公式台帳の併用 - 低速)", value=False, help="無料APIのISP情報に加え、RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
-    
-    selected_settings = MODE_SETTINGS[api_mode_selection]
-    max_workers = selected_settings["MAX_WORKERS"]
-    delay_between_requests = selected_settings["DELAY_BETWEEN_REQUESTS"]
-    rate_limit_wait_seconds = RATE_LIMIT_WAIT_SECONDS
+        use_rdap_option = st.checkbox("🔍 公式レジストリ情報 (RDAP公式台帳の併用 - 低速)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
 
     mode_mapping = {
         "標準モード": "標準モード (1ターゲット = 1行)",
@@ -2047,12 +2498,24 @@ def main():
 
     with col_act1:
         st.success(f"**Target:** IPv4: {ipv4_count} / IPv6: {ipv6_count} / Domain: {len(domain_targets)} (Pending: {len(st.session_state.deferred_ips)}) / **CIDR Cache:** {len(st.session_state.cidr_cache)}")
+        
+        # 1. IPinfo (Pro Mode) の判定
         if pro_api_key:
-            st.info("🔑 **Pro Mode Active:** ipinfo.io データベースを使用します")
-        if use_internetdb_option:
-            st.info("🔎 **IoT Check Active:** Shodan InternetDBによるスキャン履歴を参照します")
+            st.info("🔑 **IPinfo Pro Active:** 高精度な地理位置・ISP情報を使用します。")
         else:
-            st.info("ℹ️ **IoT Check Inactive:** IoT/脆弱性リスク検知はスキップされます")
+            st.warning("ℹ️ **IPinfo Inactive:** 無料版(ip-api)を使用するため、判定精度が制限されます。")
+
+        # 2. IP2Proxy (IP2Location.io) の判定
+        if ip2proxy_api_key:
+            st.info("🕵️ **IP2Proxy Evidence Active:** 不審判定(VPN/Hosting等)時に自動で匿名通信判定結果を取得します。")
+        else:
+            st.caption("※ **IP2Proxy Inactive:** 匿名通信の判定結果は生成されません。")
+
+        # 3. IoT Risk (InternetDB) の判定
+        if use_internetdb_option:
+            st.info("🔎 **IoT Check Active:** Shodan InternetDBによるスキャン履歴を参照します。")
+        else:
+            st.info("ℹ️ **IoT Check Inactive:** IoT/脆弱性リスク検知はスキップされます。")
 
     with col_act2:
         if is_currently_searching:
@@ -2143,9 +2606,10 @@ def main():
                                 delay_between_requests, 
                                 rate_limit_wait_seconds,
                                 tor_nodes,
-                                use_rdap_option, # RDAPオプション
-                                use_internetdb_option, # InternetDBオプション
-                                pro_api_key      # IPinfo Key
+                                use_rdap_option,
+                                use_internetdb_option,
+                                pro_api_key,
+                                ip2proxy_api_key
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
@@ -2437,7 +2901,7 @@ def main():
                 else:
                     st.caption("※ 日時列がないため時間帯分析はスキップされます")
 
-                # Advanced Excel生成 (v5.0)
+                # Advanced Excel生成
                 excel_advanced = create_advanced_excel(df_with_res, selected_time_col)
                 
                 st.download_button(
