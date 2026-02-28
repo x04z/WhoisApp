@@ -574,38 +574,19 @@ def get_ip_details_pro(ip, token, tor_nodes, ip2proxy_api_key=None):
     return result
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, api_key=None, ip2proxy_api_key=None):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, api_key=None, ip2proxy_api_key=None):
     
-    # 1. Proモード (APIキーあり)
-    if api_key:
-        result = get_ip_details_pro(ip, api_key, tor_nodes, ip2proxy_api_key)
-        # RDAPオプション有効時
-        if use_rdap:
-            rdap_res = fetch_rdap_data(ip)
-            if rdap_res:
-                result['ISP'] += f" [RDAP: {rdap_res['name']}]"
-                result['RDAP'] = rdap_res['name']
-                result['RDAP_JSON'] = rdap_res['json']
-                result['RDAP_URL'] = rdap_res['url']
-        
-        # InternetDBオプション有効時
-        if use_internetdb:
-            result['IoT_Risk'] = check_internetdb_risk(ip)
-        else:
-            result['IoT_Risk'] = "[Not Checked]"
-            
-        return result, None
-
-    # 2. 通常モード (ip-api.com)
+    # 1. 共通初期化
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
         'RDAP': '', 'RDAP_JSON': None, 'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': ''
     }
     new_cache_entry = None
-
+    new_learned_isp = None
     cidr_block = get_cidr_block(ip)
     
+    # --- 【共通】CIDRキャッシュ取得（拡張版） ---
     if cidr_block and cidr_block in cidr_cache_snapshot:
         cached_data = cidr_cache_snapshot[cidr_block]
         if time.time() - cached_data['Timestamp'] < 86400:
@@ -614,104 +595,159 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, delay_between_requests, rat
             result['CountryCode'] = cached_data['CountryCode']
             result['Status'] = "Success (Cache)" 
             jp_isp, jp_country = get_jp_names(result['ISP'], result['CountryCode'])
-            proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
+            
+            # キャッシュに保存された Proxy_Type があればそれを優先的に引き継ぐ (Decision Propagation)
+            if 'Proxy_Type' in cached_data and cached_data['Proxy_Type']:
+                 proxy_type = cached_data['Proxy_Type']
+            else:
+                 proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
+                 
             is_anonymous = (proxy_type != "Standard Connection")
             result['ISP_JP'] = jp_isp
             result['Proxy_Type'] = f"{proxy_type}" if is_anonymous else ""
             result['Country_JP'] = jp_country
+            result['Secondary_Security_Links'] = create_secondary_links(ip)
             
-            # キャッシュヒット時でもShodanチェックは個別に行う価値があるが、
-            # 頻度を抑えるため、ここではキャッシュがある場合はShodanスキップ（または必要なら実装）
-            # 今回は「キャッシュヒット時は高速化優先」としスキップ。
-            
-            return result, None 
+            return result, None, None  # キャッシュヒット時は新しいキャッシュエントリも学習もなし
 
+    # --- API通信実行 ---
     try:
         time.sleep(delay_between_requests) 
-
-        url = IP_API_URL.format(ip=ip)
-        response = session.get(url, timeout=45)
         
-        if response.status_code == 429:
-            defer_until = time.time() + rate_limit_wait_seconds
-            result['Status'] = 'Error: Rate Limit (429)'
-            result['Defer_Until'] = defer_until
-            result['Secondary_Security_Links'] = create_secondary_links(ip)
-            return result, new_cache_entry
-        
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get('status') == 'success':
-            country_code = data.get('countryCode', 'N/A') 
+        # Proモード (IPinfo)
+        if api_key:
+            url = IPINFO_API_URL.format(ip=ip)
+            headers = {"Authorization": f"Bearer {api_key}"}
+            response = session.get(url, headers=headers, timeout=10)
             
-            raw_isp = data.get('isp', 'N/A')
-            raw_org = data.get('org', '')
-            combined_name = raw_isp if raw_org == raw_isp else f"{raw_isp} / {raw_org}"
+            if response.status_code == 429:
+                result['Status'] = 'Error: Rate Limit (Pro)'
+                result['Defer_Until'] = time.time() + rate_limit_wait_seconds
+                result['Secondary_Security_Links'] = create_secondary_links(ip)
+                return result, new_cache_entry
+                
+            response.raise_for_status()
+            data = response.json()
             
-            result['ISP'] = combined_name
-            result['Country'] = data.get('country', 'N/A')
+            result['IPINFO_JSON'] = data 
+            org_raw = data.get('org', '')
+            isp_name = re.sub(r'^AS\d+\s+', '', org_raw) if org_raw else 'N/A'
+            result['ISP'] = isp_name
+            country_code = data.get('country', 'N/A')
             result['CountryCode'] = country_code
-            result['RIR_Link'] = get_authoritative_rir_link(ip, country_code)
+            result['Country'] = country_code
             
-            # RDAP取得ロジック
-            if use_rdap:
-                rdap_res = fetch_rdap_data(ip)
-                if rdap_res:
-                    result['ISP'] += f" [RDAP: {rdap_res['name']}]"
-                    result['RDAP'] = rdap_res['name']
-                    result['RDAP_JSON'] = rdap_res['json']
-                    result['RDAP_URL'] = rdap_res['url']
-            if use_internetdb:
-                result['IoT_Risk'] = check_internetdb_risk(ip)
+            # Pro版独自のプライバシー判定（ベースとして使用）
+            privacy_data = data.get('privacy', {})
+            if privacy_data:
+                detected = []
+                if privacy_data.get('vpn'): detected.append("VPN")
+                if privacy_data.get('proxy'): detected.append("Proxy")
+                if privacy_data.get('tor'): detected.append("Tor Node")
+                if privacy_data.get('hosting'): detected.append("Hosting")
+                base_proxy_type = ", ".join(detected) if detected else "Standard Connection"
             else:
-                result['IoT_Risk'] = "[Not Checked]" 
+                base_proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
+                
+            status_api = 'Success (Pro)'
 
-            result['Status'] = 'Success (API)'
-            
-            jp_isp, jp_country = get_jp_names(result['ISP'], country_code)
-            proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
-            is_anonymous = (proxy_type != "Standard Connection")
-            result['ISP_JP'] = jp_isp
-            result['Proxy_Type'] = f"{proxy_type}" if is_anonymous else ""
-            result['Country_JP'] = jp_country
-            
-            if cidr_block:
-                new_cache_entry = {
-                    cidr_block: {
-                    'ISP': result['ISP'], 
-                    'Country': result['Country'],
-                    'CountryCode': result['CountryCode'],
-                    'Timestamp': time.time()
-                    }
-                }
-            
-        elif data.get('status') == 'fail':
-            result['Status'] = f"API Fail: {data.get('message', 'Unknown Fail')}"
-            result['RIR_Link'] = get_authoritative_rir_link(ip, 'N/A')
-            
+        # 通常モード (ip-api)
         else:
-            result['Status'] = f"API Error: Unknown Response"
-            result['RIR_Link'] = get_authoritative_rir_link(ip, 'N/A')
+            url = IP_API_URL.format(ip=ip)
+            response = session.get(url, timeout=45)
+            
+            if response.status_code == 429:
+                result['Status'] = 'Error: Rate Limit (429)'
+                result['Defer_Until'] = time.time() + rate_limit_wait_seconds
+                result['Secondary_Security_Links'] = create_secondary_links(ip)
+                return result, new_cache_entry
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get('status') == 'success':
+                country_code = data.get('countryCode', 'N/A') 
+                raw_isp = data.get('isp', 'N/A')
+                raw_org = data.get('org', '')
+                result['ISP'] = raw_isp if raw_org == raw_isp else f"{raw_isp} / {raw_org}"
+                result['Country'] = data.get('country', 'N/A')
+                result['CountryCode'] = country_code
+                base_proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
+                status_api = 'Success (API)'
+            else:
+                result['Status'] = f"API Fail: {data.get('message', 'Unknown Fail')}"
+                result['RIR_Link'] = get_authoritative_rir_link(ip, 'N/A')
+                result['Secondary_Security_Links'] = create_secondary_links(ip)
+                return result, new_cache_entry
+
+        # --- 共通の後処理 (RDAP, InternetDB, 動的学習, キャッシュ保存) ---
+        result['RIR_Link'] = get_authoritative_rir_link(ip, country_code)
+        
+        if use_rdap:
+            rdap_res = fetch_rdap_data(ip)
+            if rdap_res:
+                result['ISP'] += f" [RDAP: {rdap_res['name']}]"
+                result['RDAP'] = rdap_res['name']
+                result['RDAP_JSON'] = rdap_res['json']
+                result['RDAP_URL'] = rdap_res['url']
+        
+        if use_internetdb:
+            result['IoT_Risk'] = check_internetdb_risk(ip)
+        else:
+            result['IoT_Risk'] = "[Not Checked]" 
+
+        result['Status'] = status_api
+        jp_isp, jp_country = get_jp_names(result['ISP'], country_code)
+        
+        # --- 【動的学習＆階層検索の適用】 ---
+        proxy_type = base_proxy_type
+        learned_isps = learned_isps_snapshot
+        
+        if result['ISP'] in learned_isps:
+            proxy_type = learned_isps[result['ISP']] # 学習済みのProxyTypeを強制適用
+            is_suspicious = True
+        else:
+            is_suspicious = (proxy_type != "Standard Connection")
+            # 【階層型フィルタリング】
+            if country_code != 'JP' or "n/a" in result['ISP'].lower():
+                is_suspicious = True
+        
+        # 疑わしい場合、IP2Proxyに問い合わせる
+        if is_suspicious and ip2proxy_api_key:
+            ip2_data = get_ip2proxy_data(ip, ip2proxy_api_key)
+            if ip2_data:
+                result['IP2PROXY_JSON'] = ip2_data
+                if ip2_data.get('isProxy') == 'YES':
+                    # プロキシと確定
+                    proxy_type = f"IP2P:{ip2_data.get('proxyType')}"
+                    result['ISP'] += f" [{proxy_type}]"
+                    # 【動的学習】このISPを「黒」としてセッションメモリに記憶
+                    new_learned_isp = {result['ISP']: proxy_type}
+                elif proxy_type == "Standard Connection" and not api_key: # Proキーがある場合はそちらの判定を優先
+                    proxy_type = "Standard Connection"
+        
+        is_anonymous_final = (proxy_type != "Standard Connection")
+        result['ISP_JP'] = jp_isp
+        result['Proxy_Type'] = f"{proxy_type}" if is_anonymous_final else ""
+        result['Country_JP'] = jp_country
+        
+        # --- 【CIDRキャッシュの保存】 ---
+        if cidr_block:
+            new_cache_entry = {
+                cidr_block: {
+                'ISP': result['ISP'], 
+                'Country': result['Country'],
+                'CountryCode': result['CountryCode'],
+                'Timestamp': time.time(),
+                'Proxy_Type': result['Proxy_Type'] # 判定結果もキャッシュに保存
+                }
+            }
             
     except requests.exceptions.RequestException as e:
         result['Status'] = f'Error: Network/Timeout ({type(e).__name__})'
 
-    is_suspicious = False
-    p_type = result.get('Proxy_Type', '')
-    
-    if p_type and p_type != "Standard Connection":
-        is_suspicious = True
-        
-    if is_suspicious and ip2proxy_api_key: # locals().get()を使わず直接引数を参照
-        ip2_data = get_ip2proxy_data(ip, ip2proxy_api_key)
-        if ip2_data:
-            result['IP2PROXY_JSON'] = ip2_data
-            if ip2_data.get('isProxy') == 'YES':
-                result['ISP'] += f" [IP2P:{ip2_data.get('proxyType')}]"
-
     result['Secondary_Security_Links'] = create_secondary_links(ip)
-    return result, new_cache_entry
+    return result, new_cache_entry, new_learned_isp
 
 def get_domain_details(domain):
     icann_link = f"[ICANN Whois (手動検索)]({RIR_LINKS['ICANN Whois']})"
@@ -1882,7 +1918,7 @@ def display_results(results, current_mode_full_text, display_mode):
 
                             <script>
                                 function openTab(evt, tabId) {{
-                                    var i, tabcontent, tablinks;
+                                    let i, tabcontent, tablinks;
                                     tabcontent = document.getElementsByClassName("tab-content");
                                     for (i = 0; i < tabcontent.length; i++) {{
                                         tabcontent[i].style.display = "none";
@@ -1898,10 +1934,34 @@ def display_results(results, current_mode_full_text, display_mode):
                                         document.getElementById("btn-" + tabId).className += " active";
                                     }}
                                 }}
+                                
                                 // 初期状態で最初のタブを開く
                                 if('{first_tab_id}' !== 'None') {{
                                     openTab(null, '{first_tab_id}');
                                 }}
+
+                                // 🖨️ 印刷直前に全タブを強制展開する
+                                window.onbeforeprint = function() {{
+                                    let tabcontents = document.getElementsByClassName("tab-content");
+                                    for (let j = 0; j < tabcontents.length; j++) {{
+                                        tabcontents[j].style.display = "block";
+                                    }}
+                                }};
+
+                                // 🖨️ 印刷終了後（またはキャンセル後）に元のタブ表示に戻す
+                                window.onafterprint = function() {{
+                                    let activeTabId = "";
+                                    let tablinks = document.getElementsByClassName("tab-button");
+                                    for (let k = 0; k < tablinks.length; k++) {{
+                                        if (tablinks[k].className.indexOf("active") > -1) {{
+                                            activeTabId = tablinks[k].id.replace("btn-", "");
+                                            break;
+                                        }}
+                                    }}
+                                    if (activeTabId) {{
+                                        openTab(null, activeTabId);
+                                    }}
+                                }};
                             </script>
                         </body>
                         </html>
@@ -2068,6 +2128,10 @@ def main():
     if 'target_freq_map' not in st.session_state: st.session_state['target_freq_map'] = {} 
     if 'cidr_cache' not in st.session_state: st.session_state['cidr_cache'] = {} 
     if 'debug_summary' not in st.session_state: st.session_state['debug_summary'] = {}
+    
+    # --- セッション中のみ有効な学習済みプロキシISPリスト ---
+    if 'learned_proxy_isps' not in st.session_state:
+        st.session_state['learned_proxy_isps'] = {} # {ISP名: ProxyType}
 
     tor_nodes = fetch_tor_exit_nodes()
     
@@ -2634,6 +2698,8 @@ def main():
 
                 if immediate_ip_queue:
                     cidr_cache_snapshot = st.session_state.cidr_cache.copy() 
+                    # 学習済みリストのスナップショットを取得
+                    learned_isps_snapshot = st.session_state.learned_proxy_isps.copy()
                     
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         future_to_ip = {
@@ -2641,6 +2707,7 @@ def main():
                                 get_ip_details_from_api, 
                                 ip, 
                                 cidr_cache_snapshot, 
+                                learned_isps_snapshot, 
                                 delay_between_requests, 
                                 rate_limit_wait_seconds,
                                 tor_nodes,
@@ -2659,11 +2726,15 @@ def main():
                                 res_tuple = f.result()
                                 res = res_tuple[0]
                                 new_cache_entry = res_tuple[1]
+                                new_learned_isp = res_tuple[2] 
                                 ip = res['Target_IP']
                                 
                                 if new_cache_entry:
                                     st.session_state.cidr_cache.update(new_cache_entry)
                                 
+                                # メインスレッド側で学習済みリストを安全に更新
+                                if new_learned_isp:
+                                    st.session_state.learned_proxy_isps.update(new_learned_isp)
                                 if res.get('Status', '').startswith('Success'):
                                     st.session_state.raw_results.append(res)
                                     st.session_state.finished_ips.add(ip)
