@@ -1516,8 +1516,9 @@ def display_results(results, current_mode_full_text, display_mode):
                         import datetime
                         from urllib.parse import urlparse
                         
-                        now = datetime.datetime.now()
-                        current_time_str = now.strftime("%Y年%m月%d日 %H時%M分")
+                        jst_timezone = datetime.timezone(datetime.timedelta(hours=9))
+                        now_jst = datetime.datetime.now(jst_timezone)
+                        current_time_str = now_jst.strftime("%Y年%m月%d日 %H時%M分 (JST)")
 
                         tabs_html = ""
                         contents_html = ""
