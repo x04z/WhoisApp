@@ -1600,8 +1600,8 @@ def display_results(results, current_mode_full_text, display_mode):
                                 <h1 class="theme-rdap">RDAP取得結果 ({clean_ip})</h1>
                                 <div class="description">
                                     <strong>登録データアクセスプロトコル（Registration Data Access Protocol、以下「RDAP」と記載する。）の定義及び運用目的：</strong><br>
-                                    RDAPとは、インターネット資源（ドメイン名、IPアドレス、自治システム番号等）の登録主体（組織又は個人）を法的に特定し得る登録情報を取得するための、IETF（Internet Engineering Task Force：インターネット技術の標準化を担う国際的な組織）により標準化された通信プロトコルである。本プロトコルは、従来のWHOISプロトコルが有する非構造化テキスト形式に起因する機械可読性及び解析の困難さ、国際化対応の不足、セキュリティ上の脆弱性等の課題を克服すべく策定され、JSON（JavaScript Object Notation：テキストベースのデータ交換フォーマット）ベースの構造化データ表現及び標準化されたクエリ・レスポンス形式により、厳密かつ効率的な登録データアクセスを実現する次世代の公式仕様として、現在運用されている。<br>
-                                    従来のWHOISプロトコルが抱えていた非構造化データによる解析の困難さを解消し、JSON形式による構造化された厳密な登録情報を提供する次世代の公式仕様として運用されている。
+                                    RDAPとは、インターネット資源（ドメイン名、IPアドレス、自治システム番号等）の登録主体（組織又は個人）を法的に特定し得る登録情報を取得するための、IETF（Internet Engineering Task Force：インターネット技術の標準化を担う国際的な組織）により標準化された通信プロトコルである。<br>
+                                    本プロトコルは、従来のWHOISプロトコルが有する非構造化テキスト形式に起因する機械可読性及び解析の困難さ、国際化対応の不足、セキュリティ上の脆弱性等の課題を克服すべく策定され、JSON（JavaScript Object Notation：テキストベースのデータ交換フォーマット）ベースの構造化データ表現及び標準化されたクエリ・レスポンス形式により、厳密かつ効率的な登録データアクセスを実現する次世代の公式仕様として、現在運用されている。
                                 </div>
                                 <h2>対象IPアドレス及び回答元レジストリ情報等</h2>
                                 <table>
@@ -1646,9 +1646,37 @@ def display_results(results, current_mode_full_text, display_mode):
                             loc_val = ipinfo_json.get("loc", "情報なし")
                             org_val = ipinfo_json.get("org", "情報なし")
 
+                            # --- プライバシー判定の動的生成 ---
+                            privacy_html = ""
+                            geo_heading = "<h2>地理的情報</h2>"
+
+                            # JSON内に 'privacy' キーが存在する場合（有料版等）の処理
+                            if "privacy" in ipinfo_json:
+                                privacy = ipinfo_json.get("privacy", {})
+                                privacy_flags = []
+                                if privacy.get("vpn"): privacy_flags.append("VPN")
+                                if privacy.get("proxy"): privacy_flags.append("Proxy")
+                                if privacy.get("tor"): privacy_flags.append("Tor")
+                                if privacy.get("relay"): privacy_flags.append("Relay")
+                                if privacy.get("hosting"): privacy_flags.append("Hosting")
+                                
+                                # フラグが1つでも立った場合のみ、匿名化判定行を表示する
+                                if privacy_flags:
+                                    geo_heading = "<h2>地理的情報・匿名化判定</h2>"
+                                    privacy_val = ", ".join(privacy_flags)
+                                    
+                                    privacy_html = f"""
+                                        <tr>
+                                            <th>プライバシー・リスク判定<br>(Privacy Status)</th>
+                                            <td>
+                                                <strong>{privacy_val}</strong>
+                                                <span class="help-text">VPN、Proxy、Tor、Hosting等として利用されているかを判定した結果。</span>
+                                            </td>
+                                        </tr>
+                                    """
+
+                            # --- 地図表示ロジック ---
                             map_html = ""
-                            if loc_val != "情報なし" and "," in loc_val:
-                                map_html = ""
                             if loc_val != "情報なし" and "," in loc_val:
                                 # URLの構造を標準的な Embed API 形式に変更
                                 map_url = f"https://maps.google.com/maps?q={loc_val}&hl=ja&z=14&output=embed"
@@ -1672,19 +1700,24 @@ def display_results(results, current_mode_full_text, display_mode):
                                 <h1 class="theme-ipinfo">IPinfo詳細情報 ({clean_ip})</h1>
                                 <div class="description">
                                     <strong>IPinfo（IP Geolocation Data）：</strong><br>
-                                    当該IPアドレスの現在の地理的位置や組織情報など、現在の利用形態に焦点を当てた情報を提供する。RDAPが法的・歴史的な割り当て情報を示すのに対し、IPinfoは現在のネットワーク上のルーティングや利用状況に基づくリアルタイム性の高いデータである。
+                                    IPinfoとは、IPアドレスに基づき、当該アドレスの推定地理的位置（国、都市、地域、郵便番号、緯度経度等）、所属組織（ASN、ISP名、ドメイン等）、ネットワーク特性（ホスティング、モバイル、Anycast、衛星接続等）、プライバシー関連情報（VPN、プロキシ、Tor、リレー等の匿名化検知）を提供するIPデータインテリジェンスサービスである。<br>
+                                    本サービスは、IPinfo社が提供するAPI及びデータベース形式により、リアルタイムに近い精度でIPアドレスの現在利用形態及びルーティング状況を反映した情報を取得可能とするものであり、毎日更新されるデータセットを基盤とする。<br>
+                                    RDAPが登録機関（RIR等）による法的な割り当て・登録主体情報を主眼とするのに対し、IPinfoはBGPルーティング、アクティブ測定、プローブネットワーク等を活用した推定値に基づき、運用上の地理的位置精度、匿名化検知、キャリア情報等の実用的文脈を提供する点に特徴を有する。<br>
+                                    これにより、セキュリティ対策、詐欺防止、コンテンツパーソナライズ、コンプライアンス対応等のビジネス用途において、高い信頼性と即時性を備えたIPインテリジェンスを実現する。<br>
+                                    なお、本サービスは、データプランの種類（無料プラン、有料プラン）やAPIの利用状況に応じて、提供される情報の項目が異なり、無料版は、地理的位置情報やISP情報などの基本的なデータに限定される。
                                 </div>
                                 <h2>基本情報</h2>
                                 <table>
-                                    <tr><th>対象IPアドレス<br>(IP)</th><td><strong>{ip_val}</strong></td></tr>
-                                    <tr><th>回答日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
-                                    <tr><th>ホストネーム<br>(Hostname)</th><td><strong>{hostname_val}</strong></td></tr>
-                                    <tr><th>組織/ISP<br>(Organization)</th><td><strong>{org_val}</strong><span class="help-text">現在このIPをネットワーク上でルーティング（運用）しているプロバイダや組織の名称。</span></td></tr>
+                                    <tr><th>対象IPアドレス</th><td><strong>{ip_val}</strong></td></tr>
+                                    <tr><th>回答日時</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>ホストネーム</th><td><strong>{hostname_val}</strong></td></tr>
+                                    <tr><th>組織/ISP</th><td><strong>{org_val}</strong><span class="help-text">現在このIPをネットワーク上でルーティング（運用）しているプロバイダや組織の名称。</span></td></tr>
                                 </table>
-                                <h2>地理的情報</h2>
+                                {geo_heading}
                                 <table>
-                                    <tr><th>地域<br>(Location)</th><td><strong>{country_val}, {region_val}, {city_val}</strong></td></tr>
-                                    <tr><th>座標<br>(Coordinates)</th><td><strong>{loc_val}</strong><span class="help-text">IPアドレスの割り当てに基づく推測座標であり、正確なGPS位置ではない。</span></td></tr>
+                                    <tr><th>地域</th><td><strong>{country_val}, {region_val}, {city_val}</strong></td></tr>
+                                    <tr><th>推定座標</th><td><strong>{loc_val}</strong><span class="help-text">IPアドレスの割り当てに基づく推測座標であり、正確なGPS位置ではない。</span></td></tr>
+                                    {privacy_html}
                                 </table>
                                 {map_html}
                                 <h2>参照元データ (JSON形式)</h2>
@@ -1749,7 +1782,11 @@ def display_results(results, current_mode_full_text, display_mode):
                                 <h1 style="color: #6a1b9a; border-bottom: 2px solid #6a1b9a;">IP2Proxy 匿名通信判定結果</h1>
                                 <div class="description" style="background-color: #f3e5f5; border-color: #ce93d8;">
                                     <strong>IP2Proxy / IP2Location.io (PX1):</strong><br>
-                                    このレポートは、IPアドレスがVPN、オープンプロキシ、Tor、データセンター等の匿名ネットワーク識別情報を提供する。IP2Location.ioの最新データベースに基づき、通信経路の匿名性を評価した結果となる。
+                                    IP2Proxy（PX1）とは、IPアドレスが匿名ネットワークとして利用されているかを検知するための、IP2Location社が提供するプロキシ検知データベース（PX1パッケージ）である。<br>
+                                    本データベースは、VPN匿名化サービス（VPN）、オープンプロキシ（PUB）、ウェブプロキシ（WEB）、Tor出口ノード（TOR）、検索エンジンロボット（SES）、データセンタ範囲（DCH）等の匿名プロキシ種別を識別し、国・地域情報とともに提供するものであり、毎日更新される最新のデータセットに基づく。<br>
+                                    IP2Location.ioのウェブサービス又はAPI経由でリアルタイムクエリが可能であり、PX1は基本パッケージとして「国コード、国名、プロキシ使用の有無（Is_Proxy）」を主眼とする。<br>
+                                    本レポートは、当該IPアドレスがVPN、オープンプロキシ、Tor、データセンター等の匿名ネットワークとして識別されるかを評価した結果を示すものであり、通信経路の匿名性及び脅威レベルの判断に資するものである。<br>
+                                    IP2Location.ioの最新データベース（IP2Proxy PXシリーズ）を基盤とし、法的な割り当て情報を扱うRDAPとは異なり、アクティブな運用状況・脅威インテリジェンスに基づく匿名化検知に特化している点に特徴を有する。<br>
                                 </div>
                                 <table>
                                     <tr><th>判定対象IP</th><td><strong>{ip2proxy_json.get('ip', clean_ip)}</strong></td></tr>
@@ -2134,7 +2171,7 @@ def main():
             - **🔑 高精度判定 (ipinfo Key)**
                 - **メリット**: VPN/Proxy/Hostingの判定精度が劇的に向上し、企業名の特定精度も高まります。
                         
-            - **🕵️ 匿名通信客観判定 (IP2Proxy Key)**
+            - **🕵️ 匿名通信判定 (IP2Proxy Key)**
                 - **メリット**: VPN、Proxy、Tor等の利用が疑われる不審なIPに対し、IP2Location.ioの専門データベースから「匿名通信該当結果」を自動取得します。
 
             - **🔎 IoT Risk Check (InternetDB)**
@@ -2247,7 +2284,7 @@ def main():
             **Q. 各種APIキーはどこで手に入りますか？**\n
             A. 本ツールで利用可能な高度判定用APIキーは、以下の公式サイトから無料で登録・取得できます（いずれも無料枠が存在します）。
             * **高精度判定 (ipinfo)**: [ipinfo.io サインアップ](https://ipinfo.io/signup)
-            * **匿名通信客観判定 (IP2Proxy)**: [IP2Location.io サインアップ](https://www.ip2location.io/sign-up)
+            * **匿名通信判定 (IP2Proxy)**: [IP2Location.io サインアップ](https://www.ip2location.io/sign-up)
 
             **Q. ISP名と [RDAP: 〇〇] の名前が違うのですが？**\n
             A. **それは「運用者」と「持ち主」の違いです。** 例えば `1.1.1.1` というIPアドレスの場合：
@@ -2296,7 +2333,7 @@ def main():
     with st.expander("🆕 Update Info (2026.02.28) - 匿名通信判定の強化と詳細レポート実装", expanded=True):
         st.markdown("""
         **Update:**\n
-        **🕵️ 匿名通信客観判定 (IP2Proxy / IP2Location.io 連携)**: 
+        **🕵️ 匿名通信判定 (IP2Proxy / IP2Location.io 連携)**: 
         * VPN、Proxy、Tor、データセンター等の利用を専門データベースで照合可能になりました。不審なIPを検知した際、自動で「匿名通信判定情報」を取得します。\n  
         **📄 詳細レポート (HTML)**:
         * RDAP、ipinfoに加え、IP2Proxyの判定結果を一つのHTMLファイルに集約。タブ切り替えによるシームレスな閲覧と、書類提出に最適な「一括印刷機能」を搭載しました。
