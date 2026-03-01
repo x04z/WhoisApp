@@ -574,7 +574,7 @@ def get_ip_details_pro(ip, token, tor_nodes, ip2proxy_api_key=None):
     return result
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, api_key=None, ip2proxy_api_key=None):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, api_key=None, ip2proxy_api_key=None, ip2proxy_mode="自動節約 (不審なIPのみ)"):
     
     # 1. 共通初期化
     result = {
@@ -712,18 +712,27 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
             if country_code != 'JP' or "n/a" in result['ISP'].lower():
                 is_suspicious = True
         
-        # 疑わしい場合、IP2Proxyに問い合わせる
-        if is_suspicious and ip2proxy_api_key:
+        # IP2Proxyへ問い合わせるかどうかの判定ロジック
+        should_check_ip2p = False
+        if ip2proxy_api_key:
+            if ip2proxy_mode == "全件検査":
+                should_check_ip2p = True
+            elif is_suspicious:
+                should_check_ip2p = True
+
+        if should_check_ip2p:
             ip2_data = get_ip2proxy_data(ip, ip2proxy_api_key)
             if ip2_data:
                 result['IP2PROXY_JSON'] = ip2_data
                 if ip2_data.get('isProxy') == 'YES':
-                    # プロキシと確定
+                    # プロキシと確定（IP2Proxyの判定を最優先）
                     proxy_type = f"IP2P:{ip2_data.get('proxyType')}"
-                    result['ISP'] += f" [{proxy_type}]"
+                    if "IP2P:" not in result['ISP']: # 重複追記を防止
+                        result['ISP'] += f" [{proxy_type}]"
                     # 【動的学習】このISPを「黒」としてセッションメモリに記憶
                     new_learned_isp = {result['ISP']: proxy_type}
-                elif proxy_type == "Standard Connection" and not api_key: # Proキーがある場合はそちらの判定を優先
+                else:
+                    # IP2Proxyが「NO(該当なし)」と判定した場合、ローカル推論やIPinfoの判定を完全に破棄して「白」で上書きする
                     proxy_type = "Standard Connection"
         
         is_anonymous_final = (proxy_type != "Standard Connection")
@@ -1554,7 +1563,7 @@ def display_results(results, current_mode_full_text, display_mode):
                         
                         jst_timezone = datetime.timezone(datetime.timedelta(hours=9))
                         now_jst = datetime.datetime.now(jst_timezone)
-                        current_time_str = now_jst.strftime("%Y年%m月%d日 %H時%M分 (JST)")
+                        current_time_str = now_jst.strftime("%Y年%m月%d日 %H時%M分")
 
                         tabs_html = ""
                         contents_html = ""
@@ -1565,7 +1574,7 @@ def display_results(results, current_mode_full_text, display_mode):
                             tab_id = "tab-rdap"
                             if not first_tab_id: first_tab_id = tab_id
                             
-                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">RDAP情報</button>\n'
+                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">RDAP</button>\n'
                             
                             # RDAPの真のURL取得
                             actual_rdap_url = rdap_url
@@ -1633,7 +1642,7 @@ def display_results(results, current_mode_full_text, display_mode):
 
                             rdap_content = f"""
                             <div id="{tab_id}" class="tab-content">
-                                <h1 class="theme-rdap">RDAP取得結果 ({clean_ip})</h1>
+                                <h1 class="theme-rdap">RDAP取得結果</h1>
                                 <div class="description">
                                     <strong>登録データアクセスプロトコル（Registration Data Access Protocol、以下「RDAP」と記載する。）の定義及び運用目的：</strong><br>
                                     RDAPとは、インターネット資源（ドメイン名、IPアドレス、自治システム番号等）の登録主体（組織又は個人）を法的に特定し得る登録情報を取得するための、IETF（Internet Engineering Task Force：インターネット技術の標準化を担う国際的な組織）により標準化された通信プロトコルである。<br>
@@ -1648,10 +1657,10 @@ def display_results(results, current_mode_full_text, display_mode):
                                 </table>
                                 <h2>RDAP取得結果</h2>
                                 <table>
-                                    <tr><th>法的保有者<br>(RDAP Name)</th><td><strong>{name_val}</strong><span class="help-text">対象のIPアドレスブロックを公式に管理・保有している組織名（レジストリ登録情報）を示す。</span></td></tr>
+                                    <tr><th>法的保有者<br>(Key: name)</th><td><strong>{name_val}</strong><span class="help-text">対象のIPアドレスブロックを公式に管理・保有している組織名（レジストリ登録情報）を示す。</span></td></tr>
                                     {remarks_html}
-                                    <tr><th>登録国コード<br>(Country)</th><td><strong>{country_display}</strong><span class="help-text">当該IPアドレス資源が法的に割り当てられている管轄国を示す。</span></td></tr>
-                                    <tr><th>IPアドレス割当範囲<br>(Range)</th><td><strong>{start_ip} ～ {end_ip}</strong><span class="help-text">対象のIPアドレスを包含する、レジストリから当該組織に対して運用および管理権限が委譲（割り当て）された一連のIPアドレス帯域を示す。</span></td></tr>
+                                    <tr><th>登録国コード<br>(Key: country)</th><td><strong>{country_display}</strong><span class="help-text">当該IPアドレス資源が法的に割り当てられている管轄国を示す。</span></td></tr>
+                                    <tr><th>IPアドレス割当範囲<br>(Key: startAddress, endAddress)</th><td><strong>{start_ip} ～ {end_ip}</strong><span class="help-text">対象のIPアドレスを包含する、レジストリから当該組織に対して運用および管理権限が委譲（割り当て）された一連のIPアドレス帯域を示す。</span></td></tr>
                                 </table>
                                 <h2>参照元データ (JSON形式)</h2>
                                 <div class="raw-data">{escaped_json}</div>
@@ -1664,7 +1673,7 @@ def display_results(results, current_mode_full_text, display_mode):
                             tab_id = "tab-ipinfo"
                             if not first_tab_id: first_tab_id = tab_id
                             
-                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">IPinfo情報</button>\n'
+                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">IPinfo</button>\n'
                             
                             raw_json_str = json.dumps(ipinfo_json, indent=4, ensure_ascii=False)
                             escaped_json = html.escape(raw_json_str)
@@ -1733,26 +1742,25 @@ def display_results(results, current_mode_full_text, display_mode):
 
                             ipinfo_content = f"""
                             <div id="{tab_id}" class="tab-content">
-                                <h1 class="theme-ipinfo">IPinfo詳細情報 ({clean_ip})</h1>
+                                <h1 class="theme-ipinfo">Whois属性及び地理位置情報取得結果</h1>
                                 <div class="description">
                                     <strong>IPinfo（IP Geolocation Data）：</strong><br>
                                     IPinfoとは、IPアドレスに基づき、当該アドレスの推定地理的位置（国、都市、地域、郵便番号、緯度経度等）、所属組織（ASN、ISP名、ドメイン等）、ネットワーク特性（ホスティング、モバイル、Anycast、衛星接続等）、プライバシー関連情報（VPN、プロキシ、Tor、リレー等の匿名化検知）を提供するIPデータインテリジェンスサービスである。<br>
                                     本サービスは、IPinfo社が提供するAPI及びデータベース形式により、リアルタイムに近い精度でIPアドレスの現在利用形態及びルーティング状況を反映した情報を取得可能とするものであり、毎日更新されるデータセットを基盤とする。<br>
                                     RDAPが登録機関（RIR等）による法的な割り当て・登録主体情報を主眼とするのに対し、IPinfoはBGPルーティング、アクティブ測定、プローブネットワーク等を活用した推定値に基づき、運用上の地理的位置精度、匿名化検知、キャリア情報等の実用的文脈を提供する点に特徴を有する。<br>
-                                    これにより、セキュリティ対策、詐欺防止、コンテンツパーソナライズ、コンプライアンス対応等のビジネス用途において、高い信頼性と即時性を備えたIPインテリジェンスを実現する。<br>
-                                    なお、本サービスは、データプランの種類（無料プラン、有料プラン）やAPIの利用状況に応じて、提供される情報の項目が異なり、無料版は、地理的位置情報やISP情報などの基本的なデータに限定される。
+                                    これにより、セキュリティ対策、詐欺防止、コンテンツパーソナライズ、コンプライアンス対応等のビジネス用途において、高い信頼性と即時性を備えたIPインテリジェンスを実現する。
                                 </div>
                                 <h2>基本情報</h2>
                                 <table>
-                                    <tr><th>対象IPアドレス</th><td><strong>{ip_val}</strong></td></tr>
-                                    <tr><th>回答日時</th><td><strong>{current_time_str}</strong></td></tr>
-                                    <tr><th>ホストネーム</th><td><strong>{hostname_val}</strong></td></tr>
-                                    <tr><th>組織/ISP</th><td><strong>{org_val}</strong><span class="help-text">現在このIPをネットワーク上でルーティング（運用）しているプロバイダや組織の名称。</span></td></tr>
+                                    <tr><th>対象IPアドレス<br>(Key: ip)</th><td><strong>{ip_val}</strong></td></tr>
+                                    <tr><th>回答日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>ホストネーム<br>(Key: hostname)</th><td><strong>{hostname_val}</strong></td></tr>
+                                    <tr><th>組織/ISP<br>(Key: org)</th><td><strong>{org_val}</strong><span class="help-text">現在このIPをネットワーク上でルーティング（運用）しているプロバイダや組織の名称。</span></td></tr>
                                 </table>
                                 {geo_heading}
                                 <table>
-                                    <tr><th>地域</th><td><strong>{country_val}, {region_val}, {city_val}</strong></td></tr>
-                                    <tr><th>推定座標</th><td><strong>{loc_val}</strong><span class="help-text">IPアドレスの割り当てに基づく推測座標であり、正確なGPS位置ではない。</span></td></tr>
+                                    <tr><th>地域<br>(Key: city, region, country)</th><td><strong>{country_val}, {region_val}, {city_val}</strong></td></tr>
+                                    <tr><th>推定座標<br>(Key: loc)</th><td><strong>{loc_val}</strong><span class="help-text">IPアドレスの割り当てに基づく推測座標であり、正確なGPS位置ではない。</span></td></tr>
                                     {privacy_html}
                                 </table>
                                 {map_html}
@@ -1815,7 +1823,7 @@ def display_results(results, current_mode_full_text, display_mode):
                             # 4. HTMLコンテンツ構築
                             ip2p_content = f"""
                             <div id="{tab_id}" class="tab-content">
-                                <h1 style="color: #6a1b9a; border-bottom: 2px solid #6a1b9a;">IP2Proxy 匿名通信判定結果</h1>
+                                <h1 class="theme-ip2proxy">匿名通信判定結果</h1>
                                 <div class="description" style="background-color: #f3e5f5; border-color: #ce93d8;">
                                     <strong>IP2Proxy / IP2Location.io (PX1):</strong><br>
                                     IP2Proxy（PX1）とは、IPアドレスが匿名ネットワークとして利用されているかを検知するための、IP2Location社が提供するプロキシ検知データベース（PX1パッケージ）である。<br>
@@ -1825,16 +1833,18 @@ def display_results(results, current_mode_full_text, display_mode):
                                     IP2Location.ioの最新データベース（IP2Proxy PXシリーズ）を基盤とし、法的な割り当て情報を扱うRDAPとは異なり、アクティブな運用状況・脅威インテリジェンスに基づく匿名化検知に特化している点に特徴を有する。<br>
                                 </div>
                                 <table>
-                                    <tr><th>判定対象IP</th><td><strong>{ip2proxy_json.get('ip', clean_ip)}</strong></td></tr>
-                                    <tr><th>プロキシ判定</th><td><strong style="color:{status_color};">{proxy_status_text}</strong></td></tr>
+                                    <tr><th>対象IPアドレス<br>(Key: ip)</th><td><strong>{ip2proxy_json.get('ip', clean_ip)}</strong></td></tr>
+                                    <tr><th>回答日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>プロキシ判定<br>(Key: is_proxy)</th><td><strong style="color:{status_color};">{proxy_status_text}</strong></td></tr>
                                     <tr>
-                                        <th>種別 (Proxy Type)</th>
+                                        <th>プロキシ種別<br>(Key: proxy_type)</th>
                                         <td>
                                             <strong>{p_type_val}</strong>
                                             <span class="help-text">{p_type_desc}</span>
                                         </td>
                                     </tr>
-                                    <tr><th>判定国名</th><td><strong>{c_name_val}</strong></td></tr>
+                                    <tr><th>運用組織名<br>(Key: as)</th><td><strong>{ip2proxy_json.get('as', '情報なし')}</strong><span class="help-text">自律システム番号（ネットワーク経路制御で使用される一意の識別番号）を法的に所有し、運用している組織の名前を示す。</span></td></tr>
+                                    <tr><th>判定国名<br>(Key: country_name)</th><td><strong>{c_name_val}</strong></td></tr>
                                 </table>
                                 <h2>解析用生データ (JSON形式)</h2>
                                 <div class="raw-data">{escaped_json}</div>
@@ -1848,7 +1858,7 @@ def display_results(results, current_mode_full_text, display_mode):
                         <html lang="ja">
                         <head>
                             <meta charset="UTF-8">
-                            <title>統合詳細レポート - {clean_ip}</title>
+                            <title>IP-OSINT - {clean_ip}</title>
                             <style>
                                 body {{ font-family: 'Helvetica Neue', Arial, sans-serif; padding: 30px; color: #333; line-height: 1.6; max-width: 800px; margin: 0 auto; }}
                                 
@@ -1861,9 +1871,10 @@ def display_results(results, current_mode_full_text, display_mode):
                                 @keyframes fadeEffect {{ from {{opacity: 0;}} to {{opacity: 1;}} }}
 
                                 /* 共通コンテンツスタイル */
-                                h1 {{ font-size: 24px; border-bottom: 2px solid; padding-bottom: 5px; }}
+                                h1 {{ font-size: 24px; border-bottom: 2px solid; padding-bottom: 5px; text-align: center; margin-bottom: 30px;}}
                                 h1.theme-rdap {{ color: #1e3a8a; border-color: #1e3a8a; }}
                                 h1.theme-ipinfo {{ color: #00897b; border-color: #00897b; }}
+                                h1.theme-ip2proxy {{ color: #6a1b9a; border-color: #6a1b9a; }}
                                 
                                 h2 {{ font-size: 18px; margin-top: 30px; border-left: 4px solid #666; padding-left: 10px; }}
                                 .description {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; border: 1px solid #e9ecef; margin-bottom: 20px; font-size: 14px; text-align: justify; }}
@@ -1968,7 +1979,7 @@ def display_results(results, current_mode_full_text, display_mode):
                         """
 
                         st.download_button(
-                            label="詳細レポート(HTML)",
+                            label="詳細レポート",
                             data=full_html,
                             file_name=f"Report_{clean_ip}.html",
                             mime="text/html",
@@ -2156,13 +2167,23 @@ def main():
             pro_api_key = HARDCODED_IPINFO_KEY
             st.success(f"✅ IPinfo Key Loaded: {pro_api_key[:4]}***")
         else:
-            pro_api_key = st.text_input("ipinfo.io API Key", type="password", key="input_ipinfo", help="入力するとipinfo.ioの高精度データベースを使用します。空欄の場合はip-api.com(無料)を使用します。無料版で「Deferred（保留）」が多発し、検索が進まない場合の回避策として有効です。").strip()
+            pro_api_key = st.text_input("ipinfo.io API Key", type="password", key="input_ipinfo", help="入力するとipinfo.ioの高精度データベースを使用します。空欄の場合はip-api.comを使用します。ip-apiで「Deferred（保留）」が多発し、検索が進まない場合の回避策として有効です。なお、無料版ipinfoAPIの月間枠は、50,000件/月です。").strip()
         # IP2Proxy (IP2Location.io) 用の処理
         if HARDCODED_IP2PROXY_KEY:
             ip2proxy_api_key = HARDCODED_IP2PROXY_KEY
             st.success(f"✅ IP2Proxy Key Loaded: {ip2proxy_api_key[:4]}***")
         else:
-            ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力します。判定が不審な場合にのみ自動で詳細データを取得します。").strip()
+            ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力します。").strip()
+        
+        # モード選択変数の初期化
+        ip2proxy_mode = "自動節約 (不審なIPのみ)"
+        
+        if ip2proxy_api_key:
+            ip2proxy_mode = st.radio(
+                "IP2Proxy 判定モード",
+                ["自動節約 (不審なIPのみ)", "全件検査 (API消費大)"],
+                help="「自動」は海外IPや不審なISPにのみAPIを使用し枠を節約します。「全件」はすべてのIPに匿名通信判定を行いますが、APIの月間枠(50,000件/月)を消費します。なお、キャッシュ機能により、同一IPへの重複クエリは回避されます。"
+            )
         st.markdown("---")
         if st.button("🔄 IPキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
             st.session_state['cidr_cache'] = {} 
@@ -2234,6 +2255,7 @@ def main():
             
             - **🔑 高精度判定 (ipinfo Key)**
                 - **メリット**: VPN/Proxy/Hostingの判定精度が劇的に向上し、企業名の特定精度も高まります。
+                - **注意**: データプランの種類（無料プラン、有料プラン）やAPIの利用状況に応じて、提供される情報の項目が異なり、無料版は、地理的位置情報やISP情報などの基本的なデータに限定されます。
                         
             - **🕵️ 匿名通信判定 (IP2Proxy Key)**
                 - **メリット**: VPN、Proxy、Tor等の利用が疑われる不審なIPに対し、IP2Location.ioの専門データベースから「匿名通信該当結果」を自動取得します。
@@ -2282,7 +2304,7 @@ def main():
             st.markdown("""
             #### 1. データソース
             - **IP Geolocation / ISP 情報**: 
-                - 無料版: `ip-api.com` (毎分45リクエスト制限)
+                - 通常版: `ip-api.com` (毎分45リクエスト制限)
                 - 高精度版: `ipinfo.io` (APIキーに基づく制限)
             - **匿名通信判定 (Proxy/VPN)**: `IP2Location.io` (不審なIPのみ実行)
             - **Whois (RDAP)**: APNIC等の各地域レジストリ公式サーバー
@@ -2296,7 +2318,7 @@ def main():
             - **法的保有者判定 (RDAP公式台帳)**: 
                 - **役割**: 「そのIPアドレス(土地)の法的な持ち主は誰か？」(Registry Owner) を答えます。
                 - **特徴**: 厳密。各地域のレジストリに登録された組織名を特定します。
-            - **匿名性客観判定 (IP2Proxy)**: 
+            - **匿名性判定 (IP2Proxy)**: 
                 - **役割**: 「そのIPは意図的に隠蔽（VPN/Proxy等）されているか？」を答えます。
                 - **特徴**: 証拠能力。不審な判定時に専門DBから詳細な証拠JSONを取得します。
             - **メリット**: これらを統合することで、単なる「場所の特定」を超え、「通信主体の隠蔽意図」までを浮き彫りにします。
@@ -2343,7 +2365,7 @@ def main():
 
             st.markdown("""
             **Q. 検索が途中で止まりました。**\n
-            A. APIの制限（レートリミット）にかかった可能性があります。ツールは自動的に待機して再開しますが、大量（数千件）の検索を行う場合は時間がかかります。「待機中」の表示が出ている場合はそのままお待ちください。なお、無料版API（ip-api）は流量制限が厳しく、数十件程度のバーストで保留（Deferred）状態になることがあります。スムーズな解析が必要な場合は「Local版」の利用、または「Pro Mode (IPinfo)」の適用を検討してください。\n
+            A. APIの制限（レートリミット）にかかった可能性があります。ツールは自動的に待機して再開しますが、大量（数千件）の検索を行う場合は時間がかかります。「待機中」の表示が出ている場合はそのままお待ちください。なお、通常版API（ip-api）は流量制限が厳しく、数十件程度のバーストで保留（Deferred）状態になることがあります。スムーズな解析が必要な場合は「Local版」の利用、または「Pro Mode (IPinfo)」の適用を検討してください。\n
                         
             **Q. 各種APIキーはどこで手に入りますか？**\n
             A. 本ツールで利用可能な高度判定用APIキーは、以下の公式サイトから無料で登録・取得できます（いずれも無料枠が存在します）。
@@ -2558,7 +2580,7 @@ def main():
     
     with col_set2:
         # 1. API 処理モードの選択
-        api_mode_options = list(MODE_SETTINGS.keys()) + ["⚙️ カスタム設定 (任意調整)"]
+        api_mode_options = list(MODE_SETTINGS.keys()) + ["カスタム設定 (任意調整)"]
         api_mode_selection = st.radio(
             "**API 処理モード:** (速度と安定性のトレードオフ)",
             api_mode_options,
@@ -2567,7 +2589,7 @@ def main():
         )
         
         # 2. 変数の確定ロジック (KeyError 回避策)
-        if api_mode_selection == "⚙️ カスタム設定 (任意調整)":
+        if api_mode_selection == "カスタム設定 (任意調整)":
             st.markdown("---")
             max_workers = st.slider("並列スレッド数 (同時処理数)", 1, 5, 2, help="数を増やすと速くなりますが、API制限にかかりやすくなります。")
             delay_between_requests = st.slider("リクエスト間待機時間 (秒)", 0.1, 5.0, 1.5, 0.1, help="値を増やすほど安全ですが、検索に時間がかかります。")
@@ -2580,9 +2602,9 @@ def main():
         rate_limit_wait_seconds = RATE_LIMIT_WAIT_SECONDS
         st.markdown("---") 
         # InternetDBオプション
-        use_internetdb_option = st.checkbox("💀 IoTリスク検知 (InternetDBを利用)", value=True, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。不要な場合はオフにすることで処理を最適化できます。")
+        use_internetdb_option = st.checkbox("IoTリスク検知 (InternetDBを利用)", value=True, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。不要な場合はオフにすることで処理を最適化できます。")
         # RDAPオプション
-        use_rdap_option = st.checkbox("🔍 公式レジストリ情報 (RDAP公式台帳の併用 - 低速)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
+        use_rdap_option = st.checkbox("公式レジストリ情報 (RDAP公式台帳の併用 - 低速)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
 
     mode_mapping = {
         "標準モード": "標準モード (1ターゲット = 1行)",
@@ -2605,7 +2627,7 @@ def main():
         if pro_api_key:
             st.info("🔑 **IPinfo Pro Active:** 高精度な地理位置・ISP情報を使用します。")
         else:
-            st.warning("ℹ️ **IPinfo Inactive:** 無料版(ip-api)を使用するため、判定精度が制限されます。")
+            st.warning("ℹ️ **IPinfo Inactive:** 通常版(ip-api)を使用するため、判定精度が制限されます。")
 
         # 2. IP2Proxy (IP2Location.io) の判定
         if ip2proxy_api_key:
@@ -2714,7 +2736,8 @@ def main():
                                 use_rdap_option,
                                 use_internetdb_option,
                                 pro_api_key,
-                                ip2proxy_api_key
+                                ip2proxy_api_key,
+                                ip2proxy_mode
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
