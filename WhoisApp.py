@@ -31,7 +31,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 st.set_page_config(layout="wide", page_title="検索大臣", page_icon="🔎")
 
 # ==========================================
-# ⚙️ [Local User Config] API Key Hardcoding
+#  [Local User Config] API Key Hardcoding
 # ==========================================
 # ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
 # 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
@@ -41,7 +41,7 @@ HARDCODED_SECURITYTRAILS_KEY = ""
 # ==========================================
 
 # ==========================================
-# 🛠️ 自動モード判定ロジック (st.secrets利用)
+# 自動モード判定ロジック (st.secrets利用)
 # ==========================================
 IS_PUBLIC_MODE = False
 try:
@@ -78,7 +78,7 @@ RIR_LINKS = {
     'ICANN Whois': 'https://lookup.icann.org/',
 }
 
-# 🔗 リンク集
+# リンク集
 SECONDARY_TOOL_BASE_LINKS = {
     'VirusTotal': 'https://www.virustotal.com/',
     'Whois.com': 'https://www.whois.com/',
@@ -160,7 +160,6 @@ COUNTRY_JP_NAME = {
 # --- ISP名称の日本語マッピング (企業名統一版) ---
 ISP_JP_NAME = {
     # --- NTT Group ---
-# --- NTT Group ---
     'NTT Communications Corporation': 'NTTドコモビジネス株式会社', 
     'NTT COMMUNICATIONS CORPORATION': 'NTTドコモビジネス株式会社',
     'NTT DOCOMO BUSINESS,Inc.': 'NTTドコモビジネス株式会社',
