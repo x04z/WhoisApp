@@ -1241,26 +1241,47 @@ def convert_df_to_excel(df):
 
 # --- Advanced Excel Generator (Pivot & Chart) ---
 def create_advanced_excel(df, time_col_name=None):
-    """
-    1. Raw Data
-    2. Report_ISP_Volume: ISP Ranking (Bar Chart)
-    3. Report_ISP_Risk: ISP x ProxyType (Stacked Bar)
-    4. Report_Time_Volume: Hour Trend (Bar/Line) [if time_col available]
-    5. Report_Time_Risk: Hour x ProxyType (Stacked Bar) [if time_col available]
-    """
     output = io.BytesIO()
     
-    # 1. データ前処理
-    if 'Proxy Type' in df.columns:
-        df['Proxy Type'] = df['Proxy Type'].fillna('Standard Connection')
-        df['Proxy Type'] = df['Proxy Type'].replace('', 'Standard Connection')
-        # 古い用語が残っている場合の念の為の置換
-        df['Proxy Type'] = df['Proxy Type'].replace('Residential/Normal', 'Standard Connection')
-        df['Proxy Type'] = df['Proxy Type'].replace('Residential/General', 'Standard Connection')
-        df['Proxy Type'] = df['Proxy Type'].replace('Residential/Business', 'Standard Connection')
-        df['Proxy Type'] = df['Proxy Type'].replace('nan', 'Standard Connection')
-    else:
-        df['Proxy Type'] = 'Standard Connection'
+    # 1. IPアドレスが含まれているかを判定 (1つでもあればTrue)
+    target_col = 'Target_IP' if 'Target_IP' in df.columns else df.columns[0]
+    has_ip = False
+    if target_col in df.columns:
+        has_ip = any(is_valid_ip(str(val)) for val in df[target_col].dropna())
+    
+    # ==========================================
+    # パターンA: すべてドメイン(非IP)の場合の専用出力
+    # ==========================================
+    if not has_ip:
+        # 1. 列名を実態に合わせて変更
+        if 'Target_IP' in df.columns:
+            df = df.rename(columns={'Target_IP': 'Target Domain'})
+            
+        # 2. ドメイン検索において意味をなさないIP専用の列を完全に削除
+        cols_to_drop = ['ISP', 'ISP_JP', 'Country', 'Country_JP', 'Proxy Type', 'IoT_Risk', 'RDAP']
+        df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors='ignore')
+        
+        # 3. シンプルなExcelとして出力 (ドメイン用のISP集計グラフなどは不要なためスキップ)
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Domain Results')
+        return output.getvalue()
+
+    # ==========================================
+    # パターンB: IPアドレスが含まれる場合の出力 (高度な分析グラフ付き)
+    # ==========================================
+    # --- 【重要】列の存在チェックと補完 (IPとドメインが混在した場合のKeyError対策) ---
+    required_cols = {
+        'Proxy Type': 'Standard Connection',
+        'ISP_JP': 'N/A',
+        'Country_JP': 'N/A'
+    }
+    for col, default_val in required_cols.items():
+        if col not in df.columns:
+            df[col] = default_val
+
+    # データ前処理
+    df['Proxy Type'] = df['Proxy Type'].fillna('Standard Connection')
+    df['Proxy Type'] = df['Proxy Type'].replace('', 'Standard Connection')
     
     # 時間帯列の作成
     has_time_analysis = False
@@ -1283,85 +1304,51 @@ def create_advanced_excel(df, time_col_name=None):
         def add_chart_sheet(pivot_df, sheet_name, chart_title, x_title, y_title, description, chart_type="col", stacked=False):
             if pivot_df.empty: return
 
-            # Sheet作成とデータ書き込み (ヘッダー用に少し下げる)
             pivot_df.to_excel(writer, sheet_name=sheet_name, startrow=4)
             ws = wb[sheet_name]
             
-            # --- 解説文の挿入 ---
             ws['A1'] = chart_title
             ws['A1'].font = Font(size=14, bold=True, color="1E3A8A")
-            
             ws['A2'] = description
             ws['A2'].font = Font(size=11, color="555555", italic=True)
             ws['A2'].alignment = Alignment(wrap_text=True, vertical="top")
-            
-            # セル結合 (説明文エリア)
             ws.merge_cells('A2:H3')
             
-            # 印刷設定（横向き）
-            ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
-            ws.page_setup.fitToWidth = 1
-            ws.print_options.horizontalCentered = True
-            
-            # --- グラフ作成  ---
             chart = BarChart()
             chart.type = chart_type
-            chart.style = 10 # カラフルなスタイル
+            chart.style = 10 
             chart.title = chart_title
-            chart.height = 15 # 高さを確保
-            chart.width = 25  # 幅を確保
-
-            # 凡例を下に配置
+            chart.height = 15 
+            chart.width = 25  
             chart.legend.position = 'b'
 
             if stacked:
                 chart.grouping = "stacked"
                 chart.overlap = 100
             else:
-                # 積み上げでない場合は、単一系列でも色を変えて見やすくする
                 chart.varyColors = True
 
-            # データラベルの設定 (値を表示 + 位置を外側上 'outEnd' に)
-            # ※ 積み上げの場合は内側、それ以外は外側が見やすい
             chart.dataLabels = DataLabelList()
             chart.dataLabels.showVal = True
-            chart.dataLabels.showCatName = False
-            chart.dataLabels.showSerName = False
-            chart.dataLabels.showPercent = False
             if not stacked:
                 chart.dataLabels.position = 'outEnd'
             
-            # 軸と目盛り線の設定
             chart.x_axis.title = x_title
             chart.y_axis.title = y_title
-            chart.y_axis.majorGridlines = ChartLines() # 目盛り線を表示
-            
-            # 縦軸の目盛ラベル（数値）を確実に表示・整形する設定
+            chart.y_axis.majorGridlines = ChartLines() 
             chart.y_axis.delete = False        
-            chart.y_axis.numFmt = '0'          # 整数表示
-            chart.y_axis.majorTickMark = 'out' # 目盛りを外側に出す
-            chart.y_axis.tickLblPos = 'nextTo' # 数値を軸の隣に配置
+            chart.y_axis.numFmt = '0'          
+            chart.y_axis.majorTickMark = 'out' 
+            chart.y_axis.tickLblPos = 'nextTo' 
 
-            # レイアウトを手動設定して余白を作る (重なり防止 + スカスカ解消)
-            # x=0.03 (左寄せ), y=0.05 (上余白), h=0.75 (高さ確保), w=0.85 (右余白確保)
-            chart.layout = Layout(
-                manualLayout=ManualLayout(
-                    x=0.03, y=0.05, 
-                    h=0.75, w=0.85, 
-                )
-            )
+            chart.layout = Layout(manualLayout=ManualLayout(x=0.03, y=0.05, h=0.75, w=0.85))
 
-            # データ範囲設定
             data_start_row = 5 
             data_end_row = data_start_row + len(pivot_df)
-            
             data = Reference(ws, min_col=2, min_row=data_start_row, max_row=data_end_row, max_col=len(pivot_df.columns)+1)
             cats = Reference(ws, min_col=1, min_row=data_start_row+1, max_row=data_end_row)
-            
             chart.add_data(data, titles_from_data=True)
             chart.set_categories(cats)
-            
-            # グラフ配置 (データの下ではなく横に配置して見やすく)
             ws.add_chart(chart, "E5")
 
         # ---------------------------------------------------------
@@ -1373,10 +1360,11 @@ def create_advanced_excel(df, time_col_name=None):
             index='ISP_JP', 
             values=count_col, 
             aggfunc='count'
-        ).sort_values(count_col, ascending=False)
-        
-        desc_isp_vol = "どのプロバイダからのアクセスが最も多いかを可視化しています。特定のISPからのアクセス集中は、そのサービスの利用者層または特定のキャンペーンの影響を示唆します。"
-        add_chart_sheet(pivot_isp_vol, 'Report_ISP_Volume', 'ISP Access Volume Ranking (Top 20)', 'Internet Service Provider', 'Access Count (件数)', desc_isp_vol)
+        )
+        if not pivot_isp_vol.empty:
+            pivot_isp_vol = pivot_isp_vol.sort_values(count_col, ascending=False)
+            desc_isp_vol = "どのプロバイダからのアクセスが最も多いかを可視化しています。特定のISPからのアクセス集中は、そのサービスの利用者層または特定のキャンペーンの影響を示唆します。"
+            add_chart_sheet(pivot_isp_vol, 'Report_ISP_Volume', 'ISP Access Volume Ranking (Top 20)', 'Internet Service Provider', 'Access Count (件数)', desc_isp_vol)
 
         # ---------------------------------------------------------
         # 3. Report_ISP_Risk: [ISP_JP] x [Proxy Type]
@@ -1388,25 +1376,27 @@ def create_advanced_excel(df, time_col_name=None):
             aggfunc='count', 
             fill_value=0
         )
-        desc_isp_risk = "そのISPが安全な一般回線か、注意が必要なサーバー/VPN経由かを判定しています。「Standard Connection」は一般的な安全な接続です。「Hosting」や「VPN」が多い場合は機械的なアクセスの可能性があります。"
-        add_chart_sheet(pivot_isp_risk, 'Report_ISP_Risk', 'Risk Analysis by ISP (Top 20)', 'Internet Service Provider', 'Access Count (件数)', desc_isp_risk, stacked=True)
+        if not pivot_isp_risk.empty:
+            desc_isp_risk = "そのISPが安全な一般回線か、注意が必要なサーバー/VPN経由かを判定しています。「Standard Connection」は一般的な安全な接続です。「Hosting」や「VPN」が多い場合は機械的なアクセスの可能性があります。"
+            add_chart_sheet(pivot_isp_risk, 'Report_ISP_Risk', 'Risk Analysis by ISP (Top 20)', 'Internet Service Provider', 'Access Count (件数)', desc_isp_risk, stacked=True)
         
         # ---------------------------------------------------------
-        # 4. Report_Country: [Country_JP] x [Count] (Bonus)
+        # 4. Report_Country: [Country_JP] x [Count]
         # ---------------------------------------------------------
         pivot_country = df.pivot_table(
             index='Country_JP',
             values=count_col,
             aggfunc='count'
-        ).sort_values(count_col, ascending=False).head(15)
-        desc_country = "国ごとのアクセス数をランキング化しています。サービス提供エリア外からの予期せぬアクセス検知や、海外からの攻撃予兆の発見に役立ちます。"
-        add_chart_sheet(pivot_country, 'Report_Country', 'Country Access Volume (Top 15)', 'Country Name', 'Access Count (件数)', desc_country)
+        )
+        if not pivot_country.empty:
+            pivot_country = pivot_country.sort_values(count_col, ascending=False).head(15)
+            desc_country = "国ごとのアクセス数をランキング化しています。サービス提供エリア外からの予期せぬアクセス検知や、海外からの攻撃予兆の発見に役立ちます。"
+            add_chart_sheet(pivot_country, 'Report_Country', 'Country Access Volume (Top 15)', 'Country Name', 'Access Count (件数)', desc_country)
 
         # ---------------------------------------------------------
         # 5. Time Analysis (if available)
         # ---------------------------------------------------------
         if has_time_analysis:
-            # Report_Time_Volume: [Hour] x [Count]
             pivot_time_vol = df.pivot_table(
                 index='Hour',
                 values=count_col,
@@ -1416,7 +1406,6 @@ def create_advanced_excel(df, time_col_name=None):
             desc_time_vol = "何時にアクセスが集中しているかを可視化しています。一般的なユーザーは活動時間帯に、Botなどは深夜早朝や24時間一定のアクセスを行う傾向があります。"
             add_chart_sheet(pivot_time_vol, 'Report_Time_Volume', 'Hourly Access Trend', 'Time of Day (0-23h)', 'Access Count (件数)', desc_time_vol)
 
-            # Report_Time_Risk: [Hour] x [Proxy Type]
             pivot_time_risk = df.pivot_table(
                 index='Hour',
                 columns='Proxy Type',
@@ -2173,7 +2162,7 @@ def main():
             ip2proxy_api_key = HARDCODED_IP2PROXY_KEY
             st.success(f"✅ IP2Proxy Key Loaded: {ip2proxy_api_key[:4]}***")
         else:
-            ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力します。").strip()
+            ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力することで、IPアドレスの匿名通信判定を取得します。").strip()
         
         # モード選択変数の初期化
         ip2proxy_mode = "自動節約 (不審なIPのみ)"
@@ -2413,10 +2402,10 @@ def main():
         mode_title = "🏠 Local Private Edition (フル機能版)"
         mode_color = "green"
 
-    st.title("🔎 検索大臣 - Whois & IP Intelligence -")
+    st.title("🔎 検索大臣 - IP-OSINTツール -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🆕 Update Info (2026.02.28) - 匿名通信判定の強化と詳細レポート実装", expanded=True):
+    with st.expander("🌸アップデート情報 (令和８年３月１日) - 匿名通信判定の強化と詳細レポート実装 🌸", expanded=True):
         st.markdown("""
         **Update:**\n
         **🕵️ 匿名通信判定 (IP2Proxy / IP2Location.io 連携)**: 
