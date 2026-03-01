@@ -13,6 +13,10 @@ import altair as alt
 import json 
 import io 
 import re 
+import subprocess
+import dns.resolver
+import dns.reversename
+import dns
 
 # --- Excelグラフ生成用ライブラリ ---
 from openpyxl import Workbook
@@ -33,6 +37,7 @@ st.set_page_config(layout="wide", page_title="検索大臣", page_icon="🔎")
 # 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
 HARDCODED_IPINFO_KEY = "" 
 HARDCODED_IP2PROXY_KEY = ""
+HARDCODED_SECURITYTRAILS_KEY = ""
 # ==========================================
 
 # ==========================================
@@ -134,7 +139,7 @@ COUNTRY_CODE_TO_NUMERIC_ISO = {
     'VU': 548, 'VE': 862, 'VN': 704, 'VI': 850, 'WF': 876, 'EH': 732, 'YE': 887, 'ZM': 894, 'ZW': 716
 }
 
-# --- 修正後：COUNTRY_JP_NAME 全体 ---
+# --- COUNTRY_JP_NAME 全体 ---
 COUNTRY_JP_NAME = {
     "AF": "アフガニスタン・イスラム首長国","AL": "アルバニア共和国","DZ": "アルジェリア民主人民共和国","AS": "アメリカ領サモア","AD": "アンドラ公国","AO": "アンゴラ共和国",
     "AI": "アンギラ","AQ": "南極","AG": "アンティグア・バーブーダ","AR": "アルゼンチン共和国","AM": "アルメニア共和国","AW": "アルバ","AU": "オーストラリア連邦",
@@ -298,8 +303,20 @@ def get_world_map_data():
 
 WORLD_MAP_GEOJSON = get_world_map_data()
 
-
 # --- ヘルパー関数群 ---
+
+def extract_actual_ip(target):
+    """ 'ドメイン (IP)' の形式からIPアドレスだけを抽出する関数 """
+    if not isinstance(target, str): return target
+    if "(" in target and ")" in target:
+        possible_ip = target.split("(")[-1].replace(")", "").strip()
+        try:
+            ipaddress.ip_address(possible_ip)
+            return possible_ip
+        except ValueError:
+            pass
+    return target
+
 def clean_ocr_error_chars(target):
     cleaned_target = target.replace('Ⅱ', '11').replace('I', '1').replace('l', '1').replace('|', '1').replace('O', '0').replace('o', '0').replace(';', '.').replace(',', '.')
     if ':' not in cleaned_target:
@@ -308,36 +325,48 @@ def clean_ocr_error_chars(target):
 
 def is_valid_ip(target):
     try:
-        ipaddress.ip_address(target)
+        ipaddress.ip_address(extract_actual_ip(target))
         return True
     except ValueError:
         return False
 
+def is_valid_domain(target):
+    """ 入力された文字列が有効なFQDN（ドメイン名）の形式を満たしているか判定する """
+    if not isinstance(target, str): return False
+    if is_valid_ip(target): return False
+    if '.' not in target or target.startswith('.') or target.endswith('.'): return False
+    if re.search(r'\s', target): return False
+    parts = target.split('.')
+    if len(parts) < 2 or not parts[-1].isalpha() or len(parts[-1]) < 2: return False
+    return True
+
 def is_ipv4(target):
     try:
-        ipaddress.IPv4Address(target)
+        ipaddress.IPv4Address(extract_actual_ip(target))
         return True
     except ValueError:
         return False
 
 def ip_to_int(ip):
+    actual_ip = extract_actual_ip(ip)
     try:
-        if is_ipv4(ip):
-            return struct.unpack("!I", socket.inet_aton(ip))[0]
+        if is_ipv4(actual_ip):
+            return struct.unpack("!I", socket.inet_aton(actual_ip))[0]
         return 0
     except OSError:
         return 0
 
 def get_cidr_block(ip, netmask_range=(8, 24)):
+    actual_ip = extract_actual_ip(ip)
     try:
-        ip_obj = ipaddress.ip_address(ip)
+        ip_obj = ipaddress.ip_address(actual_ip)
         if ip_obj.version == 4:
             netmask = netmask_range[1] 
-            network = ipaddress.ip_network(f'{ip}/{netmask}', strict=False)
+            network = ipaddress.ip_network(f'{actual_ip}/{netmask}', strict=False)
             return str(network)
         elif ip_obj.version == 6:
             netmask = 48
-            network = ipaddress.ip_network(f'{ip}/{netmask}', strict=False)
+            network = ipaddress.ip_network(f'{actual_ip}/{netmask}', strict=False)
             return str(network)
         return None
     except ValueError:
@@ -360,50 +389,48 @@ def get_copy_target(ip_display):
     return str(ip_display).split(' - ')[0].split(' ')[0]
 
 def create_secondary_links(target):
-    encoded_target = quote(target, safe='')
-    is_ip = is_valid_ip(target)
+    actual_ip = extract_actual_ip(target)
+    is_composite = (actual_ip != target and "(" in target) # ドメインとIPの複合型か判定
+    is_ip = is_valid_ip(target) and not is_composite
     
-    # 🔗 リンク定義用辞書
     links = {}
 
-    if is_ip:
-        if is_ipv4(target):
-            # --- IPv4用 厳選リンク ---
-            # VirusTotal: 総合的なセキュリティ評価
+    if is_composite:
+        # --- ドメイン(IP) 複合型専用 厳選リンク ---
+        domain_part = target.split("(")[0].strip()
+        encoded_domain = quote(domain_part, safe='')
+        encoded_ip = quote(actual_ip, safe='')
+        
+        links['VirusTotal'] = f'https://www.virustotal.com/gui/search/{encoded_domain}'
+        links['Aguse (Domain)'] = f'https://www.aguse.jp/?url={encoded_domain}'
+        links['ipinfo.io'] = f'https://ipinfo.io/{encoded_ip}'
+        links['IP Location'] = f'https://iplocation.io/ip/{encoded_ip}'
+        links['DNS History (手動)'] = 'https://dnshistory.org/'
+
+    elif is_ip:
+        encoded_target = quote(actual_ip, safe='')
+        if is_ipv4(actual_ip):
             links['VirusTotal'] = f'https://www.virustotal.com/gui/search/{encoded_target}'
-            # Aguse: 日本国内からのアクセス解析・ブラックリストチェックに強力
             links['Aguse'] = f'https://www.aguse.jp/?url={encoded_target}'
-            # ipinfo.io: 地理位置情報やホスティング判定の詳細確認
             links['ipinfo.io'] = f'https://ipinfo.io/{encoded_target}'
-            # IP2Proxy: プロキシ・VPN判定に特化
             links['IP2Proxy'] = f'https://www.ip2proxy.com/{encoded_target}'
-            # IP Location: 地図表示と基本的な位置情報
             links['IP Location'] = f'https://iplocation.io/ip/{encoded_target}'
         else:
-            # --- IPv6用 厳選リンク ---
-            # VirusTotal: IPv6対応
             links['VirusTotal'] = f'https://www.virustotal.com/gui/search/{encoded_target}'
-            # ipinfo.io: IPv6完全対応
             links['ipinfo.io'] = f'https://ipinfo.io/{encoded_target}'
-            # IP2Proxy: IPv6対応 (プロキシ判定)
             links['IP2Proxy'] = f'https://www.ip2proxy.com/{encoded_target}'
-            # IP Location: IPv6対応 (位置情報)
             links['IP Location'] = f'https://iplocation.io/ip/{encoded_target}'
-            # DNS Checker: IPv6のWhois伝播確認用
             links['DNS Checker'] = f'https://dnschecker.org/ipv6-whois-lookup.php?query={encoded_target}'
     else:
-        # --- ドメイン用 厳選リンク ---
+        # --- 純粋なドメイン用 厳選リンク (DNS解決失敗時) ---
+        encoded_target = quote(target, safe='')
         links['VirusTotal'] = f'https://www.virustotal.com/gui/search/{encoded_target}'
-        # Aguse: サーバー証明書やマルウェアチェック
         links['Aguse'] = f'https://www.aguse.jp/?url={encoded_target}'
-        # Whois.com: 汎用的なドメイン登録情報確認
         links['Whois.com'] = f'https://www.whois.com/whois/{encoded_target}'
+        links['DNS History (手動)'] = 'https://dnshistory.org/'
 
-    # 1. 【共通・必須】CP-WHOIS (手動検索用)
     links['CP-WHOIS (手動)'] = 'https://doco.cph.jp/whoisweb.php'
 
-
-    # HTML生成
     link_html = ""
     for name, url in links.items():
         if url: 
@@ -426,6 +453,84 @@ def fetch_rdap_data(ip):
             return {'name': network_name, 'json': data, 'url': url}
     except:
         pass
+    return None
+
+# ドメイン専用RDAP取得関数
+def fetch_domain_rdap_data(domain):
+    """ ドメイン専用のRDAP情報を取得する関数 (rdap.org リゾルバを利用) """
+    try:
+        url = f"https://rdap.org/domain/{domain}"
+        response = session.get(url, timeout=8, allow_redirects=True)
+        if response.status_code == 200:
+            data = response.json()
+            return {'json': data, 'url': response.url}
+    except:
+        pass
+    return None
+
+# SecurityTrails API取得関数 (過去のAレコード・AAAAレコード履歴)
+def get_securitytrails_data(domain, api_key, start_date=None, end_date=None):
+    """ SecurityTrails APIを使用してドメインの過去のIP履歴(IPv4/IPv6)を取得し、期間でフィルタリングする """
+    if not api_key or not domain:
+        return None
+    
+    headers = {
+        "APIKEY": api_key,
+        "accept": "application/json"
+    }
+    
+    combined_records = []
+    
+    # Aレコード (IPv4) 取得
+    try:
+        url_a = f"https://api.securitytrails.com/v1/history/{domain}/dns/a"
+        res_a = session.get(url_a, headers=headers, timeout=10)
+        if res_a.status_code == 200:
+            data_a = res_a.json()
+            if "records" in data_a:
+                combined_records.extend(data_a["records"])
+    except Exception:
+        pass
+
+    # AAAAレコード (IPv6) 取得
+    try:
+        url_aaaa = f"https://api.securitytrails.com/v1/history/{domain}/dns/aaaa"
+        res_aaaa = session.get(url_aaaa, headers=headers, timeout=10)
+        if res_aaaa.status_code == 200:
+            data_aaaa = res_aaaa.json()
+            if "records" in data_aaaa:
+                combined_records.extend(data_aaaa["records"])
+    except Exception:
+        pass
+
+    if combined_records:
+        # まず first_seen (初回観測日) の降順で全体をソート (新しい順)
+        combined_records.sort(key=lambda x: str(x.get('first_seen', '1970-01-01')), reverse=True)
+        
+        filtered_records = []
+        is_date_filtered = False
+        
+        if start_date and end_date:
+            is_date_filtered = True
+            start_str = start_date.strftime("%Y-%m-%d")
+            end_str = end_date.strftime("%Y-%m-%d")
+            for rec in combined_records:
+                rec_first = str(rec.get('first_seen', '9999-12-31'))
+                rec_last = str(rec.get('last_seen', '1970-01-01'))
+                
+                # レコードの生存期間が指定された期間と重なっているかを判定
+                if rec_first <= end_str and rec_last >= start_str:
+                    filtered_records.append(rec)
+        else:
+            # 期間指定がない場合は最新20件のみを抽出
+            filtered_records = combined_records[:20]
+
+        if filtered_records:
+            return {
+                "records": filtered_records,
+                "is_date_filtered": is_date_filtered
+            }
+
     return None
 
 # Shodan InternetDB API Logic (No API Key Required)
@@ -509,14 +614,14 @@ def get_ip2proxy_data(ip, api_key):
     return None
 
 # Proモード用 API取得関数 (ipinfo.io)
-def get_ip_details_pro(ip, token, tor_nodes, ip2proxy_api_key=None):
+def get_ip_details_pro(ip, token, tor_nodes, ip2proxy_api_key=None, actual_ip=None):
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
         'RDAP': '', 'RDAP_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IP2PROXY_JSON': None, 'IoT_Risk': ''
     }
     try:
-        url = IPINFO_API_URL.format(ip=ip)
+        url = IPINFO_API_URL.format(ip=actual_ip)
         headers = {"Authorization": f"Bearer {token}"}
         response = session.get(url, headers=headers, timeout=10)
         
@@ -565,7 +670,7 @@ def get_ip_details_pro(ip, token, tor_nodes, ip2proxy_api_key=None):
     
     is_suspicious = result.get('Proxy_Type', '') != "Standard Connection"
     if is_suspicious and ip2proxy_api_key:
-        ip2_data = get_ip2proxy_data(ip, ip2proxy_api_key)
+        ip2_data = get_ip2proxy_data(actual_ip, ip2proxy_api_key)
         if ip2_data:
             result['IP2PROXY_JSON'] = ip2_data
             if ip2_data.get('isProxy') == 'YES':
@@ -573,20 +678,67 @@ def get_ip_details_pro(ip, token, tor_nodes, ip2proxy_api_key=None):
     result['Secondary_Security_Links'] = create_secondary_links(ip)
     return result
 
-# --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, api_key=None, ip2proxy_api_key=None, ip2proxy_mode="自動節約 (不審なIPのみ)"):
+# IP逆引き関数 (PTRレコード取得 - dnspython使用/高信頼設定)
+def resolve_ip_nslookup(ip):
+    """ dnspythonを使用して、外部DNSサーバーを直接指定し、逆引き(PTR)ホスト名を取得する """
+    hostnames = []
+    raw_output = ""
+    try:
+        import dns.resolver
+        import dns.reversename
+        
+        rev_name = dns.reversename.from_address(ip)
+        
+        # システムの不安定なDNS設定を回避し、信頼できる公開DNS（Google/Cloudflare）を明示的に指定
+        resolver = dns.resolver.Resolver(configure=False)
+        resolver.nameservers = ['8.8.8.8', '1.1.1.1', '2001:4860:4860::8888']
+        resolver.timeout = 3 # 高速応答を期待し、タイムアウトを3秒に最適化
+        resolver.lifetime = 3
+        
+        # PTRレコードをクエリ
+        answers = resolver.resolve(rev_name, 'PTR')       
+       
+        # 取得したレコードを処理
+        raw_lines = []
+        for rdata in answers:
+            # 末尾のドットを削除してクリーンなホスト名を取得
+            host = rdata.target.to_text(omit_final_dot=True)
+            if host and host not in hostnames:
+                hostnames.append(host)
+            raw_lines.append(f"{rev_name} domain name pointer {host}")
+            
+        raw_output = "\n".join(raw_lines)
+        
+    except ImportError:
+        raw_output = "Error: 'dnspython' ライブラリがインストールされていません。\nターミナルで 'pip install dnspython' を実行してください。"
+    except dns.resolver.NXDOMAIN:
+        raw_output = f"NXDOMAIN: {ip} に対するPTRレコードが見つかりませんでした。"
+    except dns.resolver.NoAnswer:
+        raw_output = f"NoAnswer: {ip} に対するPTRレコードの応答がありません。"
+    except (dns.resolver.Timeout, dns.exception.Timeout):
+        raw_output = "Error: DNSクエリがタイムアウトしました。"
+    except Exception as e:
+        raw_output = f"Error executing dnspython: {str(e)}"
     
-    # 1. 共通初期化
+    return hostnames, raw_output
+
+# --- API通信関数 (Main) ---
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, api_key=None, ip2proxy_api_key=None, ip2proxy_mode="自動節約 (不審なIPのみ)", st_api_key=None, st_start_date=None, st_end_date=None):
+    
+    actual_ip = extract_actual_ip(ip)
+    
+    # 1. 共通初期化 (Target_IP は表示用なので元の 'ip' を保持)
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
-        'RDAP': '', 'RDAP_JSON': None, 'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': ''
+        'RDAP': '', 'RDAP_JSON': None, 'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
+        'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None
     }
     new_cache_entry = None
     new_learned_isp = None
-    cidr_block = get_cidr_block(ip)
+    cidr_block = get_cidr_block(actual_ip)
     
-    # --- 【共通】CIDRキャッシュ取得（拡張版） ---
+    # --- 【共通】CIDRキャッシュ取得 ---
     if cidr_block and cidr_block in cidr_cache_snapshot:
         cached_data = cidr_cache_snapshot[cidr_block]
         if time.time() - cached_data['Timestamp'] < 86400:
@@ -596,19 +748,18 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
             result['Status'] = "Success (Cache)" 
             jp_isp, jp_country = get_jp_names(result['ISP'], result['CountryCode'])
             
-            # キャッシュに保存された Proxy_Type があればそれを優先的に引き継ぐ (Decision Propagation)
             if 'Proxy_Type' in cached_data and cached_data['Proxy_Type']:
                  proxy_type = cached_data['Proxy_Type']
             else:
-                 proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
+                 proxy_type = detect_proxy_vpn_tor(actual_ip, result['ISP'], tor_nodes)
                  
             is_anonymous = (proxy_type != "Standard Connection")
             result['ISP_JP'] = jp_isp
             result['Proxy_Type'] = f"{proxy_type}" if is_anonymous else ""
             result['Country_JP'] = jp_country
-            result['Secondary_Security_Links'] = create_secondary_links(ip)
+            result['Secondary_Security_Links'] = create_secondary_links(ip) # ここはリンク生成用に元の値を渡す
             
-            return result, None, None  # キャッシュヒット時は新しいキャッシュエントリも学習もなし
+            return result, None, None
 
     # --- API通信実行 ---
     try:
@@ -616,7 +767,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         
         # Proモード (IPinfo)
         if api_key:
-            url = IPINFO_API_URL.format(ip=ip)
+            url = IPINFO_API_URL.format(ip=actual_ip) 
             headers = {"Authorization": f"Bearer {api_key}"}
             response = session.get(url, headers=headers, timeout=10)
             
@@ -624,7 +775,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 result['Status'] = 'Error: Rate Limit (Pro)'
                 result['Defer_Until'] = time.time() + rate_limit_wait_seconds
                 result['Secondary_Security_Links'] = create_secondary_links(ip)
-                return result, new_cache_entry
+                return result, new_cache_entry, new_learned_isp
                 
             response.raise_for_status()
             data = response.json()
@@ -637,7 +788,6 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
             result['CountryCode'] = country_code
             result['Country'] = country_code
             
-            # Pro版独自のプライバシー判定（ベースとして使用）
             privacy_data = data.get('privacy', {})
             if privacy_data:
                 detected = []
@@ -647,20 +797,20 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 if privacy_data.get('hosting'): detected.append("Hosting")
                 base_proxy_type = ", ".join(detected) if detected else "Standard Connection"
             else:
-                base_proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
+                base_proxy_type = detect_proxy_vpn_tor(actual_ip, result['ISP'], tor_nodes) 
                 
             status_api = 'Success (Pro)'
 
         # 通常モード (ip-api)
         else:
-            url = IP_API_URL.format(ip=ip)
+            url = IP_API_URL.format(ip=actual_ip)
             response = session.get(url, timeout=45)
             
             if response.status_code == 429:
                 result['Status'] = 'Error: Rate Limit (429)'
                 result['Defer_Until'] = time.time() + rate_limit_wait_seconds
                 result['Secondary_Security_Links'] = create_secondary_links(ip)
-                return result, new_cache_entry
+                return result, new_cache_entry, new_learned_isp
             
             response.raise_for_status()
             data = response.json()
@@ -672,27 +822,50 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 result['ISP'] = raw_isp if raw_org == raw_isp else f"{raw_isp} / {raw_org}"
                 result['Country'] = data.get('country', 'N/A')
                 result['CountryCode'] = country_code
-                base_proxy_type = detect_proxy_vpn_tor(ip, result['ISP'], tor_nodes)
+                base_proxy_type = detect_proxy_vpn_tor(actual_ip, result['ISP'], tor_nodes) 
                 status_api = 'Success (API)'
             else:
                 result['Status'] = f"API Fail: {data.get('message', 'Unknown Fail')}"
-                result['RIR_Link'] = get_authoritative_rir_link(ip, 'N/A')
+                result['RIR_Link'] = get_authoritative_rir_link(actual_ip, 'N/A') 
                 result['Secondary_Security_Links'] = create_secondary_links(ip)
-                return result, new_cache_entry
+                return result, new_cache_entry, new_learned_isp
 
-        # --- 共通の後処理 (RDAP, InternetDB, 動的学習, キャッシュ保存) ---
-        result['RIR_Link'] = get_authoritative_rir_link(ip, country_code)
+        # --- 共通の後処理 ---
+        result['RIR_Link'] = get_authoritative_rir_link(actual_ip, country_code) 
         
         if use_rdap:
-            rdap_res = fetch_rdap_data(ip)
+            rdap_res = fetch_rdap_data(actual_ip) 
             if rdap_res:
-                result['ISP'] += f" [RDAP: {rdap_res['name']}]"
+                result['ISP'] += f" [RDAP(IP): {rdap_res['name']}]" 
                 result['RDAP'] = rdap_res['name']
                 result['RDAP_JSON'] = rdap_res['json']
                 result['RDAP_URL'] = rdap_res['url']
-        
+
+            # --- ドメイン版RDAPの取得 ---
+            is_composite = (actual_ip != ip and "(" in ip)
+            if is_composite:
+                domain_part = ip.split("(")[0].strip()
+                domain_rdap_res = fetch_domain_rdap_data(domain_part)
+                if domain_rdap_res:
+                    result['DOMAIN_RDAP_JSON'] = domain_rdap_res['json']
+                    result['DOMAIN_RDAP_URL'] = domain_rdap_res['url']
+
+        # --- SecurityTrailsの取得 (RDAPの有効/無効に依存せず実行) ---
+        is_composite = (actual_ip != ip and "(" in ip)
+        if is_composite and st_api_key:
+            domain_part = ip.split("(")[0].strip()
+            st_res = get_securitytrails_data(domain_part, st_api_key, st_start_date, st_end_date)
+            if st_res:
+                result['ST_JSON'] = st_res
+
+        # --- IP逆引き(rDNS)の取得 ---
+        if use_rdns:
+            rdns_hosts, rdns_raw = resolve_ip_nslookup(actual_ip)
+            if rdns_raw:
+                result['RDNS_DATA'] = {'hosts': rdns_hosts, 'raw': rdns_raw}
+
         if use_internetdb:
-            result['IoT_Risk'] = check_internetdb_risk(ip)
+            result['IoT_Risk'] = check_internetdb_risk(actual_ip)
         else:
             result['IoT_Risk'] = "[Not Checked]" 
 
@@ -704,15 +877,13 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         learned_isps = learned_isps_snapshot
         
         if result['ISP'] in learned_isps:
-            proxy_type = learned_isps[result['ISP']] # 学習済みのProxyTypeを強制適用
+            proxy_type = learned_isps[result['ISP']]
             is_suspicious = True
         else:
             is_suspicious = (proxy_type != "Standard Connection")
-            # 【階層型フィルタリング】
             if country_code != 'JP' or "n/a" in result['ISP'].lower():
                 is_suspicious = True
         
-        # IP2Proxyへ問い合わせるかどうかの判定ロジック
         should_check_ip2p = False
         if ip2proxy_api_key:
             if ip2proxy_mode == "全件検査":
@@ -721,18 +892,15 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 should_check_ip2p = True
 
         if should_check_ip2p:
-            ip2_data = get_ip2proxy_data(ip, ip2proxy_api_key)
+            ip2_data = get_ip2proxy_data(actual_ip, ip2proxy_api_key) 
             if ip2_data:
                 result['IP2PROXY_JSON'] = ip2_data
                 if ip2_data.get('isProxy') == 'YES':
-                    # プロキシと確定（IP2Proxyの判定を最優先）
                     proxy_type = f"IP2P:{ip2_data.get('proxyType')}"
-                    if "IP2P:" not in result['ISP']: # 重複追記を防止
+                    if "IP2P:" not in result['ISP']:
                         result['ISP'] += f" [{proxy_type}]"
-                    # 【動的学習】このISPを「黒」としてセッションメモリに記憶
                     new_learned_isp = {result['ISP']: proxy_type}
                 else:
-                    # IP2Proxyが「NO(該当なし)」と判定した場合、ローカル推論やIPinfoの判定を完全に破棄して「白」で上書きする
                     proxy_type = "Standard Connection"
         
         is_anonymous_final = (proxy_type != "Standard Connection")
@@ -748,7 +916,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 'Country': result['Country'],
                 'CountryCode': result['CountryCode'],
                 'Timestamp': time.time(),
-                'Proxy_Type': result['Proxy_Type'] # 判定結果もキャッシュに保存
+                'Proxy_Type': result['Proxy_Type'] 
                 }
             }
             
@@ -758,14 +926,16 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
     result['Secondary_Security_Links'] = create_secondary_links(ip)
     return result, new_cache_entry, new_learned_isp
 
-def get_domain_details(domain):
+def get_domain_details(domain, st_api_key=None):
     icann_link = f"[ICANN Whois (手動検索)]({RIR_LINKS['ICANN Whois']})"
+    st_json = get_securitytrails_data(domain, st_api_key) if st_api_key else None
     return {
         'Target_IP': domain, 'ISP': 'Domain/Host', 'Country': 'N/A', 'CountryCode': 'N/A',
         'RIR_Link': icann_link,
         'Secondary_Security_Links': create_secondary_links(domain),
         'Status': 'Success (Domain)',
-        'RDAP': '', 'RDAP_JSON': None,'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': ''
+        'RDAP': '', 'RDAP_JSON': None,'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
+        'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': st_json, 'RDNS_DATA': None
     }
 
 def get_simple_mode_details(target):
@@ -782,8 +952,10 @@ def get_simple_mode_details(target):
         'RIR_Link': rir_link_content,
         'Secondary_Security_Links': create_secondary_links(target),
         'Status': 'Success (簡易モード)',
-        'RDAP': '', 'RDAP_JSON': None, 'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': ''
+        'RDAP': '', 'RDAP_JSON': None, 'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
+        'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None
     }
+
 # --- ヘルパー関数群 ---
 
 def group_results_by_isp(results):
@@ -1542,8 +1714,33 @@ def display_results(results, current_mode_full_text, display_mode):
                     rdap_json = res.get('RDAP_JSON')
                     ipinfo_json = res.get('IPINFO_JSON')
                     ip2proxy_json = res.get('IP2PROXY_JSON')
+                    domain_rdap_json = res.get('DOMAIN_RDAP_JSON')
+                    domain_rdap_url = res.get('DOMAIN_RDAP_URL')
+                    st_json = res.get('ST_JSON')
                     
-                    if (rdap_url and rdap_json) or ipinfo_json:
+                    # IP逆引きの取得判定
+                    rdns_data = res.get('RDNS_DATA', {})
+                    rdns_raw = rdns_data.get('raw', '') if isinstance(rdns_data, dict) else ""
+                    rdns_hosts = rdns_data.get('hosts', []) if isinstance(rdns_data, dict) else []
+                    
+                    # nslookup 生ログの取得判定
+                    nslookup_data = {}
+                    domain_name_for_nslookup = ""
+                    if "(" in target_ip and ")" in target_ip:
+                        domain_name_for_nslookup = target_ip.split("(")[0].strip()
+                        nslookup_data = st.session_state.get('resolved_dns_map', {}).get(domain_name_for_nslookup, {})
+                    elif not is_valid_ip(target_ip): 
+                        domain_name_for_nslookup = target_ip
+                        nslookup_data = st.session_state.get('resolved_dns_map', {}).get(domain_name_for_nslookup, {})
+                    
+                    nslookup_raw = nslookup_data.get('raw', '') if isinstance(nslookup_data, dict) else ""
+                    nslookup_ips = nslookup_data.get('ips', []) if isinstance(nslookup_data, dict) else []
+                    
+                    # セッション互換性維持（古い文字列キャッシュが存在した場合の保険）
+                    if isinstance(nslookup_data, str):
+                        nslookup_raw = nslookup_data
+                    
+                    if (rdap_url and rdap_json) or ipinfo_json or domain_rdap_json or nslookup_raw or st_json or rdns_raw:
                         import json
                         import html
                         import re
@@ -1557,13 +1754,128 @@ def display_results(results, current_mode_full_text, display_mode):
                         tabs_html = ""
                         contents_html = ""
                         first_tab_id = None
+                        
+                        # --- nslookup コンテンツ生成 ---
+                        if nslookup_raw:
+                            tab_id = "tab-nslookup"
+                            if not first_tab_id: first_tab_id = tab_id
+                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">nslookup</button>\n'
+                            
+                            escaped_nslookup = html.escape(nslookup_raw)
+                            # 抽出したIPアドレスのハイライト処理 (標準出力部分のみ)
+                            for ip_str in nslookup_ips:
+                                escaped_ip = html.escape(ip_str)
+                                escaped_nslookup = escaped_nslookup.replace(escaped_ip, f'<span class="json-hl">{escaped_ip}</span>')
+                                
+                            cmd_str = f"nslookup {domain_name_for_nslookup}"
+                            # 取得IPアドレスのリスト表示部分からはハイライトを除去
+                            ip_list_str = "<br>".join([html.escape(ip) for ip in nslookup_ips]) if nslookup_ips else "取得なし"
+                            
+                            nslookup_content = f"""
+                            <div id="{tab_id}" class="tab-content">
+                                <h1 class="theme-rdap" style="color: #424242; border-color: #424242;">DNS正引き解決結果 (nslookup)</h1>
+                                <div class="description" style="background-color: #eceff1; border-color: #cfd8dc;">
+                                    <strong>DNS (Domain Name System) 正引き解決記録：</strong><br>
+                                    入力されたドメイン名に対して、OSの標準ネットワークコマンドである <code>nslookup</code> を実行し、該当するIPアドレス（Aレコード/AAAAレコード）を取得した結果を示す。
+                                </div>
+                                <h2>対象ドメイン及び取得結果</h2>
+                                <table>
+                                    <tr><th>対象ドメイン<br>(Target Domain)</th><td><strong>{html.escape(domain_name_for_nslookup)}</strong></td></tr>
+                                    <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>取得IPアドレス<br>(Resolved IPs)</th><td><strong>{ip_list_str}</strong></td></tr>
+                                </table>
+                                <h2>実行コマンド</h2>
+                                <div class="raw-data" style="background-color: #263238; color: #eceff1; font-weight: bold; font-family: Consolas, monospace;">> {cmd_str}</div>
+                                <h2>実行結果 (標準出力)</h2>
+                                <div class="raw-data" style="font-family: Consolas, monospace;">{escaped_nslookup}</div>
+                            </div>
+                            """
+                            contents_html += nslookup_content
+
+                        # --- Domain RDAP コンテンツ生成 ---
+                        if domain_rdap_json and domain_rdap_url:
+                            tab_id = "tab-domain-rdap"
+                            if not first_tab_id: first_tab_id = tab_id
+                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">RDAP(Domain)</button>\n'
+                            d_name = domain_rdap_json.get("ldhName", "情報なし")
+
+                            # --- レジストリ名（回答元）の自動抽出 ---
+                            parsed_url_d = urlparse(domain_rdap_url)
+                            registry_name_d = parsed_url_d.netloc if parsed_url_d.netloc else "不明"
+
+                            # イベント（登録日、有効期限）の抽出
+                            events = domain_rdap_json.get("events", [])
+                            reg_date = "情報なし"
+                            exp_date = "情報なし"
+                            for ev in events:
+                                if ev.get("eventAction") == "registration":
+                                    reg_date = ev.get("eventDate", "情報なし")
+                                elif ev.get("eventAction") == "expiration":
+                                    exp_date = ev.get("eventDate", "情報なし")
+
+                            # エンティティ（レジストラ名）の抽出
+                            entities = domain_rdap_json.get("entities", [])
+                            registrar_name = "情報なし"
+                            for ent in entities:
+                                if "registrar" in ent.get("roles", []):
+                                    if "vcardArray" in ent and len(ent["vcardArray"]) > 1:
+                                        for vcard in ent["vcardArray"][1]:
+                                            if vcard[0] == "fn":
+                                                registrar_name = vcard[3]
+                                                break
+                                    break
+                            
+                            raw_json_str_d = json.dumps(domain_rdap_json, indent=4, ensure_ascii=False)
+                            escaped_json_d = html.escape(raw_json_str_d)
+                            
+                            # 1. 構造キーを排除し、「意味を持つ単語」のみを厳選してハイライト
+                            highlight_keys_d = ['registrar', 'registration', 'expiration']
+                            for hk in highlight_keys_d:
+                                escaped_json_d = escaped_json_d.replace(f'&quot;{hk}&quot;', f'<span class="json-hl">&quot;{hk}&quot;</span>')
+                                escaped_json_d = escaped_json_d.replace(f'"{hk}"', f'<span class="json-hl">"{hk}"</span>')
+
+                            # 2. 抽出した「具体的な値（証拠）」そのものを直接ハイライト
+                            extracted_values = [registrar_name, reg_date, exp_date]
+                            for val in extracted_values:
+                                if val and val != "情報なし":
+                                    esc_val = html.escape(val)
+                                    escaped_json_d = escaped_json_d.replace(f'&quot;{esc_val}&quot;', f'<span class="json-hl">&quot;{esc_val}&quot;</span>')
+                                    escaped_json_d = escaped_json_d.replace(f'"{esc_val}"', f'<span class="json-hl">"{esc_val}"</span>')
+
+                            domain_rdap_content = f"""
+                            <div id="{tab_id}" class="tab-content">
+                                <h1 class="theme-rdap">ドメインRDAP取得結果</h1>
+                                <div class="description" style="background-color: #e8eaf6; border-color: #9fa8da;">
+                                    <strong>登録データアクセスプロトコル（Registration Data Access Protocol、以下「RDAP」と記載する。）の定義及び運用目的：</strong><br>
+                                    RDAPとは、インターネット資源（ドメイン名、IPアドレス、自治システム番号等）の登録主体（組織又は個人）を法的に特定し得る登録情報を取得するための、IETF（Internet Engineering Task Force：インターネット技術の標準化を担う国際的な組織）により標準化された通信プロトコルである。<br>
+                                    本プロトコルは、従来のWHOISプロトコルが有する非構造化テキスト形式に起因する機械可読性及び解析の困難さ、国際化対応の不足、セキュリティ上の脆弱性等の課題を克服すべく策定され、JSON（JavaScript Object Notation：テキストベースのデータ交換フォーマット）ベースの構造化データ表現及び標準化されたクエリ・レスポンス形式により、厳密かつ効率的な登録データアクセスを実現する次世代の公式仕様として、現在運用されている。<br>
+                                    ICANN管轄下のトップレベルドメイン（.com, .net, .jp等）の法的登録情報を公式レジストリから直接取得したデータであり、対象ドメインの「レジストラ（登録代行業者）」「登録日時」「有効期限」などのメタデータを確認でき、インフラ運用者（IPの持ち主）とは異なる、ドメイン自体の契約者を示す。
+                                </div>
+                                <h2>対象ドメイン及び回答元レジストリ情報等</h2>
+                                <table>
+                                    <tr><th>対象ドメイン<br>(Target Domain)</th><td><strong>{d_name}</strong></td></tr>
+                                    <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>回答元レジストリ<br>(Registry)</th><td><strong>{registry_name_d}</strong></td></tr>
+                                    <tr><th>参照元URL<br>(Source)</th><td><a href="{domain_rdap_url}" target="_blank" style="color: #0066cc; word-break: break-all; font-weight: bold;">{domain_rdap_url}</a><span class="help-text">上記URLは、当該トップレベルドメインを管轄する公式レジストリから取得したJSONデータを示す。</span></td></tr>
+                                </table>
+                                <h2>ドメインRDAP取得結果</h2>
+                                <table>
+                                    <tr><th>レジストラ<br>(Key: registrar)</th><td><strong>{registrar_name}</strong><span class="help-text">対象ドメインの登録・管理を代行している指定事業者（レジストラ）の名称を示す。</span></td></tr>
+                                    <tr><th>登録日時<br>(Key: registration)</th><td><strong>{reg_date}</strong><span class="help-text">当該ドメインが最初に登録された日時を示す。</span></td></tr>
+                                    <tr><th>有効期限<br>(Key: expiration)</th><td><strong>{exp_date}</strong><span class="help-text">当該ドメインの現在の契約満了日時を示す。</span></td></tr>
+                                </table>
+                                <h2>参照元データ (JSON形式)</h2>
+                                <div class="raw-data">{escaped_json_d}</div>
+                            </div>
+                            """
+                            contents_html += domain_rdap_content
 
                         # --- 1. RDAP コンテンツ生成 ---
                         if rdap_url and rdap_json:
                             tab_id = "tab-rdap"
                             if not first_tab_id: first_tab_id = tab_id
                             
-                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">RDAP</button>\n'
+                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">RDAP(IP)</button>\n'
                             
                             # RDAPの真のURL取得
                             actual_rdap_url = rdap_url
@@ -1640,7 +1952,7 @@ def display_results(results, current_mode_full_text, display_mode):
                                 <h2>対象IPアドレス及び回答元レジストリ情報等</h2>
                                 <table>
                                     <tr><th>対象IPアドレス<br>(Target IP)</th><td><strong>{clean_ip}</strong></td></tr>
-                                    <tr><th>回答日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
                                     <tr><th>回答元レジストリ<br>(Registry)</th><td><strong>{registry_name}</strong></td></tr>
                                     <tr><th>参照元URL<br>(Source)</th><td><a href="{actual_rdap_url}" target="_blank" style="color: #0066cc; word-break: break-all; font-weight: bold;">{actual_rdap_url}</a><span class="help-text">上記URLは、地域インターネットレジストリ（RIR）から取得したJSONデータを示す。</span></td></tr>
                                 </table>
@@ -1669,7 +1981,7 @@ def display_results(results, current_mode_full_text, display_mode):
                             
                             highlight_keys = ['ip', 'hostname', 'city', 'region', 'country', 'loc', 'org']
                             for hk in highlight_keys:
-                                simple_pattern = r'(&quot;' + hk + r'&quot;:\s*&quot;.*?&quot;)'
+                                simple_pattern = r'("' + hk + r'":\s*".*?")'
                                 escaped_json = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json)
 
                             ip_val = ipinfo_json.get("ip", "情報なし")
@@ -1679,6 +1991,8 @@ def display_results(results, current_mode_full_text, display_mode):
                             country_val = ipinfo_json.get("country", "情報なし")
                             loc_val = ipinfo_json.get("loc", "情報なし")
                             org_val = ipinfo_json.get("org", "情報なし")
+                            
+                            req_ipinfo_url = f"https://ipinfo.io/{ip_val if ip_val != '情報なし' else clean_ip}"
 
                             # --- プライバシー判定の動的生成 ---
                             privacy_html = ""
@@ -1742,7 +2056,11 @@ def display_results(results, current_mode_full_text, display_mode):
                                 <h2>基本情報</h2>
                                 <table>
                                     <tr><th>対象IPアドレス<br>(Key: ip)</th><td><strong>{ip_val}</strong></td></tr>
-                                    <tr><th>回答日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>リクエストURL<br>(Request URL)</th><td>
+                                        <a href="{req_ipinfo_url}" target="_blank" style="color: #00897b; word-break: break-all;">{req_ipinfo_url}</a>
+                                        <span class="help-text">※APIキーはHTTPリクエストのヘッダー経由でセキュアに送信されているため、上記URL自体にシークレット情報は含まれていない。</span>
+                                    </td></tr>
                                     <tr><th>ホストネーム<br>(Key: hostname)</th><td><strong>{hostname_val}</strong></td></tr>
                                     <tr><th>組織/ISP<br>(Key: org)</th><td><strong>{org_val}</strong><span class="help-text">現在このIPをネットワーク上でルーティング（運用）しているプロバイダや組織の名称。</span></td></tr>
                                 </table>
@@ -1806,10 +2124,13 @@ def display_results(results, current_mode_full_text, display_mode):
                             escaped_json = html.escape(raw_json_str)
                             highlight_keys_ip2p = ['is_proxy', 'proxy_type', 'country_name', 'ip', 'as', 'isp']
                             for hk in highlight_keys_ip2p:
-                                simple_pattern = r'(&quot;' + hk + r'&quot;:\s*.*?,?\n)'
+                                simple_pattern = r'("' + hk + r'":\s*.*?,?\n)'
                                 escaped_json = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json)
 
                             # 4. HTMLコンテンツ構築
+                            ip2p_req_ip = ip2proxy_json.get('ip', clean_ip)
+                            req_ip2proxy_url = f"https://api.ip2location.io/?key=********&ip={ip2p_req_ip}&format=json"
+
                             ip2p_content = f"""
                             <div id="{tab_id}" class="tab-content">
                                 <h1 class="theme-ip2proxy">匿名通信判定結果</h1>
@@ -1822,8 +2143,12 @@ def display_results(results, current_mode_full_text, display_mode):
                                     IP2Location.ioの最新データベース（IP2Proxy PXシリーズ）を基盤とし、法的な割り当て情報を扱うRDAPとは異なり、アクティブな運用状況・脅威インテリジェンスに基づく匿名化検知に特化している点に特徴を有する。<br>
                                 </div>
                                 <table>
-                                    <tr><th>対象IPアドレス<br>(Key: ip)</th><td><strong>{ip2proxy_json.get('ip', clean_ip)}</strong></td></tr>
-                                    <tr><th>回答日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>対象IPアドレス<br>(Key: ip)</th><td><strong>{ip2p_req_ip}</strong></td></tr>
+                                    <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>リクエストURL<br>(Request URL)</th><td>
+                                        <a href="{req_ip2proxy_url}" target="_blank" style="color: #6a1b9a; word-break: break-all;">{req_ip2proxy_url}</a>
+                                        <span class="help-text">※APIキーはセキュリティ保護のためマスキング処理（********）を行っている。</span>
+                                    </td></tr>
                                     <tr><th>プロキシ判定<br>(Key: is_proxy)</th><td><strong style="color:{status_color};">{proxy_status_text}</strong></td></tr>
                                     <tr>
                                         <th>プロキシ種別<br>(Key: proxy_type)</th>
@@ -1840,6 +2165,140 @@ def display_results(results, current_mode_full_text, display_mode):
                             </div>
                             """
                             contents_html += ip2p_content
+
+                        # --- 4. SecurityTrails コンテンツ生成 ---
+                        if st_json:
+                            tab_id = "tab-st"
+                            if not first_tab_id: first_tab_id = tab_id
+                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">SecurityTrails</button>\n'
+                            
+                            records = st_json.get("records", [])
+                            is_date_filtered = st_json.get("is_date_filtered", False)
+                            
+                            st_html_rows = ""
+                            unique_ips_ordered = []
+                            seen_ips = set()
+
+                            for rec in records: 
+                                values = rec.get("values", [])
+                                ips_in_rec = []
+                                for v in values:
+                                    ip_val = v.get("ip", "")
+                                    if ip_val:
+                                        ips_in_rec.append(html.escape(ip_val))
+                                        # 重複排除と順序保持のロジック
+                                        if ip_val not in seen_ips:
+                                            seen_ips.add(ip_val)
+                                            unique_ips_ordered.append(ip_val)
+
+                                ips = "<br>".join(ips_in_rec)
+                                first_seen = html.escape(str(rec.get("first_seen", "情報なし")))
+                                last_seen = html.escape(str(rec.get("last_seen", "情報なし")))
+                                orgs = rec.get("organizations", [])
+                                org = html.escape(orgs[0]) if orgs else "情報なし"
+                                
+                                st_html_rows += f"<tr><td>{ips}</td><td>{first_seen}</td><td>{last_seen}</td><td>{org}</td></tr>"
+                                
+                            if not st_html_rows:
+                                st_html_rows = "<tr><td colspan='4' style='text-align:center;'>A/AAAAレコードの履歴データが見つかりませんでした。</td></tr>"
+                                
+                            # ユニークIPのテーブル行生成
+                            unique_ips_rows = ""
+                            for ip in unique_ips_ordered:
+                                unique_ips_rows += f"<tr><td><strong>{html.escape(ip)}</strong></td></tr>"
+                            
+                            if not unique_ips_rows:
+                                unique_ips_rows = "<tr><td style='text-align:center;'>取得されたIPアドレスはありません。</td></tr>"
+
+                            raw_json_str_st = json.dumps(st_json, indent=4, ensure_ascii=False)
+                            escaped_json_st = html.escape(raw_json_str_st)
+                            
+                            # ターゲットを絞り、"ip" キーの行全体のみをハイライト
+                            highlight_keys_st = ['ip']
+                            for hk in highlight_keys_st:
+                                simple_pattern = r'((?:&quot;|")' + hk + r'(?:&quot;|")\s*:\s*[^\n\r]*)'
+                                escaped_json_st = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json_st)
+                                
+                            table_heading = "レコード履歴 (抽出結果全件)" if is_date_filtered else "レコード履歴 (最新20件)"
+                            
+                            # リクエストURLの生成とエスケープ
+                            target_domain_esc = html.escape(domain_name_for_nslookup)
+                            url_a = f"https://api.securitytrails.com/v1/history/{target_domain_esc}/dns/a"
+                            url_aaaa = f"https://api.securitytrails.com/v1/history/{target_domain_esc}/dns/aaaa"
+                            
+                            st_content = f"""
+                            <div id="{tab_id}" class="tab-content">
+                                <h1 class="theme-ip2proxy" style="color: #e65100; border-color: #e65100;">レコード履歴 (SecurityTrails)</h1>
+                                <div class="description" style="background-color: #fff3e0; border-color: #ffcc80;">
+                                    <strong>SecurityTrails Historical DNS Data：</strong><br>
+                                    SecurityTrailsのAPIを利用して、対象ドメインに過去紐付いていたIPアドレス（Aレコード/AAAAレコード）の変遷を取得した結果を示す。
+                                </div>
+                                <h2>対象ドメイン及び取得情報</h2>
+                                <table>
+                                    <tr><th>対象ドメイン<br>(Target Domain)</th><td><strong>{target_domain_esc}</strong></td></tr>
+                                    <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>リクエストURL<br>(Request URL)</th><td>
+                                        <a href="{url_a}" target="_blank" style="color: #0066cc; word-break: break-all;">{url_a}</a><br>
+                                        <a href="{url_aaaa}" target="_blank" style="color: #0066cc; word-break: break-all;">{url_aaaa}</a>
+                                    </td></tr>
+                                </table>
+                                <h2>判明したIPアドレス一覧 (重複排除)</h2>
+                                <table>
+                                    <tr><th>抽出されたIPアドレス (IPv4/IPv6)</th></tr>
+                                    {unique_ips_rows}
+                                </table>
+                                <h2>{table_heading}</h2>
+                                <table>
+                                    <tr><th>IPアドレス (IPv4/IPv6)</th><th>初回観測日 (First Seen)</th><th>最終観測日 (Last Seen)</th><th>組織 (Organization)</th></tr>
+                                    {st_html_rows}
+                                </table>
+                                <h2>参照元データ (JSON形式)</h2>
+                                <div class="raw-data">{escaped_json_st}</div>
+                            </div>
+                            """
+                            contents_html += st_content
+
+                        # --- 5. rDNS (逆引き) コンテンツ生成 ---
+                        if rdns_raw:
+                            tab_id = "tab-rdns"
+                            if not first_tab_id: first_tab_id = tab_id
+                            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">逆引き(rDNS)</button>\n'
+                            
+                            escaped_rdns = html.escape(rdns_raw)
+                            # 抽出したホスト名のハイライト処理 (標準出力部分のみ)
+                            for h_str in rdns_hosts:
+                                escaped_h = html.escape(h_str)
+                                escaped_rdns = escaped_rdns.replace(escaped_h, f'<span class="json-hl">{escaped_h}</span>')
+                                
+                            # 実行コマンドの表記を、リゾルバ設定を反映したプロフェッショナルな形式に変更
+                            cmd_str = f"resolver = dns.resolver.Resolver(configure=False); resolver.nameservers = ['8.8.8.8']; resolver.resolve(dns.reversename.from_address('{clean_ip}'), 'PTR')"
+                            
+                            # 取得ホスト名のリスト表示部分
+                            host_list_str = "<br>".join([html.escape(h) for h in rdns_hosts]) if rdns_hosts else "取得なし"
+                            
+                            rdns_content = f"""
+                            <div id="{tab_id}" class="tab-content">
+                                <h1 class="theme-rdap" style="color: #424242; border-color: #424242;">DNS逆引き解決結果 (dnspython)</h1>
+                                <div class="description" style="background-color: #eceff1; border-color: #cfd8dc;">
+                                    <strong>DNS逆引き(Reverse DNS) 解決記録：</strong><br>
+                                    対象のIPアドレスに対してPython公式の国際標準ライブラリである <code>dnspython</code> を実行し、紐づくホスト名（PTRレコード）を取得した結果を示す。<br>
+                                    これにより、当該IPを利用しているプロバイダのドメインや、サーバーのホスト名が直接判明する場合がある。<br>
+                                    なお、Windows OSに標準搭載されている nslookup コマンドは、DNSサーバーからの応答を独自の形式で解釈・整形して表示する旧式のツールである。<br>
+                                    そのため、一つのIPアドレスに対して複数の逆引き（PTR）レコードが登録されている場合、最初の1件のみを出力し、残りのレコードを破棄する仕様のため、dnspythonによりホスト名を取得している。
+                                </div>
+                                <h2>対象IPアドレス及び取得結果</h2>
+                                <table>
+                                    <tr><th>対象IPアドレス<br>(Target IP)</th><td><strong>{clean_ip}</strong></td></tr>
+                                    <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                                    <tr><th>取得ホスト名<br>(Resolved Hostnames)</th><td><strong>{host_list_str}</strong></td></tr>
+                                </table>
+                                <h2>内部実行クエリ (Python)</h2>
+                                <div class="raw-data" style="background-color: #263238; color: #eceff1; font-weight: bold; font-family: Consolas, monospace;">>>> {cmd_str}</div>
+                                <h2>実行結果 (ライブラリ出力)</h2>
+                                <div class="raw-data" style="font-family: Consolas, monospace;">{escaped_rdns}</div>
+                            </div>
+                            """
+                            contents_html += rdns_content
 
                         # --- 統合HTMLの構築 ---
                         full_html = f"""
@@ -2163,7 +2622,27 @@ def main():
             st.success(f"✅ IP2Proxy Key Loaded: {ip2proxy_api_key[:4]}***")
         else:
             ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力することで、IPアドレスの匿名通信判定を取得します。").strip()
-        
+        # --- SecurityTrails用の処理 ---
+        if HARDCODED_SECURITYTRAILS_KEY:
+            st_api_key = HARDCODED_SECURITYTRAILS_KEY
+            st.success(f"✅ SecurityTrails Key Loaded: {st_api_key[:4]}***")
+        else:
+            st_api_key = st.text_input("SecurityTrails API Key", type="password", key="input_st", help="FQDN（ドメイン）が入力された際、過去のA/AAAAレコードの履歴を取得するために使用します。（月間50回までの無料枠に注意）").strip()
+
+        st_start_date = None
+        st_end_date = None
+        if st_api_key:
+            import datetime
+            st.markdown("##### 📅 履歴取得期間 (SecurityTrails)")
+            use_st_date_filter = st.checkbox("期間を指定して全件抽出する", value=False, help="チェックを入れると指定期間の履歴を制限なく抽出します。チェックがない場合は最新20件のみを取得します。")
+            
+            if use_st_date_filter:
+                col_dt1, col_dt2 = st.columns(2)
+                with col_dt1:
+                    st_start_date = st.date_input("開始日", datetime.date(2020, 1, 1), help="この日以降に観測された履歴のみを抽出します。")
+                with col_dt2:
+                    st_end_date = st.date_input("終了日", datetime.date.today(), help="この日以前に観測された履歴のみを抽出します。")
+
         # モード選択変数の初期化
         ip2proxy_mode = "自動節約 (不審なIPのみ)"
         
@@ -2249,6 +2728,14 @@ def main():
             - **🕵️ 匿名通信判定 (IP2Proxy Key)**
                 - **メリット**: VPN、Proxy、Tor等の利用が疑われる不審なIPに対し、IP2Location.ioの専門データベースから「匿名通信該当結果」を自動取得します。
 
+            - **📜 過去のDNS履歴取得 (SecurityTrails Key)**
+                - **メリット**: ドメイン（FQDN）を入力した際、WAF（Cloudflare等）で秘匿される前の過去の生IP（オリジンサーバー）や、紐づいていたIPアドレスの変遷を取得できます。
+                - **注意**: 月間50回までの無料枠が存在します。IPアドレス単体の検索では消費されません。
+                        
+            - **🔄 IP逆引き (Reverse DNS)**
+                - **メリット**: IPアドレスに紐づくホスト名（PTRレコード）を取得します。プロバイダの特定や、サーバー用途の推測に役立ちます。
+                - **動作仕様**: 精度と網羅性を優先するため、本オプション有効時は自動的に「シングルスレッド・待機延長モード」へ切り替わります。
+
             - **🔎 IoT Risk Check (InternetDB)**
                 - **メリット**: ポート5555(ADB/FireStick)や1080(Proxy)等の露出を検知し、踏み台リスクを警告します（APIキー不要）。
             """)
@@ -2279,7 +2766,7 @@ def main():
             
             **2. 必要なライブラリのインストール**
             ```bash
-            pip install streamlit pandas requests streamlit-option-menu altair openpyxl
+            pip install streamlit pandas requests streamlit-option-menu altair openpyxl dnspython
             ```
             
             **3. アプリの起動**
@@ -2296,24 +2783,32 @@ def main():
                 - 通常版: `ip-api.com` (毎分45リクエスト制限)
                 - 高精度版: `ipinfo.io` (APIキーに基づく制限)
             - **匿名通信判定 (Proxy/VPN)**: `IP2Location.io` (不審なIPのみ実行)
+            - **過去のDNS履歴 (Historical DNS)**: `SecurityTrails` (ドメイン入力時のみ実行)
+            - **DNS解析 (Forward/Reverse)**: OS標準 `nslookup` (正引き) / `dnspython` ライブラリ (逆引き)
             - **Whois (RDAP)**: APNIC等の各地域レジストリ公式サーバー
             - **IoT Risk Intelligence**: Shodan InternetDB (ポートスキャン履歴/キャッシュ)
             - **Tor出口ノード**: Tor Project公式サイト
 
-            #### 2. 多角的解析の仕組み (API・RDAP・ProxyEvidence)
+            #### 2. 多角的解析の仕組み (API・RDAP・ProxyEvidence・DNS History)
             - **運用者判定 (ip-api/ipinfo)**: 
                 - **役割**: 「今、誰がそのIPを運用しているか？」(Service Provider) を答えます。
                 - **特徴**: 高速。ISPやクラウド事業者名（Cloudflare, Amazon等）を特定します。
             - **法的保有者判定 (RDAP公式台帳)**: 
                 - **役割**: 「そのIPアドレス(土地)の法的な持ち主は誰か？」(Registry Owner) を答えます。
                 - **特徴**: 厳密。各地域のレジストリに登録された組織名を特定します。
+            - **インフラ紐付け (rDNS/PTR)**: 
+                - **役割**: 「そのIPにはどんなホスト名が付いているか？」を特定。Windowsの `nslookup` の制限を回避するため、専用のリゾルバを用いて全レコードを抽出します。
             - **匿名性判定 (IP2Proxy)**: 
                 - **役割**: 「そのIPは意図的に隠蔽（VPN/Proxy等）されているか？」を答えます。
                 - **特徴**: 証拠能力。不審な判定時に専門DBから詳細な証拠JSONを取得します。
-            - **メリット**: これらを統合することで、単なる「場所の特定」を超え、「通信主体の隠蔽意図」までを浮き彫りにします。
+            - **レコード履歴特定 (SecurityTrails)**: 
+                - **役割**: 「そのドメインはどのIPアドレスがレコードに設定されていたか？」を答えます。
+                - **特徴**: 履歴追跡。WAF等で現在のIPが隠蔽されていても、過去のIPアドレスを特定できる可能性があります。
+            - **メリット**: これらを統合することで、単なる「場所の特定」を超え、「通信主体の隠蔽意図」や「インフラの変遷」までを浮き彫りにします。
 
             #### 3. 技術的仕様
             - **並列処理**: マルチスレッドによる高速検索
+            - **動的負荷調整**: 逆引きオプション有効時は、クエリの衝突とタイムアウトを回避するため、**自動でシングルスレッド・待機延長モード**へ移行し、調査の確実性を担保します。
             - **CIDRキャッシュ**: 同一ネットワーク帯域への重複リクエスト回避
             """)
             st.markdown("#### 4. 判定ステータスの意味")
@@ -2360,6 +2855,7 @@ def main():
             A. 本ツールで利用可能な高度判定用APIキーは、以下の公式サイトから無料で登録・取得できます（いずれも無料枠が存在します）。
             * **高精度判定 (ipinfo)**: [ipinfo.io サインアップ](https://ipinfo.io/signup)
             * **匿名通信判定 (IP2Proxy)**: [IP2Location.io サインアップ](https://www.ip2location.io/sign-up)
+            * **過去のDNS履歴取得 (SecurityTrails)**: [SecurityTrails サインアップ](https://securitytrails.com/app/signup)
 
             **Q. ISP名と [RDAP: 〇〇] の名前が違うのですが？**\n
             A. **それは「運用者」と「持ち主」の違いです。** 例えば `1.1.1.1` というIPアドレスの場合：
@@ -2402,16 +2898,20 @@ def main():
         mode_title = "🏠 Local Private Edition (フル機能版)"
         mode_color = "green"
 
-    st.title("🔎 検索大臣 - IP-OSINTツール -")
+    st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🌸アップデート情報 (令和８年３月１日) - 匿名通信判定の強化と詳細レポート実装 🌸", expanded=True):
+    with st.expander("🌸アップデート情報 (令和８年３月１日) - 各種API連携・レポート出力の実装 🌸", expanded=True):
         st.markdown("""
         **Update:**\n
         **🕵️ 匿名通信判定 (IP2Proxy / IP2Location.io 連携)**: 
-        * VPN、Proxy、Tor、データセンター等の利用を専門データベースで照合可能になりました。不審なIPを検知した際、自動で「匿名通信判定情報」を取得します。\n  
+        * VPN、Proxy、Tor、データセンター等の利用を専門データベースで照合可能になりました。不審なIPを検知した際、自動で「匿名通信判定情報」を取得します。\n
+        **📜 過去のDNS履歴取得 (SecurityTrails 連携)**: 
+        * ドメインを入力した際、対象ドメインに過去紐付いていたIPアドレス（A/AAAAレコード）の変遷をSecurityTrails APIから自動取得可能になりました。\n
+        **🔄 高精度IP逆引き (dnspython 連携)**: 
+        * IPアドレスからホスト名を特定する「逆引き」機能を実装。Windows標準コマンドの制限（複数レコードの欠落）を克服するため、専用ライブラリによる直接クエリを採用しました。これに伴い、DNSクエリのタイムアウトを防ぐ**「動的負荷調整ロジック（自動シングルスレッド化）」**を搭載しています。\n
         **📄 詳細レポート (HTML)**:
-        * RDAP、ipinfoに加え、IP2Proxyの判定結果を一つのHTMLファイルに集約。タブ切り替えによるシームレスな閲覧と、書類提出に最適な「一括印刷機能」を搭載しました。
+        * RDAP、ipinfo、IP2Proxy、SecurityTrailsに加え、逆引き結果も一つのHTMLファイルに集約。タブ切り替えによるシームレスな閲覧と、書類提出に最適な「一括印刷機能」を搭載しました。
         """)
     # ------------------------------------------------
     col_input1, col_input2 = st.columns([1, 1])
@@ -2520,7 +3020,44 @@ def main():
         target_freq_counts = {}
 
     targets = []
+    invalid_targets_skipped = [] # 無効としてスキップされたターゲットを記録
     ocr_error_chars = set('Iil|OoSsAaBⅡ')
+    resolved_dns_map = {} # nslookupの生出力保存用辞書
+
+    def resolve_domain_nslookup(domain):
+        """ nslookupコマンドを実行し、IPリストと生出力を返す """
+        ips = []
+        raw_output = ""
+        try:
+            # OSコマンド実行 (タイムアウト5秒)
+            result = subprocess.run(["nslookup", domain], capture_output=True, text=True, timeout=5, shell=False)
+            raw_output = result.stdout
+            
+            lines = raw_output.splitlines()
+            is_server_section = True  # 最初はDNSサーバー自身の情報とみなす
+            for line in lines:
+                # 「権限のない回答:」や「名前:」が出たら、以降は対象ドメインのIPとみなす
+                if "権限のない回答:" in line or "Non-authoritative answer:" in line or "名前:" in line or "Name:" in line:
+                    is_server_section = False
+                
+                # DNSサーバー情報のIPアドレス行は無視する
+                if is_server_section and ("Address:" in line or "Addresses:" in line):
+                    continue
+                
+                # 対象ドメインのセクションからIPアドレスを正規表現で抽出
+                if not is_server_section:
+                    # IPv4の抽出
+                    for match in re.findall(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b', line):
+                        if is_valid_ip(match) and match not in ips:
+                            ips.append(match)
+                    # IPv6の抽出 (途切れを防止するため広範なパターンで捕捉)
+                    for match in re.findall(r'(?:[A-Fa-f0-9]{1,4}:){1,7}[A-Fa-f0-9]{0,4}::?[A-Fa-f0-9]{1,4}|(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}', line):
+                        if is_valid_ip(match) and match not in ips:
+                            ips.append(match)
+        except Exception as e:
+            raw_output = f"Error executing nslookup: {str(e)}"
+        
+        return ips, raw_output
 
     for t in raw_targets:
         original_t = t
@@ -2540,20 +3077,57 @@ def main():
         if is_valid_ip(t):
             if t not in targets: targets.append(t)
         elif is_likely_domain_or_host:
-            if t not in targets: targets.append(t)
+            # ドメイン形式の厳格チェック
+            if is_valid_domain(t):
+                # --- nslookupによる複数IP完全取得 ---
+                ip_list, raw_output = resolve_domain_nslookup(t)
+                if ip_list:
+                    resolved_dns_map[t] = {'ips': ip_list, 'raw': raw_output}
+                    for resolved_ip in ip_list:
+                        combined_t = f"{t} ({resolved_ip})"
+                        if combined_t not in targets: targets.append(combined_t)
+                else:
+                    if t not in targets: targets.append(t)
+            else:
+                invalid_targets_skipped.append(t) # 不正なドメインとして除外
         else:
             cleaned_t_final = clean_ocr_error_chars(t)
-            if cleaned_t_final not in targets: targets.append(cleaned_t_final)
+            if is_valid_ip(cleaned_t_final):
+                if cleaned_t_final not in targets: targets.append(cleaned_t_final)
+            else:
+                # クリーンアップ後もドメイン形式の厳格チェック
+                if is_valid_domain(cleaned_t_final):
+                    ip_list, raw_output = resolve_domain_nslookup(cleaned_t_final)
+                    if ip_list:
+                        resolved_dns_map[cleaned_t_final] = {'ips': ip_list, 'raw': raw_output}
+                        for resolved_ip in ip_list:
+                            combined_t = f"{cleaned_t_final} ({resolved_ip})"
+                            if combined_t not in targets: targets.append(combined_t)
+                    else:
+                        if cleaned_t_final not in targets: targets.append(cleaned_t_final)
+                else:
+                    invalid_targets_skipped.append(t) # 不正なドメインとして除外
+
+    # スキップされたターゲットがあれば警告を表示
+    if invalid_targets_skipped:
+        st.warning(f"⚠️ 以下の入力は「IPアドレス」または「有効なドメイン形式 (例: example.com)」を満たしていないため、検索対象から除外されました: **{', '.join(list(set(invalid_targets_skipped)))}**")
 
     has_new_targets = (targets != st.session_state.targets_cache)
     
     if has_new_targets or 'target_freq_map' not in st.session_state:
         st.session_state['target_freq_map'] = target_freq_counts
         st.session_state['original_input_list'] = cleaned_raw_targets_list
+        st.session_state['resolved_dns_map'] = resolved_dns_map # nslookupの生出力を保存
+
+    # --- エンジン処理用の振り分け（ドメイン(IP)はIPとして処理させる） ---
     ip_targets = [t for t in targets if is_valid_ip(t)]
     domain_targets = [t for t in targets if not is_valid_ip(t)]
-    ipv6_count = sum(1 for t in ip_targets if not is_ipv4(t))
-    ipv4_count = len(ip_targets) - ipv6_count
+
+    # --- UI表示用の厳密なカウント ---
+    resolved_domain_count = sum(1 for t in ip_targets if "(" in t and ")" in t)
+    ipv6_count = sum(1 for t in ip_targets if not is_ipv4(t) and "(" not in t)
+    ipv4_count = len(ip_targets) - ipv6_count - resolved_domain_count
+    display_domain_count = len(domain_targets) + resolved_domain_count
 
     st.markdown("---")
     st.markdown("### ⚙️ 検索表示設定")
@@ -2594,6 +3168,8 @@ def main():
         use_internetdb_option = st.checkbox("IoTリスク検知 (InternetDBを利用)", value=True, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。不要な場合はオフにすることで処理を最適化できます。")
         # RDAPオプション
         use_rdap_option = st.checkbox("公式レジストリ情報 (RDAP公式台帳の併用 - 低速)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
+        # 逆引き(rDNS)オプション
+        use_rdns_option = st.checkbox("IP逆引き (Reverse DNS - dnspython)", value=False, help="対象IPアドレスに対してdnspythonを実行し、ホスト名(PTRレコード)を取得して詳細レポートに追加します。")
 
     mode_mapping = {
         "標準モード": "標準モード (1ターゲット = 1行)",
@@ -2610,7 +3186,7 @@ def main():
     total_ip_targets_for_display = len(ip_targets) + len(st.session_state.deferred_ips)
 
     with col_act1:
-        st.success(f"**Target:** IPv4: {ipv4_count} / IPv6: {ipv6_count} / Domain: {len(domain_targets)} (Pending: {len(st.session_state.deferred_ips)}) / **CIDR Cache:** {len(st.session_state.cidr_cache)}")
+        st.success(f"**Target:** IPv4: {ipv4_count} / IPv6: {ipv6_count} / Domain: {display_domain_count} (Pending: {len(st.session_state.deferred_ips)}) / **CIDR Cache:** {len(st.session_state.cidr_cache)}")
         
         # 1. IPinfo (Pro Mode) の判定
         if pro_api_key:
@@ -2700,7 +3276,7 @@ def main():
 
             else:
                 if not any(res['ISP'] == 'Domain/Host' for res in st.session_state.raw_results) and domain_targets:
-                    st.session_state.raw_results.extend([get_domain_details(d) for d in domain_targets])
+                    st.session_state.raw_results.extend([get_domain_details(d, st_api_key, st_start_date, st_end_date) for d in domain_targets])
                     st.session_state.finished_ips.update(domain_targets)
                     
                 prog_bar_container = st.empty()
@@ -2709,24 +3285,39 @@ def main():
 
                 if immediate_ip_queue:
                     cidr_cache_snapshot = st.session_state.cidr_cache.copy() 
-                    # 学習済みリストのスナップショットを取得
                     learned_isps_snapshot = st.session_state.learned_proxy_isps.copy()
                     
-                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # --- 逆引き(rDNS)有効時の動的負荷調整 (安全装置) ---
+                    current_max_workers = max_workers
+                    current_delay = delay_between_requests
+                    
+                    if use_rdns_option:
+                        # DNSクエリの競合とタイムアウトを防ぐため強制的にシングルスレッド化
+                        current_max_workers = 1 
+                        # 待機時間が短い場合は、安全のために最低2.0秒まで引き上げる
+                        if current_delay < 2.0:
+                            current_delay = 2.0
+                        st.info("ℹ️ 逆引き精度向上のため、負荷調整モード（シングルスレッド/待機延長）で実行中...")
+
+                    with ThreadPoolExecutor(max_workers=current_max_workers) as executor:
                         future_to_ip = {
                             executor.submit(
                                 get_ip_details_from_api, 
                                 ip, 
                                 cidr_cache_snapshot, 
                                 learned_isps_snapshot, 
-                                delay_between_requests, 
+                                current_delay,
                                 rate_limit_wait_seconds,
                                 tor_nodes,
                                 use_rdap_option,
                                 use_internetdb_option,
+                                use_rdns_option,
                                 pro_api_key,
                                 ip2proxy_api_key,
-                                ip2proxy_mode
+                                ip2proxy_mode,
+                                st_api_key,
+                                st_start_date,
+                                st_end_date
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
@@ -2737,8 +3328,8 @@ def main():
                             for f in done:
                                 res_tuple = f.result()
                                 res = res_tuple[0]
-                                new_cache_entry = res_tuple[1]
-                                new_learned_isp = res_tuple[2] 
+                                new_cache_entry = res_tuple[1] if len(res_tuple) > 1 else None
+                                new_learned_isp = res_tuple[2] if len(res_tuple) > 2 else None
                                 ip = res['Target_IP']
                                 
                                 if new_cache_entry:
