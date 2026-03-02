@@ -264,9 +264,15 @@ def detect_proxy_vpn_tor(ip, isp_name, tor_nodes):
     if any(kw in isp_lower for kw in HOSTING_VPN_KEYWORDS): return "Hosting/DataCenter"
     return "Standard Connection"
 
-def get_jp_names(english_isp, country_code):
+def get_jp_names(english_isp, country_code, enable_aggregation=True):
+    jp_country = COUNTRY_JP_NAME.get(country_code, country_code)
+    
     if not english_isp:
-        return "N/A", COUNTRY_JP_NAME.get(country_code, country_code)
+        return "N/A", jp_country
+
+    # 名寄せオフの場合は、変換処理を行わずに生データをそのまま返す
+    if not enable_aggregation:
+        return english_isp, jp_country
 
     normalized_input = normalize_isp_key(english_isp)
     jp_isp = english_isp 
@@ -613,7 +619,7 @@ def get_ip2proxy_data(ip, api_key):
     return None
 
 # Proモード用 API取得関数 (ipinfo.io)
-def get_ip_details_pro(ip, token, tor_nodes, ip2proxy_api_key=None, actual_ip=None):
+def get_ip_details_pro(ip, token, tor_nodes, enable_aggregation, ip2proxy_api_key=None, actual_ip=None):
     result = {
         'Target_IP': ip, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 
         'CountryCode': 'N/A', 'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
@@ -646,7 +652,8 @@ def get_ip_details_pro(ip, token, tor_nodes, ip2proxy_api_key=None, actual_ip=No
         result['RIR_Link'] = get_authoritative_rir_link(ip, result['CountryCode'])
         result['Status'] = 'Success (Pro)'
         
-        jp_isp, jp_country = get_jp_names(result['ISP'], result['CountryCode'])
+        # UIから渡されたフラグ(enable_aggregation)を第3引数にセットして名寄せを制御する
+        jp_isp, jp_country = get_jp_names(result['ISP'], result['CountryCode'], enable_aggregation)
         result['ISP_JP'] = jp_isp
         result['Country_JP'] = jp_country
 
@@ -722,7 +729,7 @@ def resolve_ip_nslookup(ip):
     return hostnames, raw_output
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, api_key=None, ip2proxy_api_key=None, ip2proxy_mode="自動節約 (不審なIPのみ)", st_api_key=None, st_start_date=None, st_end_date=None):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, enable_aggregation, api_key=None, ip2proxy_api_key=None, ip2proxy_mode="自動節約 (不審なIPのみ)", st_api_key=None, st_start_date=None, st_end_date=None):
     
     actual_ip = extract_actual_ip(ip)
     
@@ -745,7 +752,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
             result['Country'] = cached_data['Country']
             result['CountryCode'] = cached_data['CountryCode']
             result['Status'] = "Success (Cache)" 
-            jp_isp, jp_country = get_jp_names(result['ISP'], result['CountryCode'])
+            jp_isp, jp_country = get_jp_names(result['ISP'], result['CountryCode'], enable_aggregation)
             
             if 'Proxy_Type' in cached_data and cached_data['Proxy_Type']:
                  proxy_type = cached_data['Proxy_Type']
@@ -835,8 +842,12 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         if use_rdap:
             rdap_res = fetch_rdap_data(actual_ip) 
             if rdap_res:
-                result['ISP'] += f" [RDAP(IP): {rdap_res['name']}]" 
-                result['RDAP'] = rdap_res['name']
+                raw_rdap_name = rdap_res['name']
+                # RDAPの組織名にも名寄せ機能を適用する
+                rdap_jp_name, _ = get_jp_names(raw_rdap_name, country_code, enable_aggregation)
+                
+                result['ISP'] += f" [RDAP(IP): {rdap_jp_name}]" 
+                result['RDAP'] = rdap_jp_name
                 result['RDAP_JSON'] = rdap_res['json']
                 result['RDAP_URL'] = rdap_res['url']
 
@@ -869,7 +880,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
             result['IoT_Risk'] = "[Not Checked]" 
 
         result['Status'] = status_api
-        jp_isp, jp_country = get_jp_names(result['ISP'], country_code)
+        jp_isp, jp_country = get_jp_names(result['ISP'], country_code, enable_aggregation)
         
         # --- 【動的学習＆階層検索の適用】 ---
         proxy_type = base_proxy_type
@@ -1843,7 +1854,7 @@ def display_results(results, current_mode_full_text, display_mode):
 
                             domain_rdap_content = f"""
                             <div id="{tab_id}" class="tab-content">
-                                <h1 class="theme-rdap">ドメインRDAP取得結果</h1>
+                                <h1 class="theme-rdap">RDAP取得結果（ドメイン）</h1>
                                 <div class="description" style="background-color: #e8eaf6; border-color: #9fa8da;">
                                     <strong>登録データアクセスプロトコル（Registration Data Access Protocol、以下「RDAP」と記載する。）の定義及び運用目的：</strong><br>
                                     RDAPとは、インターネット資源（ドメイン名、IPアドレス、自治システム番号等）の登録主体（組織又は個人）を法的に特定し得る登録情報を取得するための、IETF（Internet Engineering Task Force：インターネット技術の標準化を担う国際的な組織）により標準化された通信プロトコルである。<br>
@@ -1857,7 +1868,7 @@ def display_results(results, current_mode_full_text, display_mode):
                                     <tr><th>回答元レジストリ<br>(Registry)</th><td><strong>{registry_name_d}</strong></td></tr>
                                     <tr><th>参照元URL<br>(Source)</th><td><a href="{domain_rdap_url}" target="_blank" style="color: #0066cc; word-break: break-all; font-weight: bold;">{domain_rdap_url}</a><span class="help-text">上記URLは、当該トップレベルドメインを管轄する公式レジストリから取得したJSONデータを示す。</span></td></tr>
                                 </table>
-                                <h2>ドメインRDAP取得結果</h2>
+                                <h2>RDAP取得結果（ドメイン）</h2>
                                 <table>
                                     <tr><th>レジストラ<br>(Key: registrar)</th><td><strong>{registrar_name}</strong><span class="help-text">対象ドメインの登録・管理を代行している指定事業者（レジストラ）の名称を示す。</span></td></tr>
                                     <tr><th>登録日時<br>(Key: registration)</th><td><strong>{reg_date}</strong><span class="help-text">当該ドメインが最初に登録された日時を示す。</span></td></tr>
@@ -1955,7 +1966,7 @@ def display_results(results, current_mode_full_text, display_mode):
                                     <tr><th>回答元レジストリ<br>(Registry)</th><td><strong>{registry_name}</strong></td></tr>
                                     <tr><th>参照元URL<br>(Source)</th><td><a href="{actual_rdap_url}" target="_blank" style="color: #0066cc; word-break: break-all; font-weight: bold;">{actual_rdap_url}</a><span class="help-text">上記URLは、地域インターネットレジストリ（RIR）から取得したJSONデータを示す。</span></td></tr>
                                 </table>
-                                <h2>RDAP取得結果</h2>
+                                <h2>RDAP取得結果（IPアドレス）</h2>
                                 <table>
                                     <tr><th>法的保有者<br>(Key: name)</th><td><strong>{name_val}</strong><span class="help-text">対象のIPアドレスブロックを公式に管理・保有している組織名（レジストリ登録情報）を示す。</span></td></tr>
                                     {remarks_html}
@@ -2060,6 +2071,9 @@ def display_results(results, current_mode_full_text, display_mode):
                                         <a href="{req_ipinfo_url}" target="_blank" style="color: #00897b; word-break: break-all;">{req_ipinfo_url}</a>
                                         <span class="help-text">※APIキーはHTTPリクエストのヘッダー経由でセキュアに送信されているため、上記URL自体にシークレット情報は含まれていない。</span>
                                     </td></tr>
+                                </table>
+                                <h2>IP情報取得結果</h2>
+                                <table>
                                     <tr><th>ホストネーム<br>(Key: hostname)</th><td><strong>{hostname_val}</strong></td></tr>
                                     <tr><th>組織/ISP<br>(Key: org)</th><td><strong>{org_val}</strong><span class="help-text">現在このIPをネットワーク上でルーティング（運用）しているプロバイダや組織の名称。</span></td></tr>
                                 </table>
@@ -2141,6 +2155,7 @@ def display_results(results, current_mode_full_text, display_mode):
                                     本レポートは、当該IPアドレスがVPN、オープンプロキシ、Tor、データセンター等の匿名ネットワークとして識別されるかを評価した結果を示すものであり、通信経路の匿名性及び脅威レベルの判断に資するものである。<br>
                                     IP2Location.ioの最新データベース（IP2Proxy PXシリーズ）を基盤とし、法的な割り当て情報を扱うRDAPとは異なり、アクティブな運用状況・脅威インテリジェンスに基づく匿名化検知に特化している点に特徴を有する。<br>
                                 </div>
+                                <h2>基本情報</h2>
                                 <table>
                                     <tr><th>対象IPアドレス<br>(Key: ip)</th><td><strong>{ip2p_req_ip}</strong></td></tr>
                                     <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
@@ -2148,6 +2163,9 @@ def display_results(results, current_mode_full_text, display_mode):
                                         <a href="{req_ip2proxy_url}" target="_blank" style="color: #6a1b9a; word-break: break-all;">{req_ip2proxy_url}</a>
                                         <span class="help-text">※APIキーはセキュリティ保護のためマスキング処理（********）を行っている。</span>
                                     </td></tr>
+                                </table>
+                                <h2>IP2Proxy取得結果</h2>
+                                <table>
                                     <tr><th>プロキシ判定<br>(Key: is_proxy)</th><td><strong style="color:{status_color};">{proxy_status_text}</strong></td></tr>
                                     <tr>
                                         <th>プロキシ種別<br>(Key: proxy_type)</th>
@@ -2620,7 +2638,15 @@ def main():
             ip2proxy_api_key = HARDCODED_IP2PROXY_KEY
             st.success(f"✅ IP2Proxy Key Loaded: {ip2proxy_api_key[:4]}***")
         else:
-            ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力することで、IPアドレスの匿名通信判定を取得します。").strip()
+            ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力することで、IPアドレスの匿名通信判定を取得します。").strip()    
+        # モード選択変数の初期化
+        ip2proxy_mode = "自動節約 (不審なIPのみ)"
+        if ip2proxy_api_key:
+            ip2proxy_mode = st.radio(
+                "IP2Proxy 判定モード",
+                ["自動節約 (不審なIPのみ)", "全件検査 (API消費大)"],
+                help="「自動」は海外IPや不審なISPにのみAPIを使用し枠を節約します。「全件」はすべてのIPに匿名通信判定を行いますが、APIの月間枠(50,000件/月)を消費します。なお、キャッシュ機能により、同一IPへの重複クエリは回避されます。"
+            )
         # --- SecurityTrails用の処理 ---
         if HARDCODED_SECURITYTRAILS_KEY:
             st_api_key = HARDCODED_SECURITYTRAILS_KEY
@@ -2642,15 +2668,6 @@ def main():
                 with col_dt2:
                     st_end_date = st.date_input("終了日", datetime.date.today(), help="この日以前に観測された履歴のみを抽出します。")
 
-        # モード選択変数の初期化
-        ip2proxy_mode = "自動節約 (不審なIPのみ)"
-        
-        if ip2proxy_api_key:
-            ip2proxy_mode = st.radio(
-                "IP2Proxy 判定モード",
-                ["自動節約 (不審なIPのみ)", "全件検査 (API消費大)"],
-                help="「自動」は海外IPや不審なISPにのみAPIを使用し枠を節約します。「全件」はすべてのIPに匿名通信判定を行いますが、APIの月間枠(50,000件/月)を消費します。なお、キャッシュ機能により、同一IPへの重複クエリは回避されます。"
-            )
         st.markdown("---")
         if st.button("🔄 IPキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
             st.session_state['cidr_cache'] = {} 
@@ -2799,7 +2816,7 @@ def main():
                 - **役割**: 「そのIPにはどんなホスト名が付いているか？」を特定。Windowsの `nslookup` の制限を回避するため、専用のリゾルバを用いて全レコードを抽出します。
             - **匿名性判定 (IP2Proxy)**: 
                 - **役割**: 「そのIPは意図的に隠蔽（VPN/Proxy等）されているか？」を答えます。
-                - **特徴**: 証拠能力。不審な判定時に専門DBから詳細な証拠JSONを取得します。
+                - **特徴**: 不審な判定時に専門DBから詳細なJSONを取得します。
             - **レコード履歴特定 (SecurityTrails)**: 
                 - **役割**: 「そのドメインはどのIPアドレスがレコードに設定されていたか？」を答えます。
                 - **特徴**: 履歴追跡。WAF等で現在のIPが隠蔽されていても、過去のIPアドレスを特定できる可能性があります。
@@ -2900,7 +2917,7 @@ def main():
     st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🌸アップデート情報 (令和８年３月１日) - 各種API連携・レポート出力の実装 🌸", expanded=True):
+    with st.expander("🌸アップデート情報 (令和８年３月２日) - 各種API連携・レポート出力の実装 🌸", expanded=False):
         st.markdown("""
         **Update:**\n
         **🕵️ 匿名通信判定 (IP2Proxy / IP2Location.io 連携)**: 
@@ -2910,7 +2927,9 @@ def main():
         **🔄 高精度IP逆引き (dnspython 連携)**: 
         * IPアドレスからホスト名を特定する「逆引き」機能を実装。Windows標準コマンドの制限（複数レコードの欠落）を克服するため、専用ライブラリによる直接クエリを採用しました。これに伴い、DNSクエリのタイムアウトを防ぐ**「動的負荷調整ロジック（自動シングルスレッド化）」**を搭載しています。\n
         **📄 詳細レポート (HTML)**:
-        * RDAP、ipinfo、IP2Proxy、SecurityTrailsに加え、逆引き結果も一つのHTMLファイルに集約。タブ切り替えによるシームレスな閲覧と、書類提出に最適な「一括印刷機能」を搭載しました。
+        * RDAP、ipinfo、IP2Proxy、SecurityTrailsに加え、逆引き結果も一つのHTMLファイルに集約。タブ切り替えによるシームレスな閲覧と、書類提出に最適な「一括印刷機能」を搭載しました。 \n
+        **🏢 企業名「名寄せ」の任意選択機能**:
+        * RDAPとWhois（API）の回答結果の差異を解消するため、ISP名や組織名の「名寄せ（日本語企業名への統一）」のオン/オフを選択できるようになりました。オフに設定することで、レジストリから取得した生データをそのまま表示し、より厳密な実態調査が可能です。
         """)
     # ------------------------------------------------
     col_input1, col_input2 = st.columns([1, 1])
@@ -3129,46 +3148,48 @@ def main():
     display_domain_count = len(domain_targets) + resolved_domain_count
 
     st.markdown("---")
-    st.markdown("### ⚙️ 検索表示設定")
-    
-    col_set1, col_set2 = st.columns(2)
-    with col_set1:
-        display_mode = st.radio(
-            "**表示モード:** (検索結果の表示形式とAPI使用有無を設定)",
-            ("標準モード", "集約モード (IPv4 Group)", "簡易モード (APIなし)"),
-            key="display_mode_radio",
-            horizontal=False
-        )
-    
-    with col_set2:
-        # 1. API 処理モードの選択
-        api_mode_options = list(MODE_SETTINGS.keys()) + ["カスタム設定 (任意調整)"]
-        api_mode_selection = st.radio(
-            "**API 処理モード:** (速度と安定性のトレードオフ)",
-            api_mode_options,
-            key="api_mode_radio",
-            horizontal=False
-        )
-        
-        # 2. 変数の確定ロジック (KeyError 回避策)
-        if api_mode_selection == "カスタム設定 (任意調整)":
-            st.markdown("---")
-            max_workers = st.slider("並列スレッド数 (同時処理数)", 1, 5, 2, help="数を増やすと速くなりますが、API制限にかかりやすくなります。")
-            delay_between_requests = st.slider("リクエスト間待機時間 (秒)", 0.1, 5.0, 1.5, 0.1, help="値を増やすほど安全ですが、検索に時間がかかります。")
-        else:
-            selected_settings = MODE_SETTINGS[api_mode_selection]
-            max_workers = selected_settings["MAX_WORKERS"]
-            delay_between_requests = selected_settings["DELAY_BETWEEN_REQUESTS"]
-        
-        # 3. 共通定数の設定
-        rate_limit_wait_seconds = RATE_LIMIT_WAIT_SECONDS
-        st.markdown("---") 
-        # InternetDBオプション
-        use_internetdb_option = st.checkbox("IoTリスク検知 (InternetDBを利用)", value=True, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。不要な場合はオフにすることで処理を最適化できます。")
-        # RDAPオプション
-        use_rdap_option = st.checkbox("公式レジストリ情報 (RDAP公式台帳の併用 - 低速)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
-        # 逆引き(rDNS)オプション
-        use_rdns_option = st.checkbox("IP逆引き (Reverse DNS - dnspython)", value=False, help="対象IPアドレスに対してdnspythonを実行し、ホスト名(PTRレコード)を取得して詳細レポートに追加します。")
+    # 設定エリアをExpanderに格納し、デフォルトで閉じておく
+    with st.expander("⚙️ 検索表示・解析オプション (クリックして展開)", expanded=False):
+        col_set1, col_set2 = st.columns(2)
+        with col_set1:
+            display_mode = st.radio(
+                "**表示モード:** (検索結果の表示形式とAPI使用有無を設定)",
+                ("標準モード", "集約モード (IPv4 Group)", "簡易モード (APIなし)"),
+                key="display_mode_radio",
+                horizontal=False
+            )
+            st.markdown("---") 
+            # 1. API 処理モードの選択
+            api_mode_options = list(MODE_SETTINGS.keys()) + ["カスタム設定 (任意調整)"]
+            api_mode_selection = st.radio(
+                "**API 処理モード:** (速度と安定性のトレードオフ)",
+                api_mode_options,
+                key="api_mode_radio",
+                horizontal=False
+            )
+            # 2. 変数の確定ロジック (KeyError 回避策)
+            if api_mode_selection == "カスタム設定 (任意調整)":
+                st.markdown("---")
+                max_workers = st.slider("並列スレッド数 (同時処理数)", 1, 5, 2, help="数を増やすと速くなりますが、API制限にかかりやすくなります。")
+                delay_between_requests = st.slider("リクエスト間待機時間 (秒)", 0.1, 5.0, 1.5, 0.1, help="値を増やすほど安全ですが、検索に時間がかかります。")
+            else:
+                selected_settings = MODE_SETTINGS[api_mode_selection]
+                max_workers = selected_settings["MAX_WORKERS"]
+                delay_between_requests = selected_settings["DELAY_BETWEEN_REQUESTS"]
+            
+            # 3. 共通定数の設定
+            rate_limit_wait_seconds = RATE_LIMIT_WAIT_SECONDS
+            
+        with col_set2:
+            st.markdown("**解析モード:** (追加の解析オプションを選択)")
+            # InternetDBオプション
+            use_internetdb_option = st.checkbox("IoTリスク検知 (InternetDBを利用)", value=True, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。不要な場合はオフにすることで処理を最適化できます。")
+            # RDAPオプション
+            use_rdap_option = st.checkbox("公式レジストリ情報 (RDAP公式台帳の併用 - 低速)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
+            # 逆引き(rDNS)オプション
+            use_rdns_option = st.checkbox("IP逆引き (Reverse DNS - dnspython)", value=False, help="対象IPアドレスに対してdnspythonを実行し、ホスト名(PTRレコード)を取得して詳細レポートに追加します。")
+            # 名寄せ(企業名統一)オプション
+            use_aggregation_option = st.checkbox("名寄せ機能 (ISP・RDAPの企業名統一)", value=True, help="オンにすると、KDDIやOCNなどの表記揺れを統一された日本語企業名に変換します。オフにすると、APIやRDAPから取得した生データをそのまま表示します。")
 
     mode_mapping = {
         "標準モード": "標準モード (1ターゲット = 1行)",
@@ -3177,7 +3198,6 @@ def main():
     }
     current_mode_full_text = mode_mapping[display_mode]
 
-    st.markdown("---")
     col_act1, col_act2 = st.columns([3, 1])
 
     is_currently_searching = st.session_state.is_searching and not st.session_state.cancel_search
@@ -3311,6 +3331,7 @@ def main():
                                 use_rdap_option,
                                 use_internetdb_option,
                                 use_rdns_option,
+                                use_aggregation_option, # ← ここにUIのチェックボックスの値を追加
                                 pro_api_key,
                                 ip2proxy_api_key,
                                 ip2proxy_mode,
