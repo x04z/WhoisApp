@@ -937,16 +937,46 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
     return result, new_cache_entry, new_learned_isp
 
 def get_domain_details(domain, st_api_key=None, st_start_date=None, st_end_date=None):
-    icann_link = f"[ICANN Whois (手動検索)]({RIR_LINKS['ICANN Whois']})"
-    # 引数を渡すように変更
-    st_json = get_securitytrails_data(domain, st_api_key, st_start_date, st_end_date) if st_api_key else None
+    icann_link = f"[ICANN Whois (手動検索)]({RIR_LINKS['ICANN Whois']})"  
+    # --- 1. SecurityTrails (日付フィルタ対応) ---
+    st_json = None
+    if st_api_key:
+        st_json = get_securitytrails_data(domain, st_api_key, st_start_date, st_end_date)
+    
+    # --- 2. ドメインRDAPの取得  ---
+    domain_rdap_json = None
+    domain_rdap_url = ''
+    try:
+        rdap_res = fetch_domain_rdap_data(domain)
+        if rdap_res:
+            domain_rdap_json = rdap_res['json']
+            domain_rdap_url = rdap_res['url']
+    except Exception:
+        pass
+
+    # --- 3. 結果の返却 ---
     return {
-        'Target_IP': domain, 'ISP': 'Domain/Host', 'Country': 'N/A', 'CountryCode': 'N/A',
+        'Target_IP': domain, 
+        'ISP': 'Domain/Host', 
+        'Country': 'N/A', 
+        'CountryCode': 'N/A',
         'RIR_Link': icann_link,
         'Secondary_Security_Links': create_secondary_links(domain),
         'Status': 'Success (Domain)',
-        'RDAP': '', 'RDAP_JSON': None,'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
-        'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': st_json, 'RDNS_DATA': None
+        
+        # IP用フィールドは空またはNone
+        'RDAP': '', 
+        'RDAP_JSON': None,
+        'IP2PROXY_JSON': None, 
+        'RDAP_URL': '', 
+        'IPINFO_JSON': None, 
+        'IoT_Risk': '',
+        
+        # ドメイン用フィールドにデータを格納
+        'DOMAIN_RDAP_JSON': domain_rdap_json, 
+        'DOMAIN_RDAP_URL': domain_rdap_url, 
+        'ST_JSON': st_json, 
+        'RDNS_DATA': None
     }
 
 def get_simple_mode_details(target):
