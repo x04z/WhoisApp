@@ -3137,13 +3137,12 @@ def main():
             if is_valid_domain(t):
                 # --- nslookupによる複数IP完全取得 ---
                 ip_list, raw_output = resolve_domain_nslookup(t)
+                if t not in targets: targets.append(t)
                 if ip_list:
                     resolved_dns_map[t] = {'ips': ip_list, 'raw': raw_output}
                     for resolved_ip in ip_list:
                         combined_t = f"{t} ({resolved_ip})"
                         if combined_t not in targets: targets.append(combined_t)
-                else:
-                    if t not in targets: targets.append(t)
             else:
                 invalid_targets_skipped.append(t) # 不正なドメインとして除外
         else:
