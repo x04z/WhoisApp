@@ -3081,39 +3081,53 @@ def main():
     resolved_dns_map = {} # nslookupの生出力保存用辞書
 
     def resolve_domain_nslookup(domain):
-        """ nslookupコマンドを実行し、IPリストと生出力を返す """
+    
         ips = []
-        raw_output = ""
+        raw_lines = []
+    
         try:
-            # OSコマンド実行 (タイムアウト5秒)
-            result = subprocess.run(["nslookup", domain], capture_output=True, text=True, timeout=5, shell=False)
-            raw_output = result.stdout
-            
-            lines = raw_output.splitlines()
-            is_server_section = True  # 最初はDNSサーバー自身の情報とみなす
-            for line in lines:
-                # 「権限のない回答:」や「名前:」が出たら、以降は対象ドメインのIPとみなす
-                if "権限のない回答:" in line or "Non-authoritative answer:" in line or "名前:" in line or "Name:" in line:
-                    is_server_section = False
-                
-                # DNSサーバー情報のIPアドレス行は無視する
-                if is_server_section and ("Address:" in line or "Addresses:" in line):
-                    continue
-                
-                # 対象ドメインのセクションからIPアドレスを正規表現で抽出
-                if not is_server_section:
-                    # IPv4の抽出
-                    for match in re.findall(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b', line):
-                        if is_valid_ip(match) and match not in ips:
-                            ips.append(match)
-                    # IPv6の抽出 (途切れを防止するため広範なパターンで捕捉)
-                    for match in re.findall(r'(?:[A-Fa-f0-9]{1,4}:){1,7}[A-Fa-f0-9]{0,4}::?[A-Fa-f0-9]{1,4}|(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}', line):
-                        if is_valid_ip(match) and match not in ips:
-                            ips.append(match)
+            # システムのリゾルバに依存せず、Google/CloudflareのパブリックDNSを明示的に使用
+            resolver = dns.resolver.Resolver(configure=False)
+            resolver.nameservers = ['8.8.8.8', '1.1.1.1', '2001:4860:4860::8888']
+            resolver.timeout = 3
+            resolver.lifetime = 3
+
+            raw_lines.append(f";; Domain: {domain}")
+            raw_lines.append(f";; Resolver: {resolver.nameservers}")
+
+            # --- Aレコード (IPv4) 取得 ---
+            try:
+                answers_v4 = resolver.resolve(domain, 'A')
+                for rdata in answers_v4:
+                    ip = rdata.to_text()
+                    if ip not in ips:
+                        ips.append(ip)
+                    raw_lines.append(f"{domain}. \tIN \tA \t{ip}")
+            except dns.resolver.NoAnswer:
+                raw_lines.append(f";; IPv4 (A) record not found for {domain}")
+            except dns.resolver.NXDOMAIN:
+                raw_lines.append(f";; Domain {domain} does not exist (NXDOMAIN)")
+                return [], "\n".join(raw_lines) # ドメインがないなら終了
+            except Exception as e:
+                raw_lines.append(f";; IPv4 Query Failed: {str(e)}")
+
+            # --- AAAAレコード (IPv6) 取得 ---
+            try:
+                answers_v6 = resolver.resolve(domain, 'AAAA')
+                for rdata in answers_v6:
+                    ip = rdata.to_text()
+                    if ip not in ips:
+                        ips.append(ip)
+                    raw_lines.append(f"{domain}. \tIN \tAAAA \t{ip}")
+            except dns.resolver.NoAnswer:
+                pass # IPv6がないのは一般的
+            except Exception as e:
+                raw_lines.append(f";; IPv6 Query Failed: {str(e)}")
+
         except Exception as e:
-            raw_output = f"Error executing nslookup: {str(e)}"
-        
-        return ips, raw_output
+            raw_lines.append(f";; Critical DNS Error: {str(e)}")
+    
+        return ips, "\n".join(raw_lines)
 
     for t in raw_targets:
         original_t = t
@@ -3142,6 +3156,7 @@ def main():
                     resolved_dns_map[t] = {'ips': ip_list, 'raw': raw_output}
                     for resolved_ip in ip_list:
                         combined_t = f"{t} ({resolved_ip})"
+                        # IP紐付きターゲットを追加 (こちらはIP検索エンジンに回る)
                         if combined_t not in targets: targets.append(combined_t)
             else:
                 invalid_targets_skipped.append(t) # 不正なドメインとして除外
