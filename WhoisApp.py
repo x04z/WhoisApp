@@ -937,16 +937,23 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
     return result, new_cache_entry, new_learned_isp
 
 def get_domain_details(domain, st_api_key=None, st_start_date=None, st_end_date=None):
-    icann_link = f"[ICANN Whois (手動検索)]({RIR_LINKS['ICANN Whois']})"  
+    """
+    修正版: ドメイン検索時の詳細データ取得関数
+    - 引数を4つに増やし、TypeErrorを回避
+    - RDAP取得ロジックを追加し、情報が表示されない問題を解決
+    """
+    icann_link = f"[ICANN Whois (手動検索)]({RIR_LINKS['ICANN Whois']})"
+    
     # --- 1. SecurityTrails (日付フィルタ対応) ---
     st_json = None
     if st_api_key:
         st_json = get_securitytrails_data(domain, st_api_key, st_start_date, st_end_date)
     
-    # --- 2. ドメインRDAPの取得  ---
+    # --- 2. ドメインRDAPの取得 (ここが抜けていたため追加) ---
     domain_rdap_json = None
     domain_rdap_url = ''
     try:
+        # 既に定義されている fetch_domain_rdap_data を呼び出す
         rdap_res = fetch_domain_rdap_data(domain)
         if rdap_res:
             domain_rdap_json = rdap_res['json']
@@ -972,7 +979,7 @@ def get_domain_details(domain, st_api_key=None, st_start_date=None, st_end_date=
         'IPINFO_JSON': None, 
         'IoT_Risk': '',
         
-        # ドメイン用フィールドにデータを格納
+        # ドメイン用フィールドにデータを格納 (これで表示されるようになる)
         'DOMAIN_RDAP_JSON': domain_rdap_json, 
         'DOMAIN_RDAP_URL': domain_rdap_url, 
         'ST_JSON': st_json, 
