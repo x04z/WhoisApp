@@ -264,15 +264,11 @@ def detect_proxy_vpn_tor(ip, isp_name, tor_nodes):
     if any(kw in isp_lower for kw in HOSTING_VPN_KEYWORDS): return "Hosting/DataCenter"
     return "Standard Connection"
 
-def get_jp_names(english_isp, country_code, enable_aggregation=True):
+def get_jp_names(english_isp, country_code):
     jp_country = COUNTRY_JP_NAME.get(country_code, country_code)
     
     if not english_isp:
         return "N/A", jp_country
-
-    # 名寄せオフの場合は、変換処理を行わずに生データをそのまま返す
-    if not enable_aggregation:
-        return english_isp, jp_country
 
     normalized_input = normalize_isp_key(english_isp)
     jp_isp = english_isp 
@@ -664,8 +660,8 @@ def resolve_ip_nslookup(ip):
     return hostnames, raw_output
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, enable_aggregation, api_key=None, ip2proxy_api_key=None, ip2proxy_mode="自動節約 (不審なIPのみ)", st_api_key=None, st_start_date=None, st_end_date=None):
-    
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, api_key=None, ip2proxy_api_key=None, ip2proxy_mode="自動節約 (不審なIPのみ)", st_api_key=None, st_start_date=None, st_end_date=None):
+
     actual_ip = extract_actual_ip(ip)
     
     # 1. 拡張されたデータ構造 (RawとAggregatedを分離)
@@ -761,8 +757,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 result['RDAP_JSON'] = rdap_res['json']
                 result['RDAP_URL'] = rdap_res['url']
                 
-                # RDAPの名寄せ (強制的に名寄せロジックを通す)
-                rdap_jp, _ = get_jp_names(raw_rdap_name, result['CountryCode'], True)
+                rdap_jp, _ = get_jp_names(raw_rdap_name, result['CountryCode'])
                 result['RDAP_JP'] = rdap_jp
 
             # ドメイン版RDAP (省略) ...
@@ -794,9 +789,8 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         result['RIR_Link'] = get_authoritative_rir_link(actual_ip, result['CountryCode'])
         result['Secondary_Security_Links'] = create_secondary_links(ip)
 
-        # --- 最終的な名寄せ処理 (Whois API分) ---
         # enable_aggregationフラグに関わらず、表示用に両方生成する
-        isp_jp, country_jp = get_jp_names(result['ISP_API_Raw'], result['CountryCode'], True)
+        isp_jp, country_jp = get_jp_names(result['ISP_API_Raw'], result['CountryCode'])
         result['ISP_JP'] = isp_jp
         result['Country_JP'] = country_jp
         
@@ -1338,29 +1332,124 @@ def convert_df_to_excel(df):
 def create_advanced_excel(df, time_col_name=None):
     output = io.BytesIO()
     
-    # 1. IPアドレスが含まれているかを判定 (1つでもあればTrue)
-    target_col = 'Target_IP' if 'Target_IP' in df.columns else df.columns[0]
+    # 1. IPアドレスが含まれているかを判定
+    target_col = 'IPアドレス' if 'IPアドレス' in df.columns else ('Target_IP' if 'Target_IP' in df.columns else df.columns[0])
     has_ip = False
     if target_col in df.columns:
         has_ip = any(is_valid_ip(str(val)) for val in df[target_col].dropna())
     
     # ==========================================
-    # パターンA: すべてドメイン(非IP)の場合の専用出力
+    # パターンA: すべてドメイン(非IP)の場合
     # ==========================================
     if not has_ip:
-        # 1. 列名を実態に合わせて変更
-        if 'Target_IP' in df.columns:
-            df = df.rename(columns={'Target_IP': 'Target Domain'})
-            
-        # 2. ドメイン検索において意味をなさないIP専用の列を完全に削除
-        cols_to_drop = ['ISP', 'ISP_JP', 'Country', 'Country_JP', 'Proxy Type', 'IoT_Risk', 'RDAP']
+        if target_col in df.columns:
+            df = df.rename(columns={target_col: 'Target Domain'})
+        # 不要な列を削除（日本語名に対応）
+        cols_to_drop = ['Whois結果（元データ）', 'Whois結果（日本語名称）', '国名（英語）', '国名', 'プロキシ種別', 'ステータス', 'IoTリスク', 'RDAP結果（元データ）', 'RDAP結果（日本語名称）', 'ISP', 'ISP_JP', 'Country', 'Country_JP']
         df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors='ignore')
-        
-        # 3. シンプルなExcelとして出力 (ドメイン用のISP集計グラフなどは不要なためスキップ)
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Domain Results')
-        return output.getvalue()
 
+    # ==========================================
+    # パターンB: IPアドレスが含まれる場合 (高度な分析グラフ付き)
+    # ==========================================
+    # 必須カラムの補完 (日本語名を基準にする)
+    required_cols = {
+        'プロキシ種別': 'Standard Connection',
+        'Whois結果（日本語名称）': 'N/A',
+        '国名': 'N/A'
+    }
+    for col, default_val in required_cols.items():
+        if col not in df.columns:
+            df[col] = default_val
+
+    df['プロキシ種別'] = df['プロキシ種別'].fillna('Standard Connection').replace('', 'Standard Connection')
+    
+    has_time_analysis = False
+    if time_col_name and time_col_name in df.columns:
+        try:
+            df['Hour'] = pd.to_datetime(df[time_col_name], errors='coerce').dt.hour
+            has_time_analysis = True
+        except Exception:
+            pass
+
+    count_col = df.columns[0]
+
+    # 書き込み開始 (ブロックは1つだけに統合)
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Raw Data')
+        wb = writer.book
+        
+        def add_chart_sheet(pivot_df, sheet_name, chart_title, x_title, y_title, description, chart_type="col", stacked=False):
+            if pivot_df.empty: return
+            pivot_df.to_excel(writer, sheet_name=sheet_name, startrow=4)
+            ws = wb[sheet_name]
+            ws['A1'] = chart_title
+            ws['A1'].font = Font(size=14, bold=True, color="1E3A8A")
+            ws['A2'] = description
+            ws['A2'].font = Font(size=11, color="555555", italic=True)
+            ws['A2'].alignment = Alignment(wrap_text=True, vertical="top")
+            ws.merge_cells('A2:H3')
+            chart = BarChart()
+            chart.type = chart_type
+            chart.style = 10 
+            chart.title = chart_title
+            chart.height = 15 
+            chart.width = 25  
+            chart.legend.position = 'b'
+            if stacked:
+                chart.grouping = "stacked"
+                chart.overlap = 100
+            else:
+                chart.varyColors = True
+            chart.dataLabels = DataLabelList()
+            chart.dataLabels.showVal = True
+            if not stacked:
+                chart.dataLabels.position = 'outEnd'
+            chart.x_axis.title = x_title
+            chart.y_axis.title = y_title
+            chart.layout = Layout(manualLayout=ManualLayout(x=0.03, y=0.05, h=0.75, w=0.85))
+            data_start_row = 5 
+            data_end_row = data_start_row + len(pivot_df)
+            data = Reference(ws, min_col=2, min_row=data_start_row, max_row=data_end_row, max_col=len(pivot_df.columns)+1)
+            cats = Reference(ws, min_col=1, min_row=data_start_row+1, max_row=data_end_row)
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(cats)
+            ws.add_chart(chart, "E5")
+
+        # 1. Whois結果による集計
+        isp_col = 'Whois結果（日本語名称）'
+        if isp_col in df.columns:
+            top_isps = df[isp_col].value_counts().head(20).index
+            df_isp = df[df[isp_col].isin(top_isps)]
+            pivot_isp_vol = df_isp.pivot_table(index=isp_col, values=count_col, aggfunc='count')
+            if not pivot_isp_vol.empty:
+                pivot_isp_vol = pivot_isp_vol.sort_values(count_col, ascending=False)
+                add_chart_sheet(pivot_isp_vol, 'Report_Whois_Volume', 'Whois Access Volume Ranking', 'ISP Name', 'Count', "どの組織・プロバイダからのアクセスが多いかを可視化しています。")
+
+            # 2. リスク分析
+            pivot_isp_risk = df_isp.pivot_table(index=isp_col, columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0)
+            if not pivot_isp_risk.empty:
+                add_chart_sheet(pivot_isp_risk, 'Report_Whois_Risk', 'Risk Analysis by Whois', 'ISP Name', 'Count', "ISPごとの接続環境を分析しています。", stacked=True)
+        
+        # 3. 国別集計
+        if '国名' in df.columns:
+            pivot_country = df.pivot_table(index='国名', values=count_col, aggfunc='count')
+            if not pivot_country.empty:
+                pivot_country = pivot_country.sort_values(count_col, ascending=False).head(15)
+                add_chart_sheet(pivot_country, 'Report_Country', 'Country Access Volume', 'Country Name', 'Count', "国ごとのアクセス数をランキング化しています。")
+
+        # 4. 時間帯分析
+        if has_time_analysis:
+            pivot_time_vol = df.pivot_table(index='Hour', values=count_col, aggfunc='count', fill_value=0).reindex(range(24), fill_value=0)
+            add_chart_sheet(pivot_time_vol, 'Report_Time_Volume', 'Hourly Access Trend', 'Hour (0-23h)', 'Count', "時間帯ごとのアクセス集中度を可視化しています。")
+
+            if 'プロキシ種別' in df.columns:
+                pivot_time_risk = df.pivot_table(index='Hour', columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0).reindex(range(24), fill_value=0)
+                add_chart_sheet(pivot_time_risk, 'Report_Time_Risk', 'Hourly Risk Trend', 'Hour (0-23h)', 'Count', "時間帯ごとのリスク傾向を確認できます。", stacked=True)
+            
+    return output.getvalue()
+            
     # ==========================================
     # パターンB: IPアドレスが含まれる場合の出力 (高度な分析グラフ付き)
     # ==========================================
@@ -1447,30 +1536,38 @@ def create_advanced_excel(df, time_col_name=None):
             ws.add_chart(chart, "E5")
 
         # ---------------------------------------------------------
-        # 2. Report_ISP_Volume: [ISP_JP] x [Count]
+        # 2. Report_ISP_Volume: [Whois JP (名寄せ)] x [Count]
         # ---------------------------------------------------------
-        top_isps = df['ISP_JP'].value_counts().head(20).index
-        df_isp = df[df['ISP_JP'].isin(top_isps)]
-        pivot_isp_vol = df_isp.pivot_table(
-            index='ISP_JP', 
-            values=count_col, 
-            aggfunc='count'
-        )
-        if not pivot_isp_vol.empty:
-            pivot_isp_vol = pivot_isp_vol.sort_values(count_col, ascending=False)
-            desc_isp_vol = "どのプロバイダからのアクセスが最も多いかを可視化しています。特定のISPからのアクセス集中は、そのサービスの利用者層または特定のキャンペーンの影響を示唆します。"
-            add_chart_sheet(pivot_isp_vol, 'Report_ISP_Volume', 'ISP Access Volume Ranking (Top 20)', 'Internet Service Provider', 'Access Count (件数)', desc_isp_vol)
+        # 変更点: カラム名を 'ISP_JP' から 'Whois JP (名寄せ)' に変更
+        # データフレームに当該列がない場合のフォールバックも考慮
+        isp_col_name = 'Whois JP (名寄せ)' if 'Whois JP (名寄せ)' in df.columns else 'ISP_JP'
+        
+        if isp_col_name in df.columns:
+            top_isps = df[isp_col_name].value_counts().head(20).index
+            df_isp = df[df[isp_col_name].isin(top_isps)]
+            pivot_isp_vol = df_isp.pivot_table(
+                index=isp_col_name, 
+                values=count_col, 
+                aggfunc='count'
+            )
+            if not pivot_isp_vol.empty:
+                pivot_isp_vol = pivot_isp_vol.sort_values(count_col, ascending=False)
+                desc_isp_vol = "どのプロバイダからのアクセスが最も多いかを可視化しています。特定のISPからのアクセス集中は、そのサービスの利用者層または特定のキャンペーンの影響を示唆します。"
+                add_chart_sheet(pivot_isp_vol, 'Report_ISP_Volume', 'ISP Access Volume Ranking (Top 20)', 'Internet Service Provider', 'Access Count (件数)', desc_isp_vol)
 
-        # ---------------------------------------------------------
-        # 3. Report_ISP_Risk: [ISP_JP] x [Proxy Type]
-        # ---------------------------------------------------------
-        pivot_isp_risk = df_isp.pivot_table(
-            index='ISP_JP', 
-            columns='Proxy Type', 
-            values=count_col, 
-            aggfunc='count', 
-            fill_value=0
-        )
+            # ---------------------------------------------------------
+            # 3. Report_ISP_Risk: [Whois JP (名寄せ)] x [Proxy Type]
+            # ---------------------------------------------------------
+            pivot_isp_risk = df_isp.pivot_table(
+                index=isp_col_name, 
+                columns='Proxy Type', 
+                values=count_col, 
+                aggfunc='count', 
+                fill_value=0
+            )
+            if not pivot_isp_risk.empty:
+                desc_isp_risk = "そのISPが安全な一般回線か、注意が必要なサーバー/VPN経由かを判定しています。「Standard Connection」は一般的な安全な接続です。「Hosting」や「VPN」が多い場合は機械的なアクセスの可能性があります。"
+                add_chart_sheet(pivot_isp_risk, 'Report_ISP_Risk', 'Risk Analysis by ISP (Top 20)', 'Internet Service Provider', 'Access Count (件数)', desc_isp_risk, stacked=True)
         if not pivot_isp_risk.empty:
             desc_isp_risk = "そのISPが安全な一般回線か、注意が必要なサーバー/VPN経由かを判定しています。「Standard Connection」は一般的な安全な接続です。「Hosting」や「VPN」が多い場合は機械的なアクセスの可能性があります。"
             add_chart_sheet(pivot_isp_risk, 'Report_ISP_Risk', 'Risk Analysis by ISP (Top 20)', 'Internet Service Provider', 'Access Count (件数)', desc_isp_risk, stacked=True)
@@ -1635,7 +1732,7 @@ def generate_individual_html_report(res, clean_ip):
         raw_json_str_d = json.dumps(domain_rdap_json, indent=4, ensure_ascii=False)
         escaped_json_d = html.escape(raw_json_str_d)
         
-        # 💡 [修正] &quot; を対象にするよう変更
+        # &quot; を対象にするよう変更
         highlight_keys_d = ['registrar', 'registration', 'expiration']
         for hk in highlight_keys_d:
             escaped_json_d = escaped_json_d.replace(f'&quot;{hk}&quot;', f'<span class="json-hl">&quot;{hk}&quot;</span>')
@@ -1644,7 +1741,7 @@ def generate_individual_html_report(res, clean_ip):
         for val in extracted_values:
             if val and val != "情報なし":
                 esc_val = html.escape(val)
-                # 💡 [修正] 値のハイライトも &quot; に対応
+                # 値のハイライトも &quot; に対応
                 escaped_json_d = escaped_json_d.replace(f'&quot;{esc_val}&quot;', f'<span class="json-hl">&quot;{esc_val}&quot;</span>')
 
         domain_rdap_content = f"""
@@ -1719,7 +1816,7 @@ def generate_individual_html_report(res, clean_ip):
         raw_json_str = json.dumps(rdap_json, indent=4, ensure_ascii=False)
         escaped_json = html.escape(raw_json_str)
         
-        # 💡 [修正] 正規表現を &quot; に対応させる
+        # 正規表現を &quot; に対応させる
         highlight_keys = ['name', 'country', 'startAddress', 'endAddress']
         for hk in highlight_keys:
             # HTMLエスケープ後は " が &quot; になっているため、正規表現もそれに合わせる
@@ -1774,7 +1871,7 @@ def generate_individual_html_report(res, clean_ip):
         raw_json_str = json.dumps(ipinfo_json, indent=4, ensure_ascii=False)
         escaped_json = html.escape(raw_json_str)
         
-        # 💡 [修正] &quot; 対応
+        # &quot; 対応
         highlight_keys = ['ip', 'hostname', 'city', 'region', 'country', 'loc', 'org']
         for hk in highlight_keys:
             simple_pattern = r'(&quot;' + hk + r'&quot;:\s*&quot;.*?&quot;)'
@@ -1893,7 +1990,7 @@ def generate_individual_html_report(res, clean_ip):
 
         raw_json_str = json.dumps(ip2proxy_json, indent=4, ensure_ascii=False)
         escaped_json = html.escape(raw_json_str)
-        # 💡 [修正] &quot; 対応
+        # &quot; 対応
         highlight_keys_ip2p = ['is_proxy', 'proxy_type', 'country_name', 'ip', 'as', 'isp']
         for hk in highlight_keys_ip2p:
             simple_pattern = r'(&quot;' + hk + r'&quot;:\s*.*?,?\n)'
@@ -1971,7 +2068,7 @@ def generate_individual_html_report(res, clean_ip):
         raw_json_str_st = json.dumps(st_json, indent=4, ensure_ascii=False)
         escaped_json_st = html.escape(raw_json_str_st)
         
-        # 💡 [修正] &quot; 対応
+        # &quot; 対応
         highlight_keys_st = ['ip']
         for hk in highlight_keys_st:
             simple_pattern = r'((?:&quot;|")' + hk + r'(?:&quot;|")\s*:\s*[^\n\r]*)'
@@ -2223,15 +2320,15 @@ def display_results(results, current_mode_full_text, display_mode):
         
         df_list.append({
             "No.": idx + 1,
-            "IP Address": res.get('Target_IP', 'N/A'),
-            "Country": country_display,
-            "Whois Raw (API)": res.get('ISP_API_Raw', 'N/A'),
-            "Whois JP (名寄せ)": res.get('ISP_JP', 'N/A'),
-            "RDAP Raw (公式)": res.get('RDAP_Name_Raw', ''),
-            "RDAP JP (名寄せ)": res.get('RDAP_JP', ''),
-            "Proxy / Risk": res.get('Proxy_Type', ''),
-            "IoT Exposure": res.get('IoT_Risk', ''),
-            "Status": res.get('Status', 'N/A')
+            "IPアドレス": res.get('Target_IP', 'N/A'),
+            "国名": country_display,
+            "Whois(元データ)": res.get('ISP_API_Raw', 'N/A'),
+            "Whois(日本語名)": res.get('ISP_JP', 'N/A'),
+            "RDAP(元データ)": res.get('RDAP_Name_Raw', ''),
+            "RDAP(日本語名)": res.get('RDAP_JP', ''),
+            "Proxy種別": res.get('Proxy_Type', ''),
+            "IoTリスク": res.get('IoT_Risk', ''),
+            "ステータス": res.get('Status', 'N/A')
         })
     
     df = pd.DataFrame(df_list)
@@ -2249,11 +2346,11 @@ def display_results(results, current_mode_full_text, display_mode):
         selection_mode="multi-row",
         column_config={
             "No.": st.column_config.NumberColumn(width="small"),
-            "IP Address": st.column_config.TextColumn(width="medium"),
-            "Whois Raw (API)": st.column_config.TextColumn(width="medium"),
-            "Whois JP (名寄せ)": st.column_config.TextColumn(width="medium"),
-            "RDAP Raw (公式)": st.column_config.TextColumn(width="medium"),
-            "RDAP JP (名寄せ)": st.column_config.TextColumn(width="medium"),
+            "IPアドレス": st.column_config.TextColumn(width="medium"),
+            "Whois(元データ)": st.column_config.TextColumn(width="medium"),
+            "Whois(日本語名)": st.column_config.TextColumn(width="medium"),
+            "RDAP(元データ)": st.column_config.TextColumn(width="medium"),
+            "RDAP(日本語名)": st.column_config.TextColumn(width="medium"),
         }
     )
 
@@ -2287,11 +2384,11 @@ def display_results(results, current_mode_full_text, display_mode):
             with col_f1:
                 # 国でフィルタ
                 all_countries = sorted(list(set([r.get('Country_JP', 'N/A') for r in results])))
-                sel_countries = st.multiselect("国 (Country) で選択:", all_countries)
+                sel_countries = st.multiselect("国名で選択:", all_countries)
             with col_f2:
                 # ISP(名寄せ)でフィルタ
                 all_isps = sorted(list(set([r.get('ISP_JP', 'N/A') for r in results])))
-                sel_isps = st.multiselect("ISP (Organization) で選択:", all_isps)
+                sel_isps = st.multiselect("Whois(日本語名)で選択:", all_isps)
             
             if sel_countries or sel_isps:
                 for res in results:
@@ -2372,11 +2469,14 @@ def render_spider_web_analysis(df):
     plot_df = df.head(50).fillna("N/A")
 
     for _, row in plot_df.iterrows():
-        ip = row.get('Target_IP', 'Unknown')
-        isp = row.get('ISP_JP', row.get('ISP', 'N/A'))
-        country = row.get('Country_JP', row.get('Country', 'N/A'))
-        risk = row.get('IoT_Risk', '')
-        proxy = row.get('Proxy Type', '')
+        # カラム名の取得を日本語版に変更
+        ip = row.get('IPアドレス', row.get('Target_IP', 'Unknown'))
+        
+        # 優先度: 日本語カラム > 英語カラム > N/A
+        isp = row.get('Whois結果（日本語名称）', row.get('ISP_JP', row.get('ISP', 'N/A')))
+        country = row.get('国名', row.get('Country_JP', row.get('Country', 'N/A')))
+        risk = row.get('IoTリスク', row.get('IoT_Risk', ''))
+        proxy = row.get('プロキシ種別', row.get('Proxy Type', ''))
 
         # 1. IPノード (水色の丸)
         nodes.add(f'"{ip}" [shape=circle, style=filled, fillcolor="#E0F2F1", width=0.8];')
@@ -2422,13 +2522,16 @@ def render_spider_web_analysis(df):
 def render_merged_analysis(df_merged):
     st.markdown("### 📈 分析センター")
     
-    # Streamlitのタブ機能で表示を切り替える
     tab_cross, tab_spider = st.tabs(["📊 クロス分析 (マクロ視点)", "🕸️ リンク分析 (ミクロ視点)"])
     
     with tab_cross:
         st.info("アップロードされたファイルの元の列と、検索で得られたWhois情報を組み合わせて可視化します。")
-        original_cols = [c for c in df_merged.columns if c not in ['ISP', 'ISP_JP', 'Country', 'Country_JP', 'Proxy Type', 'Status', 'IoT_Risk']]
-        whois_cols = ['Country_JP', 'ISP_JP', 'Proxy Type', 'IoT_Risk', 'Status']
+        # 除外するカラムを日本語名に変更
+        exclude_cols = ['Whois結果（元データ）', 'Whois結果（日本語名称）', '国名（英語）', '国名', 'プロキシ種別', 'ステータス', 'IoTリスク', 'RDAP結果（元データ）', 'RDAP結果（日本語名称）', 'ISP', 'ISP_JP', 'Country', 'Country_JP']
+        original_cols = [c for c in df_merged.columns if c not in exclude_cols]
+        
+        # 分析に使用するWhois系カラムを日本語名に変更
+        whois_cols = ['国名', 'Whois結果（日本語名称）', 'プロキシ種別', 'IoTリスク', 'ステータス']
         
         col_x, col_grp, col_chart_type = st.columns(3)
         with col_x:
@@ -3128,8 +3231,6 @@ def main():
             use_rdap_option = st.checkbox("公式レジストリ情報 (RDAP公式台帳の併用 - 低速)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
             # 逆引き(rDNS)オプション
             use_rdns_option = st.checkbox("IP逆引き (Reverse DNS - dnspython)", value=False, help="対象IPアドレスに対してdnspythonを実行し、ホスト名(PTRレコード)を取得して詳細レポートに追加します。")
-            # 名寄せ(企業名統一)オプション
-            use_aggregation_option = st.checkbox("名寄せ機能 (ISP・RDAPの企業名統一)", value=True, help="オンにすると、各ISPの表記揺れを統一された日本語企業名に変換します。オフにすると、APIやRDAPから取得した生データをそのまま表示します。")
 
     mode_mapping = {
         "標準モード": "標準モード (1ターゲット = 1行)",
@@ -3276,7 +3377,6 @@ def main():
                                 use_rdap_option,
                                 use_internetdb_option,
                                 use_rdns_option,
-                                use_aggregation_option, # ← ここにUIのチェックボックスの値を追加
                                 pro_api_key,
                                 ip2proxy_api_key,
                                 ip2proxy_mode,
@@ -3437,29 +3537,38 @@ def main():
                     res_dict = {r['Target_IP']: r for r in results}
 
                     # 各行のIPに基づいて結果をマッピング
-                    isps, isps_jp, countries, countries_jp, proxy_type, iot_risks, statuses, rdaps = [], [], [], [], [], [], [], []
+                    # 変更点: 4つのカラム用リストを追加
+                    whois_raws, whois_jps, rdap_raws, rdap_jps = [], [], [], []
+                    countries, countries_jp, proxy_type, iot_risks, statuses = [], [], [], [], []
+
                     for ip_val in df_with_res[ip_col]:
                         ip_val_str = str(ip_val).strip()
                         info = res_dict.get(ip_val_str, {})
-                        isps.append(info.get('ISP', 'N/A'))
-                        isps_jp.append(info.get('ISP_JP', 'N/A')) 
+                        
+                        # 4つの詳細カラムを取得
+                        whois_raws.append(info.get('ISP_API_Raw', 'N/A'))
+                        whois_jps.append(info.get('ISP_JP', 'N/A'))
+                        rdap_raws.append(info.get('RDAP_Name_Raw', ''))
+                        rdap_jps.append(info.get('RDAP_JP', ''))
+                        
                         countries.append(info.get('Country', 'N/A'))
                         countries_jp.append(info.get('Country_JP', 'N/A'))
                         proxy_type.append(info.get('Proxy_Type', ''))
                         iot_risks.append(info.get('IoT_Risk', '')) 
                         statuses.append(info.get('Status', 'N/A'))
-                        rdaps.append(info.get('RDAP', ''))
                     
-                    # 結合 (列の挿入)
+                    # 結合 (列の挿入) - 挿入順序を調整 (右から順に入っていくため、逆順で指定すると左から並ぶ)
                     insert_idx = df_with_res.columns.get_loc(ip_col) + 1
-                    df_with_res.insert(insert_idx, 'Status', statuses)
-                    df_with_res.insert(insert_idx, 'IoT_Risk', iot_risks) 
-                    df_with_res.insert(insert_idx, 'Proxy Type', proxy_type)
-                    df_with_res.insert(insert_idx, 'RDAP', rdaps)
-                    df_with_res.insert(insert_idx, 'Country_JP', countries_jp)
-                    df_with_res.insert(insert_idx, 'Country', countries)
-                    df_with_res.insert(insert_idx, 'ISP_JP', isps_jp)
-                    df_with_res.insert(insert_idx, 'ISP', isps)
+                    df_with_res.insert(insert_idx, 'ステータス', statuses)
+                    df_with_res.insert(insert_idx, 'IoTリスク', iot_risks) 
+                    df_with_res.insert(insert_idx, 'プロキシ種別', proxy_type)
+                    
+                    df_with_res.insert(insert_idx, 'Whois結果（日本語名称）', whois_jps)
+                    df_with_res.insert(insert_idx, 'Whois結果（元データ）', whois_raws)
+                    df_with_res.insert(insert_idx, 'RDAP結果（日本語名称）', rdap_jps)
+                    df_with_res.insert(insert_idx, 'RDAP結果（元データ）', rdap_raws)
+                    df_with_res.insert(insert_idx, '国名', countries_jp)
+                    df_with_res.insert(insert_idx, '国名（英語）', countries)
 
             # 2. アップロードがない場合（検索結果のみから分析データを作成）
             elif st.session_state.raw_results:
@@ -3468,15 +3577,17 @@ def main():
                 for res in st.session_state.raw_results:
                     # 必要なカラムのみ抽出・リネーム
                     row = {
-                        'Target_IP': res.get('Target_IP'),
-                        'ISP': res.get('ISP'),
-                        'ISP_JP': res.get('ISP_JP'),
-                        'Country': res.get('Country'),
-                        'Country_JP': res.get('Country_JP'),
-                        'RDAP': res.get('RDAP', ''),
-                        'Proxy Type': res.get('Proxy_Type', ''), 
-                        'IoT_Risk': res.get('IoT_Risk', ''), 
-                        'Status': res.get('Status')
+                        'IPアドレス': res.get('Target_IP'),
+                        'RDAP結果（元データ）': res.get('RDAP_Name_Raw', ''),
+                        'RDAP結果（日本語名称）': res.get('RDAP_JP', ''),
+                        'Whois結果（元データ）': res.get('ISP_API_Raw', 'N/A'),
+                        'Whois結果（日本語名称）': res.get('ISP_JP', 'N/A'),
+                        
+                        '国名（英語）': res.get('Country'),
+                        '国名': res.get('Country_JP'),
+                        'プロキシ種別': res.get('Proxy_Type', ''), 
+                        'IoTリスク': res.get('IoT_Risk', ''), 
+                        'ステータス': res.get('Status')
                     }
                     temp_data.append(row)
                 df_with_res = pd.DataFrame(temp_data)
@@ -3490,107 +3601,95 @@ def main():
                 render_merged_analysis(df_with_res)
             # ------------------------------------------------
 
-            # --- 全件集計データのダウンロードセクション ---
-            st.markdown("### 📊 集計データの完全版ダウンロード")
-            # (csvダウンロードボタン部分はそのまま)
-            col_full_dl1, col_full_dl2, col_full_dl3, col_full_dl4 = st.columns(4)
-            
-            with col_full_dl1:
-                st.download_button(
-                    "⬇️ 対象IP カウント (全件)",
-                    freq_full_df.to_csv(index=False).encode('utf-8-sig'),
-                    "target_ip_frequency_all.csv",
-                    "text/csv",
-                    width="stretch"
-                )
-            with col_full_dl2:
-                st.download_button(
-                    "⬇️ ISP別 カウント (全件)",
-                    isp_full_df.to_csv(index=False).encode('utf-8-sig'),
-                    "isp_counts_all.csv",
-                    "text/csv",
-                    width="stretch"
-                )
-            with col_full_dl3:
-                st.download_button(
-                    "⬇️ 国別 カウント (全件)",
-                    country_full_df.to_csv(index=False).encode('utf-8-sig'),
-                    "country_counts_all.csv",
-                    "text/csv",
-                    width="stretch"
-                )
-            
-            with col_full_dl4:
-                # 全件グラフHTMLレポートの生成
-                html_report = generate_full_report_html(isp_full_df, country_full_df, freq_full_df)
-                st.download_button(
-                    "⬇️ 全件グラフHTMLレポート",
-                    html_report,
-                    "whois_analysis_report.html",
-                    "text/html",
-                    width="stretch"
-                )
+            # --- UI改善：ダウンロードセンター ---
+        st.markdown("---")
+        st.markdown("### 📥 レポート ＆ データ出力")
 
+        # メイン：最も価値の高い「分析済みレポート」を大きく配置
+        main_col1, main_col2 = st.columns(2)
         
-        st.markdown("### ⬇️ 検索結果リストのダウンロード")
-        col_dl1, col_dl2, col_dl3 = st.columns(3)
-        # 1. 画面表示順データ
-        csv_display = pd.DataFrame(display_res).drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link'], errors='ignore').astype(str)
-        with col_dl1:
-            st.download_button("⬇️ CSV (画面表示順)", csv_display.to_csv(index=False).encode('utf-8-sig'), "whois_results_display.csv", "text/csv", width="stretch")
-            # Excel (Display)
-            excel_display = convert_df_to_excel(csv_display)
-            st.download_button("⬇️ Excel (画面表示順)", excel_display, "whois_results_display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
-
-        # 2. 全入力データ（入力順）
-        result_lookup = {r['Target_IP']: r for r in st.session_state.raw_results}
-        full_output_data = []
-        for original_t in st.session_state.get('original_input_list', []):
-            if original_t in result_lookup:
-                full_output_data.append(result_lookup[original_t])
-            else:
-                full_output_data.append({'Target_IP': original_t, 'ISP': 'N/A', 'ISP_JP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 'Status': 'Pending/Error'})
-        
-        csv_full = pd.DataFrame(full_output_data).drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link'], errors='ignore').astype(str)
-        with col_dl2:
-            st.download_button("⬇️ CSV (全入力データ順)", csv_full.to_csv(index=False).encode('utf-8-sig'), "whois_results_full.csv", "text/csv", width="stretch")
-            # Excel (Full)
-            excel_full = convert_df_to_excel(csv_full)
-            st.download_button("⬇️ Excel (全入力データ順)", excel_full, "whois_results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
-
-        with col_dl3:
-            # 3. 分析付きExcel (全モードで有効化) 
+        with main_col1:
+            st.info("📊 **分析マスター (推奨)**\n\n生データに加えて、ISP別・国別・時間帯別の集計表とグラフが自動生成されたExcelファイルです。")
             if not df_with_res.empty:
-                st.markdown("**🔍 分析付きExcel (Pivot/Graph)**")
-                
-                # 時間帯分析用の列選択ボックス (存在する場合のみ)
-                time_cols = [c for c in df_with_res.columns if 'date' in c.lower() or 'time' in c.lower() or 'jst' in c.lower()]
-                default_idx = df_with_res.columns.get_loc(time_cols[0]) if time_cols else 0
-                
+                # 時間帯分析用の列選択（ひっそりと配置）
+                time_cols = [c for c in df_with_res.columns if any(k in c.lower() for k in ['date', 'time', 'jst'])]
                 selected_time_col = None
                 if time_cols:
                     selected_time_col = st.selectbox(
-                        "時間帯分析(Hour列)に使う日時列を選択:", 
+                        "時間分析に使用する列:", 
                         df_with_res.columns, 
-                        index=default_idx,
-                        key="time_col_selector"
+                        index=df_with_res.columns.get_loc(time_cols[0]),
+                        key="time_col_selector_new"
                     )
-                else:
-                    st.caption("※ 日時列がないため時間帯分析はスキップされます")
-
-                # Advanced Excel生成
-                excel_advanced = create_advanced_excel(df_with_res, selected_time_col)
                 
+                excel_advanced = create_advanced_excel(df_with_res, selected_time_col)
                 st.download_button(
-                    "⬇️ Excel (分析・グラフ付き)", 
-                    excel_advanced, 
-                    "whois_analysis_master.xlsx", 
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-                    width="stretch",
-                    help="生データに加え、ISP別・時間帯別の集計表とグラフ（ピボット）が別シートに含まれます。"
+                    label="📥 Excelレポート (集計・グラフ付き) を保存",
+                    data=excel_advanced,
+                    file_name="whois_analysis_master.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    type="primary"
                 )
             else:
-                st.button("⬇️ Excel (データなし)", disabled=True, width="stretch")
+                st.button("データなし", disabled=True, use_container_width=True)
+
+        with main_col2:
+            st.success("🌐 **全件グラフ HTMLレポート**\n\nブラウザで閲覧・印刷可能なグラフィカルな分析レポートです。")
+            html_report = generate_full_report_html(isp_full_df, country_full_df, freq_full_df)
+            st.download_button(
+                label="📥 HTMLレポート (閲覧・印刷用) を表示",
+                data=html_report,
+                file_name="whois_analysis_report.html",
+                mime="text/html",
+                use_container_width=True
+            )
+
+        # サブ：用途別のローデータ (Expanderに格納してごちゃつきを解消)
+        with st.expander("🛠️ システム連携用・RAWデータ (CSV / 単純Excel)"):
+            st.caption("データベースへの取り込みや、独自の加工を行いたい場合に利用してください。")
+            
+            sub_tab1, sub_tab2 = st.tabs(["📄 検索結果リスト", "📈 統計・カウントデータ"])
+            
+            with sub_tab1:
+                c1, c2 = st.columns(2)
+                csv_display = pd.DataFrame(display_res).astype(str)
+                rename_map = {
+                    'Target_IP': 'IPアドレス',
+                    'Country_JP': '国名', 
+                    'ISP_API_Raw': 'Whois(元データ)',
+                    'ISP_JP': 'Whois(日本語名)',
+                    'RDAP_Name_Raw': 'RDAP(元データ)',
+                    'RDAP_JP': 'RDAP(日本語名)',
+                    'Proxy_Type': 'Proxy種別',
+                    'IoT_Risk': 'IoTリスク',
+                    'Status': 'ステータス'
+                }
+                csv_display = csv_display.rename(columns=rename_map)
+                with c1:
+                    st.markdown("**画面表示順 (現在の並び)**")
+                    st.download_button("CSV形式", csv_display.to_csv(index=False).encode('utf-8-sig'), "results_display.csv", "text/csv", use_container_width=True)
+                    st.download_button("Excel形式", convert_df_to_excel(csv_display), "results_display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                
+                # 全入力順（アップロードしたファイルと同じ並び）
+                result_lookup = {r['Target_IP']: r for r in st.session_state.raw_results}
+                full_output_data = [{'Target_IP': t, **result_lookup.get(t, {'ISP': 'N/A', 'Status': 'Error'})} for t in st.session_state.get('original_input_list', [])]
+                full_output_df = pd.DataFrame(full_output_data).astype(str)
+                full_output_df = full_output_df.rename(columns=rename_map) # 上記のrename_mapを再利用
+                csv_full = full_output_df.drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link', 'ISP', 'Country'], errors='ignore')
+                with c2:
+                    st.markdown("**全データ (入力した順番)**")
+                    st.download_button("CSV形式", csv_full.to_csv(index=False).encode('utf-8-sig'), "results_full.csv", "text/csv", use_container_width=True)
+                    st.download_button("Excel形式", convert_df_to_excel(csv_full), "results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+            with sub_tab2:
+                sc1, sc2, sc3 = st.columns(3)
+                with sc1:
+                    st.download_button("🎯 ターゲット別件数 (CSV)", freq_full_df.to_csv(index=False).encode('utf-8-sig'), "freq_all.csv", "text/csv", use_container_width=True)
+                with sc2:
+                    st.download_button("🏢 ISP別件数 (CSV)", isp_full_df.to_csv(index=False).encode('utf-8-sig'), "isp_all.csv", "text/csv", use_container_width=True)
+                with sc3:
+                    st.download_button("🌍 国別件数 (CSV)", country_full_df.to_csv(index=False).encode('utf-8-sig'), "country_all.csv", "text/csv", use_container_width=True)
 
 if __name__ == "__main__":
     main()
