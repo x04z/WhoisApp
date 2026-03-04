@@ -375,15 +375,18 @@ def get_cidr_block(ip, netmask_range=(8, 24)):
 
 def get_authoritative_rir_link(ip, country_code):
     rir_name = COUNTRY_CODE_TO_RIR.get(country_code)
+    # RIR共通のポップアップ説明文
+    desc = "IPアドレスを管轄する公式レジストリ。法的な保有組織などの最も正確な情報を確認できます。"
+    
     if rir_name and rir_name in RIR_LINKS:
         encoded_ip = quote(ip, safe='')
         if rir_name in ['RIPE', 'ARIN']:
             link_url = RIR_LINKS[rir_name].format(ip=encoded_ip)
-            return f"[{rir_name}]({link_url})"
+            return f"[{rir_name} ]({link_url} \"{desc}\")"
         elif rir_name in ['JPNIC', 'APNIC', 'LACNIC', 'AFRINIC']:
             link_url = RIR_LINKS[rir_name]  
-            return f"[{rir_name} (手動検索)]({link_url})"
-    return f"[Whois (汎用検索)]({RIR_LINKS.get('APNIC', 'https://wq.apnic.net/static/search.html')})"
+            return f"[{rir_name} (手動検索) ]({link_url} \"{desc}\")"
+    return f"[Whois (汎用検索) ]({RIR_LINKS.get('APNIC', 'https://wq.apnic.net/static/search.html')} \"{desc}\")"
 
 def get_copy_target(ip_display):
     if not ip_display: return ""
@@ -394,6 +397,20 @@ def create_secondary_links(target):
     is_composite = (actual_ip != target and "(" in target) # ドメインとIPの複合型か判定
     is_ip = is_valid_ip(target) and not is_composite
     
+    # --- ツールごとの解説文（オンマウス時のツールチップ用） ---
+    tool_tips = {
+        'VirusTotal': '世界中のウイルス対策エンジンで一括スキャン。危険なIPか即座に判別。',
+        'Aguse': '日本語表示。ブラックリスト判定や、サーバー証明書情報が見やすい。',
+        'Aguse (Domain)': '日本語表示。ブラックリスト判定や、サーバー証明書情報が見やすい。',
+        'ipinfo.io': '地図上の位置、ホスティング(クラウド)かどうかの詳細判定に強い。',
+        'IP2Proxy': '匿名プロキシやVPNからのアクセスかどうかを専門的に判定。',
+        'IP Location': 'IPアドレスの地理的位置をGoogleマップ等で視覚的に表示。',
+        'Whois.com': 'ドメインの保有者情報（英語）を確認するのに最適。',
+        'DNS Checker': 'IPv6のWhois情報が世界中でどう見えているかを確認。',
+        'CP-WHOIS (手動)': '利用者認証が必要な検索ツール。ここでの検索結果はデータとして信頼性が高い。',
+        'DNS History (手動)': '過去のDNSレコードの変更履歴を確認。'
+    }
+
     links = {}
 
     if is_composite:
@@ -435,7 +452,9 @@ def create_secondary_links(target):
     link_html = ""
     for name, url in links.items():
         if url: 
-            link_html += f"[{name}]({url}) | "
+            # 辞書から説明文を取得（なければ空文字）
+            desc = tool_tips.get(name, "")
+            link_html += f"[{name} ]({url} \"{desc}\") | "
     
     return link_html.rstrip(' | ')
 
@@ -770,7 +789,6 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                     result['DOMAIN_RDAP_URL'] = res_d['url']
 
         # --- その他のデータ取得 (SecurityTrails, rDNS, InternetDB) ---
-        # (既存ロジックと同じため省略なしで実装してください。ここではスペースの都合で省略表記しますが、元のコードを維持します)
         is_composite = (actual_ip != ip and "(" in ip)
         if is_composite and st_api_key:
             st_res = get_securitytrails_data(ip.split("(")[0].strip(), st_api_key, st_start_date, st_end_date)
@@ -818,7 +836,7 @@ def get_domain_details(domain, st_api_key=None, st_start_date=None, st_end_date=
     if st_api_key:
         st_json = get_securitytrails_data(domain, st_api_key, st_start_date, st_end_date)
     
-    # --- 2. ドメインRDAPの取得 (ここが抜けていたため追加) ---
+    # --- 2. ドメインRDAPの取得  ---
     domain_rdap_json = None
     domain_rdap_url = ''
     try:
@@ -2246,25 +2264,6 @@ def generate_individual_html_report(res, clean_ip):
 def display_results(results, current_mode_full_text, display_mode):
     st.markdown("### 📝 検索結果")
 
-    # --- 1. リンク集ガイド ---
-    with st.expander("ℹ️ リンク集の活用ガイド (表示条件と特徴)"):
-        st.markdown("""
-        ターゲットの種類（IPv4 / IPv6 / ドメイン）に応じて、最適なツールのみが自動で表示されます。
-        
-        | 目的 | 推奨ツール | 表示条件 | 特徴 |
-        | :--- | :--- | :--- | :--- |
-        | 🛡️ **安全性を診断** | **VirusTotal** | `v4` `v6` `Dom` | 世界中のウイルス対策エンジンで一括スキャン。危険なIPか即座に判別。 |
-        | 🇯🇵 **国内調査・詳細** | **Aguse** | `v4` `Dom` | 日本語表示。ブラックリスト判定や、サーバー証明書情報が見やすい。 |
-        | 📍 **場所・回線特定** | **ipinfo.io** | `v4` `v6` | 地図上の位置、ホスティング(クラウド)かどうかの詳細判定に強い。 |
-        | 🕵️ **VPN/Proxy判定** | **IP2Proxy** | `v4` `v6` | 匿名プロキシやVPNからのアクセスかどうかを専門的に判定。 |
-        | 🗺️ **地図表示** | **IP Location** | `v4` `v6` | IPアドレスの地理的位置をGoogleマップ等で視覚的に表示。 |
-        | 📝 **登録者情報** | **Whois.com** | `Dom` | ドメインの保有者情報（英語）を確認するのに最適。IP検索時は非表示。 |
-        | 📡 **伝播確認** | **DNS Checker** | `v6` | IPv6のWhois情報が世界中でどう見えているかを確認。 |
-        | 📚 **公式情報** | **CP-WHOIS** | `ALL` | 利用者認証が必要な検索ツール。ここでの検索結果はデータとして信頼性が高い。 |
-        
-        <small>※ `v4`: IPv4アドレス, `v6`: IPv6アドレス, `Dom`: ドメイン名, `ALL`: 全て</small>
-        """, unsafe_allow_html=True)
-
     # --- 2. 判定アイコンと表示ルールの解説 ---
     with st.expander("⚠️ 判定アイコンと表示ルールについて"):
         st.info("""
@@ -2414,8 +2413,7 @@ def display_results(results, current_mode_full_text, display_mode):
                     st.markdown(f"{res.get('Secondary_Security_Links', '-')}")
                     
                     # RIRリンクとコピー用コードブロック
-                    st.markdown("**📚 RIR / Whois 窓口:**")
-                    st.write(res.get('RIR_Link', '-'))
+                    st.markdown(f"**📚 RIR / Whois 窓口:** {res.get('RIR_Link', '-')}")
                     
                     # コピーしやすいようにIPのみを表示
                     st.code(clean_ip, language=None)
@@ -2677,11 +2675,15 @@ def main():
                 use_st_date_filter = st.checkbox("期間を指定して全件抽出する", value=False, help="チェックを入れると指定期間の履歴を制限なく抽出します。チェックがない場合は最新20件のみを取得します。")
             
                 if use_st_date_filter:
+                    # 本日の日付と、約3ヶ月前（90日前）の日付を動的に計算
+                    today_date = datetime.date.today()
+                    three_months_ago = today_date - datetime.timedelta(days=90)
+                    
                     col_dt1, col_dt2 = st.columns(2)
                     with col_dt1:
-                        st_start_date = st.date_input("開始日", datetime.date(2020, 1, 1), help="この日以降に観測された履歴のみを抽出します。")
+                        st_start_date = st.date_input("開始日", three_months_ago, help="この日以降に観測された履歴のみを抽出します。期間が長い場合はレポート生成がスキップされる可能性があります。")
                     with col_dt2:
-                        st_end_date = st.date_input("終了日", datetime.date.today(), help="この日以前に観測された履歴のみを抽出します。")
+                        st_end_date = st.date_input("終了日", today_date, help="この日以前に観測された履歴のみを抽出します。")
 
         st.markdown("---")
         if st.button("🔄 IPキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
@@ -2749,7 +2751,7 @@ def main():
             st.markdown("#### 3. 詳細オプション")
             st.markdown("""
             - **🔍 公式レジストリ情報 (RDAP)**
-                - `ip-api.com` (無料版) の情報に加え、各地域の**公式レジストリ(RDAP)** にも問い合わせを行います。
+                - `ip-api.com` (通常版） の情報に加え、各地域の**公式レジストリ(RDAP)** にも問い合わせを行います。
                 - **メリット**: 「運用者(ISP)」だけでなく「法的な保有組織(Org)」まで特定できる確率が上がります。
             
             - **🔑 高精度判定 (ipinfo Key)**
@@ -2921,7 +2923,6 @@ def main():
         return
 
     # --- メインコンテンツ：Whois検索タブ ---   
-    # モード表示ロジック
     if IS_PUBLIC_MODE:
         mode_title = "☁️ Public Cloud Edition (機能制限あり)"
         mode_color = "gray"
@@ -3035,14 +3036,6 @@ def main():
 
                 except Exception as e:
                     st.error(f"ファイル読み込みエラー: {e}")
-
-    # --- 公開モード時のみセキュリティ警告を表示 ---
-    if IS_PUBLIC_MODE:
-        st.warning("""
-        **🛡️ セキュリティ上の注意**
-        * **テキスト入力推奨**: ファイルアップロードよりも、左側のテキストエリアへの**コピー＆ペースト**の方が、メタデータ（作成者情報など）が含まれないため安全です。
-        * **ファイル名に注意**: アップロードする場合は、ファイル名に機密情報（例: `ClientA_Log.txt`）を含めず、`list.txt` などの無機質な名前を使用してください。
-        """)
     
     cleaned_raw_targets_list = []
     target_freq_counts = {}
@@ -3190,7 +3183,6 @@ def main():
     # 合計待機数
     count_pending = len(st.session_state.deferred_ips)
 
-    st.markdown("---")
     # 設定エリアをExpanderに格納し、デフォルトで閉じておく
     with st.expander("⚙️ 検索表示・解析オプション (クリックして展開)", expanded=False):
         col_set1, col_set2 = st.columns(2)
@@ -3239,52 +3231,59 @@ def main():
     }
     current_mode_full_text = mode_mapping[display_mode]
 
-    col_act1, col_act2 = st.columns([3, 1])
-
     is_currently_searching = st.session_state.is_searching and not st.session_state.cancel_search
     
+    st.markdown("### 📋 実行前ステータス・確認事項")
+    
+    # --- 公開モード時のみセキュリティ警告を表示 ---
+    if IS_PUBLIC_MODE:
+        st.warning("""
+        **🛡️ セキュリティ上の注意**
+        * **テキスト入力推奨**: ファイルアップロードよりも、左側のテキストエリアへの**コピー＆ペースト**の方が、メタデータ（作成者情報など）が含まれないため安全です。
+        * **ファイル名に注意**: アップロードする場合は、ファイル名に機密情報（例: `ClientA_Log.txt`）を含めず、`list.txt` などの無機質な名前を使用してください。
+        """)
+
+    status_msg = (
+        f"**検索対象:** IPアドレス: {count_direct_ipv4}件(v4)・{count_direct_ipv6}件(v6) / "
+        f"ドメイン: {count_domain} 件 (正引きIP: {count_resolved_ip}件) / "
+        f"待機中: {count_pending}件 / **キャッシュ:** {len(st.session_state.cidr_cache)}件"
+    )
+    st.info(status_msg)
+      
+    # 3. 各種APIの精度・制限に関する警告文
+    if not pro_api_key:
+        st.warning("⚠️ **IPinfo Inactive:** 通常版API(ip-api)を使用するため、ISP判定結果が正確ではない可能性があります。")
+    else:
+        st.success("🔑 **IPinfo Pro Active:** 高精度なISP情報・地理位置を取得します。")
+
+    if not ip2proxy_api_key:
+        st.warning("⚠️ **IP2Proxy Inactive:** TOR通信のみ正確に判定します。それ以外の匿名通信の判定は、名称のキーワードマッチング等によるヒューリスティックな推測結果のみが表示されます。")
+    else:
+        st.success("🕵️ **IP2Proxy Evidence Active:** 不審判定時に自動で匿名通信判定結果を取得します。")
+
+    if not use_internetdb_option:
+        st.caption("※ **IoT Check Inactive:** IoT/脆弱性リスク検知はスキップされます。")
+
+    st.markdown("<br>", unsafe_allow_html=True) # ボタンとの間に少し余白を作る
+
+    # 4. 実行ボタン
+    is_currently_searching = st.session_state.is_searching and not st.session_state.cancel_search
     total_ip_targets_for_display = len(ip_targets) + len(st.session_state.deferred_ips)
 
-    with col_act1:
-        status_msg = (
-            f"**検索対象:** IPアドレス: {count_direct_ipv4}件(v4)・{count_direct_ipv6}件(v6) /"
-            f"ドメイン: {count_domain} 件/ (正引きIP: {count_resolved_ip}件) / "
-            f"(待機中: {count_pending}件) / **キャッシュ:** {len(st.session_state.cidr_cache)}件"
+    if is_currently_searching:
+        if st.button("❌ 検索を中止する", type="secondary", use_container_width=True):
+            st.session_state.cancel_search = True
+            st.session_state.is_searching = False
+            st.session_state.deferred_ips = {}
+            st.rerun()
+    else:
+        # ボタンのテキストを変更し、警告を読んだことを意識させる
+        execute_search = st.button(
+        "🚀 上記の確認事項を了承して検索を開始する",
+        type="primary",
+        use_container_width=True,
+        disabled=(len(targets) == 0 and len(st.session_state.deferred_ips) == 0)
         )
-        st.success(status_msg)
-        
-        # 1. IPinfo (Pro Mode) の判定
-        if pro_api_key:
-            st.info("🔑 **IPinfo Pro Active:** 高精度な地理位置・ISP情報を使用します。")
-        else:
-            st.warning("ℹ️ **IPinfo Inactive:** 通常版(ip-api)を使用するため、判定精度が制限されます。")
-
-        # 2. IP2Proxy (IP2Location.io) の判定
-        if ip2proxy_api_key:
-            st.info("🕵️ **IP2Proxy Evidence Active:** 不審判定(VPN/Hosting等)時に自動で匿名通信判定結果を取得します。")
-        else:
-            st.caption("※ **IP2Proxy Inactive:** 匿名通信の判定結果は生成されません。")
-
-        # 3. IoT Risk (InternetDB) の判定
-        if use_internetdb_option:
-            st.info("🔎 **IoT Check Active:** Shodan InternetDBによるスキャン履歴を参照します。")
-        else:
-            st.info("ℹ️ **IoT Check Inactive:** IoT/脆弱性リスク検知はスキップされます。")
-
-    with col_act2:
-        if is_currently_searching:
-            if st.button("❌ 中止", type="secondary", width="stretch"):
-                st.session_state.cancel_search = True
-                st.session_state.is_searching = False
-                st.session_state.deferred_ips = {}
-                st.rerun()
-        else:
-            execute_search = st.button(
-            "🚀 検索開始",
-            type="primary",
-            width="stretch",
-            disabled=(len(targets) == 0 and len(st.session_state.deferred_ips) == 0)
-            )
 
     if ('execute_search' in locals() and execute_search and (has_new_targets or len(st.session_state.deferred_ips) > 0)) or is_currently_searching:
         
