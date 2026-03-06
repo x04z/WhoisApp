@@ -150,7 +150,7 @@ COUNTRY_JP_NAME = {
     "HR": "クロアチア共和国","CU": "キューバ共和国","CY": "キプロス共和国","CZ": "チェコ共和国","DK": "デンマーク王国","DJ": "ジブチ共和国","DM": "ドミニカ国","DO": "ドミニカ共和国",
     "EC": "エクアドル共和国","EG": "エジプト・アラブ共和国","SV": "エルサルバドル共和国","EE": "エストニア共和国","ET": "エチオピア連邦民主共和国","FI": "フィンランド共和国","FR": "フランス共和国","DE": "ドイツ連邦共和国",
     "GR": "ギリシャ共和国","GL": "グリーンランド","GT": "グアテマラ共和国","GY": "ガイアナ共和国","HK": "中華人民共和国香港特別行政区","HU": "ハンガリー","IN": "インド共和国","ID": "インドネシア共和国",
-    "IR": "イラン・イスラム共和国","IQ": "イラク共和国","IE": "アイルランド","IL": "イスラエル国","IT": "イタリア共和国","JP": "日本国","KR": "大韓民国","TW": "台湾","MY": "マレーシア",
+    "IR": "イラン・イスラム共和国","IQ": "イラク共和国","IE": "アイルランド","IL": "イスラエル国","IT": "イタリア共和国","JP": "日本","KR": "大韓民国","TW": "台湾","MY": "マレーシア",
     "MX": "メキシコ合衆国","NL": "オランダ王国","NZ": "ニュージーランド","NO": "ノルウェー王国","PK": "パキスタン・イスラム共和国","PA": "パナマ共和国","PE": "ペルー共和国","PH": "フィリピン共和国",
     "PL": "ポーランド共和国","PT": "ポルトガル共和国","QA": "カタール国","RO": "ルーマニア","RU": "ロシア連邦","SA": "サウジアラビア王国","SG": "シンガポール共和国","ZA": "南アフリカ共和国",
     "ES": "スペイン王国","SE": "スウェーデン王国","CH": "スイス連邦","TH": "タイ王国","TR": "トルコ共和国","UA": "ウクライナ","AE": "アラブ首長国連邦","GB": "グレートブリテン及び北アイルランド連合王国",
@@ -249,20 +249,6 @@ def fetch_tor_exit_nodes():
     except:
         return set()
 
-HOSTING_VPN_KEYWORDS = [
-    "hosting", "datacenter", "vps", "cloud", "server", "vpn", "proxy", "dedi",
-    "amazon", "google", "microsoft", "azure", "oracle", "alibaba", "digitalocean", 
-    "linode", "vultr", "ovh", "hetzner", "akamai", "cloudflare", "fastly",
-    "expressvpn", "nordvpn", "proton", "mullvad", "cyberghost"
-]
-
-def detect_proxy_vpn_tor(ip, isp_name, tor_nodes):
-    isp_lower = isp_name.lower()
-    if ip in tor_nodes: return "Tor Node"
-    if "icloud" in isp_lower or "private relay" in isp_lower: return "iCloud Private Relay"
-    if any(kw in isp_lower for kw in ["vpn", "proxy"]): return "VPN/Proxy (Named)"
-    if any(kw in isp_lower for kw in HOSTING_VPN_KEYWORDS): return "Hosting/DataCenter"
-    return "Standard Connection"
 
 def get_jp_names(english_isp, country_code):
     jp_country = COUNTRY_JP_NAME.get(country_code, country_code)
@@ -279,7 +265,8 @@ def get_jp_names(english_isp, country_code):
         jp_isp = ISP_JP_NAME_NORMALIZED[normalized_input]
     else:
         for keyword, mapped_name in ISP_REMAP_RULES:
-            if keyword in normalized_input:
+            # 単語の境界(\b)を判定し、edionの中のdion等、意図しない部分文字列へのマッチを排除する
+            if re.search(rf'\b{re.escape(keyword)}\b', normalized_input):
                 jp_isp = mapped_name
                 break
         
@@ -464,6 +451,7 @@ def fetch_rdap_data(ip):
         url = RDAP_BOOTSTRAP_URL.format(ip=ip)
         # 海外レジストリ(AFRINIC等)の遅延を考慮し、タイムアウトを8秒に設定
         response = session.get(url, timeout=8, allow_redirects=True)
+        response.raise_for_status()
         if response.status_code == 200:
             data = response.json()
             # 汎用的なRDAPレスポンスから名前を探す (name, handle, remarks)
@@ -471,7 +459,11 @@ def fetch_rdap_data(ip):
             if not network_name and 'handle' in data:
                 network_name = data['handle']
             return {'name': network_name, 'json': data, 'url': url}
-    except:
+    except requests.exceptions.Timeout:
+        pass
+    except requests.exceptions.RequestException:
+        pass
+    except ValueError:
         pass
     return None
 
@@ -481,10 +473,15 @@ def fetch_domain_rdap_data(domain):
     try:
         url = f"https://rdap.org/domain/{domain}"
         response = session.get(url, timeout=8, allow_redirects=True)
+        response.raise_for_status()
         if response.status_code == 200:
             data = response.json()
             return {'json': data, 'url': response.url}
-    except:
+    except requests.exceptions.Timeout:
+        pass
+    except requests.exceptions.RequestException:
+        pass
+    except ValueError:
         pass
     return None
 
@@ -501,27 +498,61 @@ def get_securitytrails_data(domain, api_key, start_date=None, end_date=None):
     
     combined_records = []
     
+    import requests
     # Aレコード (IPv4) 取得
     try:
         url_a = f"https://api.securitytrails.com/v1/history/{domain}/dns/a"
         res_a = session.get(url_a, headers=headers, timeout=10)
-        if res_a.status_code == 200:
-            data_a = res_a.json()
-            if "records" in data_a:
-                combined_records.extend(data_a["records"])
-    except Exception:
+        
+        # HTTPステータスコードが200番台以外なら例外を発生させる
+        res_a.raise_for_status() 
+        
+        data_a = res_a.json()
+        if "records" in data_a:
+            combined_records.extend(data_a["records"])
+            
+    except requests.exceptions.Timeout:
+        # タイムアウトした場合の処理
+        # print(f"[Timeout] SecurityTrails API (A): {domain}")
+        pass
+    except requests.exceptions.HTTPError as e:
+        # 404(Not Found)や401(Unauthorized)などのHTTPエラー
+        # print(f"[HTTP Error] SecurityTrails API (A): {e}")
+        pass
+    except requests.exceptions.RequestException as e:
+        # その他のネットワークエラー（DNS解決失敗など）
+        pass
+    except ValueError:
+        # JSONのパースエラー（APIが想定外のHTMLなどを返してきた場合）
         pass
 
     # AAAAレコード (IPv6) 取得
     try:
         url_aaaa = f"https://api.securitytrails.com/v1/history/{domain}/dns/aaaa"
         res_aaaa = session.get(url_aaaa, headers=headers, timeout=10)
-        if res_aaaa.status_code == 200:
-            data_aaaa = res_aaaa.json()
-            if "records" in data_aaaa:
-                combined_records.extend(data_aaaa["records"])
-    except Exception:
+        
+        # HTTPステータスコードが200番台以外なら例外を発生させる
+        res_aaaa.raise_for_status()
+        
+        data_aaaa = res_aaaa.json()
+        if "records" in data_aaaa:
+            combined_records.extend(data_aaaa["records"])
+            
+    except requests.exceptions.Timeout:
+        # タイムアウトした場合の処理
+        # print(f"[Timeout] SecurityTrails API (AAAA): {domain}")
         pass
+    except requests.exceptions.HTTPError as e:
+        # 404(Not Found)や401(Unauthorized)などのHTTPエラー
+        # print(f"[HTTP Error] SecurityTrails API (AAAA): {e}")
+        pass
+    except requests.exceptions.RequestException as e:
+        # その他のネットワークエラー
+        pass
+    except ValueError:
+        # JSONのパースエラー
+        pass
+    
 
     if combined_records:
         # まず first_seen (初回観測日) の降順で全体をソート (新しい順)
@@ -546,10 +577,15 @@ def get_securitytrails_data(domain, api_key, start_date=None, end_date=None):
             filtered_records = combined_records[:20]
 
         if filtered_records:
-            return {
+            result_data = {
                 "records": filtered_records,
                 "is_date_filtered": is_date_filtered
             }
+            # 日付フィルタが有効な場合、戻り値に日付の文字列を追加する
+            if is_date_filtered:
+                result_data["start_date"] = start_date.strftime("%Y-%m-%d")
+                result_data["end_date"] = end_date.strftime("%Y-%m-%d")
+            return result_data
 
     return None
 
@@ -578,13 +614,13 @@ def check_internetdb_risk(ip, max_retries=3):
             response = requests.get(url, timeout=5)
             
             if response.status_code == 404:
-                return "[No Data]"
+                return "[データなし]"
             elif response.status_code == 429:
-                return "Error: Rate Limit (Shodan)"
+                return "エラー: Shodanのアクセス制限超過"
             elif 500 <= response.status_code < 600:
-                return f"Error: Shodan Server ({response.status_code})"
+                return f"エラー: Shodanサーバー側の障害 ({response.status_code})"
             elif response.status_code != 200:
-                return f"Error: HTTP {response.status_code}"
+                return f"エラー: Shodan通信障害 ({response.status_code})"
                 
             data = response.json()
             found_risks = []
@@ -609,10 +645,14 @@ def check_internetdb_risk(ip, max_retries=3):
         except requests.exceptions.Timeout:
             # 最終試行でもタイムアウトした場合のみエラーを返す
             if attempt == max_retries - 1:
-                return "Error:Timeout"
+                return "エラー: Shodan応答タイムアウト (サーバー混雑)"
             time.sleep(1.5) # リトライ前に1.5秒の待機を挟む（バックオフ）
-        except Exception:
-            return "Error:Connection"
+        except requests.exceptions.HTTPError:
+            return "エラー: Shodan通信失敗 (HTTPエラー)"
+        except requests.exceptions.RequestException:
+            return "エラー: ネットワーク接続に失敗しました"
+        except ValueError:
+            return "エラー: データ解析失敗 (相手から不正なデータが返されました)"
         
 # IP2Proxy API取得関数
 def get_ip2proxy_data(ip, api_key):
@@ -624,12 +664,17 @@ def get_ip2proxy_data(ip, api_key):
     try:
         url = IP2PROXY_API_URL.format(ip=ip, key=api_key)
         response = session.get(url, timeout=5)
+        response.raise_for_status()
         if response.status_code == 200:
             data = response.json()
             # ip2location.io の仕様：is_proxy キーが存在するかで判定
             if "is_proxy" in data:
                 return data
-    except Exception:
+    except requests.exceptions.Timeout:
+        pass
+    except requests.exceptions.RequestException:
+        pass
+    except ValueError:
         pass
     return None
 
@@ -679,16 +724,15 @@ def resolve_ip_nslookup(ip):
     return hostnames, raw_output
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, api_key=None, ip2proxy_api_key=None, ip2proxy_mode="自動節約 (不審なIPのみ)", st_api_key=None, st_start_date=None, st_end_date=None):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, api_key=None, ip2proxy_api_key=None, st_api_key=None, st_start_date=None, st_end_date=None):
 
     actual_ip = extract_actual_ip(ip)
     
-    # 1. 拡張されたデータ構造 (RawとAggregatedを分離)
     result = {
         'Target_IP': ip, 
-        'ISP_API_Raw': 'N/A', 'ISP_JP': 'N/A', # Whois(API)用
-        'RDAP_Name_Raw': '', 'RDAP_JP': '',    # RDAP用
-        'ISP': 'N/A', # 表示互換用（メインのISP表示）
+        'ISP_API_Raw': 'N/A', 'ISP_JP': 'N/A', 
+        'RDAP_Name_Raw': '', 'RDAP_JP': '',    
+        'ISP': 'N/A', 
         'Country': 'N/A', 'Country_JP': 'N/A', 'CountryCode': 'N/A', 
         'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
         'RDAP_JSON': None, 'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
@@ -699,27 +743,25 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
     new_learned_isp = None
     cidr_block = get_cidr_block(actual_ip)
     
-    # --- 【共通】CIDRキャッシュ取得 (省略可だが構造合わせのため記載) ---
     if cidr_block and cidr_block in cidr_cache_snapshot:
         cached_data = cidr_cache_snapshot[cidr_block]
         if time.time() - cached_data['Timestamp'] < 86400:
-            result.update(cached_data) # キャッシュから復元
+            result.update(cached_data) 
             result['Status'] = "Success (Cache)" 
             result['Secondary_Security_Links'] = create_secondary_links(ip)
             return result, None, None
 
-    # --- API通信実行 ---
     try:
         time.sleep(delay_between_requests) 
         
-        # Proモード (IPinfo)
+        # --- API通信セクション ---
         if api_key:
             url = IPINFO_API_URL.format(ip=actual_ip) 
             headers = {"Authorization": f"Bearer {api_key}"}
             response = session.get(url, headers=headers, timeout=10)
             
             if response.status_code == 429:
-                result['Status'] = 'Error: Rate Limit (Pro)'
+                result['Status'] = 'エラー: API利用制限 (待機後に自動再試行します)'
                 result['Defer_Until'] = time.time() + rate_limit_wait_seconds
                 return result, None, None
                 
@@ -727,25 +769,20 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
             data = response.json()
             result['IPINFO_JSON'] = data 
             
-            # 生データ取得
             org_raw = data.get('org', '')
             raw_isp = re.sub(r'^AS\d+\s+', '', org_raw) if org_raw else 'N/A'
             result['ISP_API_Raw'] = raw_isp
-            
             result['CountryCode'] = data.get('country', 'N/A')
             result['Country'] = result['CountryCode']
             
-            # Privacy判定 (省略) ...
-            base_proxy_type = detect_proxy_vpn_tor(actual_ip, raw_isp, tor_nodes) # 簡易判定
             status_api = 'Success (Pro)'
 
-        # 通常モード (ip-api)
         else:
             url = IP_API_URL.format(ip=actual_ip)
             response = session.get(url, timeout=45)
             
             if response.status_code == 429:
-                result['Status'] = 'Error: Rate Limit (429)'
+                result['Status'] = 'エラー: API利用制限 (待機後に自動再試行します)'
                 result['Defer_Until'] = time.time() + rate_limit_wait_seconds
                 return result, None, None
             
@@ -755,31 +792,45 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
             if data.get('status') == 'success':
                 result['CountryCode'] = data.get('countryCode', 'N/A')
                 result['Country'] = data.get('country', 'N/A')
-                
-                # 生データ取得
                 raw_isp_val = data.get('isp', 'N/A')
                 raw_org_val = data.get('org', '')
                 result['ISP_API_Raw'] = raw_isp_val if raw_org_val == raw_isp_val else f"{raw_isp_val} / {raw_org_val}"
                 
-                base_proxy_type = detect_proxy_vpn_tor(actual_ip, result['ISP_API_Raw'], tor_nodes)
                 status_api = 'Success (API)'
             else:
-                result['Status'] = f"API Fail: {data.get('message', 'Unknown Fail')}"
+                result['Status'] = f"エラー: IP情報取得失敗 ({data.get('message', '原因不明')})"
                 return result, None, None
 
-        # --- RDAP取得 (重要) ---
+        # --- 🕵️ IP2Proxy 高精度判定 (全件実施) ---
+        # 1. 初期値の設定 (Tor判定のみ先行)
+        if actual_ip in tor_nodes:
+            result['Proxy_Type'] = "Tor Node"
+        else:
+            result['Proxy_Type'] = "" 
+
+        # 2. IP2Proxy API による実地検証
+        if ip2proxy_api_key:
+            # ヒューリスティック判定を廃止し、キーがあれば強制的に全件APIを叩く
+            proxy_data = get_ip2proxy_data(actual_ip, ip2proxy_api_key)
+            if proxy_data:
+                result['IP2PROXY_JSON'] = proxy_data
+                if proxy_data.get('is_proxy') is True:
+                    p_type = proxy_data.get('proxy_type', 'VPN/Proxy')
+                    result['Proxy_Type'] = f"[{p_type}] (Confirmed)"
+                else:
+                    result['Proxy_Type'] = "Standard Connection (API Verified)"
+        
+        # --- RDAP等の補助データ取得 ---
         if use_rdap:
             rdap_res = fetch_rdap_data(actual_ip) 
             if rdap_res:
                 raw_rdap_name = rdap_res['name']
-                result['RDAP_Name_Raw'] = raw_rdap_name # 生のRDAP名
+                result['RDAP_Name_Raw'] = raw_rdap_name 
                 result['RDAP_JSON'] = rdap_res['json']
                 result['RDAP_URL'] = rdap_res['url']
-                
                 rdap_jp, _ = get_jp_names(raw_rdap_name, result['CountryCode'])
                 result['RDAP_JP'] = rdap_jp
 
-            # ドメイン版RDAP (省略) ...
             is_composite = (actual_ip != ip and "(" in ip)
             if is_composite:
                 domain_part = ip.split("(")[0].strip()
@@ -788,7 +839,6 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                     result['DOMAIN_RDAP_JSON'] = res_d['json']
                     result['DOMAIN_RDAP_URL'] = res_d['url']
 
-        # --- その他のデータ取得 (SecurityTrails, rDNS, InternetDB) ---
         is_composite = (actual_ip != ip and "(" in ip)
         if is_composite and st_api_key:
             st_res = get_securitytrails_data(ip.split("(")[0].strip(), st_api_key, st_start_date, st_end_date)
@@ -807,23 +857,25 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         result['RIR_Link'] = get_authoritative_rir_link(actual_ip, result['CountryCode'])
         result['Secondary_Security_Links'] = create_secondary_links(ip)
 
-        # enable_aggregationフラグに関わらず、表示用に両方生成する
         isp_jp, country_jp = get_jp_names(result['ISP_API_Raw'], result['CountryCode'])
         result['ISP_JP'] = isp_jp
         result['Country_JP'] = country_jp
-        
-        # 互換性のため ISP キーにもセット（優先度: JP名 > Raw名）
         result['ISP'] = result['ISP_JP'] if result['ISP_JP'] != 'N/A' else result['ISP_API_Raw']
 
-        # プロキシ判定更新
-        result['Proxy_Type'] = base_proxy_type
-
-        # キャッシュ作成
         if cidr_block:
-            new_cache_entry = { cidr_block: result } # 簡略化: result全体をキャッシュ
+            new_cache_entry = { cidr_block: result } 
 
+    except requests.exceptions.Timeout:
+        result['Status'] = 'エラー: 応答タイムアウト (相手サーバーの混雑または停止)'
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else "不明"
+        result['Status'] = f'エラー: 通信拒否または存在なし (HTTP {status_code})'
     except requests.exceptions.RequestException as e:
-        result['Status'] = f'Error: {type(e).__name__}'
+        result['Status'] = f'エラー: ネットワーク接続失敗 ({type(e).__name__})'
+    except ValueError:
+        result['Status'] = 'エラー: データ形式が不正 (JSON解析失敗)'
+    except Exception as e:
+        result['Status'] = f'エラー: 予期せぬシステム例外 ({type(e).__name__})'
 
     return result, new_cache_entry, new_learned_isp
 
@@ -2051,6 +2103,9 @@ def generate_individual_html_report(res, clean_ip):
         
         records = st_json.get("records", [])
         is_date_filtered = st_json.get("is_date_filtered", False)
+        # 日付文字列を取得
+        st_start_date_str = st_json.get("start_date", "")
+        st_end_date_str = st_json.get("end_date", "")
         
         st_html_rows = ""
         unique_ips_ordered = []
@@ -2097,6 +2152,14 @@ def generate_individual_html_report(res, clean_ip):
         url_a = f"https://api.securitytrails.com/v1/history/{target_domain_esc}/dns/a"
         url_aaaa = f"https://api.securitytrails.com/v1/history/{target_domain_esc}/dns/aaaa"
         
+        # 期間指定がある場合のみ挿入するHTMLを生成
+        date_filter_html = ""
+        if is_date_filtered and st_start_date_str and st_end_date_str:
+            date_filter_html = f"""
+                <tr><th>抽出期間 (開始日)<br>(Start Date)</th><td><strong>{html.escape(st_start_date_str)}</strong></td></tr>
+                <tr><th>抽出期間 (終了日)<br>(End Date)</th><td><strong>{html.escape(st_end_date_str)}</strong></td></tr>
+            """
+        
         st_content = f"""
         <div id="{tab_id}" class="tab-content">
             <h1 class="theme-ip2proxy" style="color: #e65100; border-color: #e65100;">レコード履歴 (SecurityTrails)</h1>
@@ -2108,6 +2171,7 @@ def generate_individual_html_report(res, clean_ip):
             <table>
                 <tr><th>対象ドメイン<br>(Target Domain)</th><td><strong>{target_domain_esc}</strong></td></tr>
                 <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                {date_filter_html}
                 <tr><th>リクエストURL<br>(Request URL)</th><td>
                     <a href="{url_a}" target="_blank" style="color: #0066cc; word-break: break-all;">{url_a}</a><br>
                     <a href="{url_aaaa}" target="_blank" style="color: #0066cc; word-break: break-all;">{url_aaaa}</a>
@@ -2268,7 +2332,7 @@ def display_results(results, current_mode_full_text, display_mode):
     with st.expander("⚠️ 判定アイコンと表示ルールについて"):
         st.info("""
         ### 🔍 判定ロジックの概要
-        本ツールは、IPアドレスに紐付けられた**ASN（Autonomous System Number）およびISP（インターネットサービスプロバイダ）の名称・属性**を解析し、通信主体のネットワーク種別を自動的に分類しています。
+        本ツールは、起動時に取得する**最新のTorノードリスト**および、**IP2Proxy (IP2Location.io) 専門データベース**とのAPI連携により、通信主体の属性を判定しています。
         
         インターネット上の通信は、その用途に応じて「個人宅・法人拠点からの直接接続」と「非対面的な中継・ホスティング経由の接続」に大別されます。本機能は後者を検知し、調査の優先順位判断を支援することを目的としています。
         
@@ -2302,7 +2366,7 @@ def display_results(results, current_mode_full_text, display_mode):
             
         ---
         
-        ※ 本判定はISP名称等に基づく推論であるため、実際の利用状況と異なる場合があります。
+        ※ IP2Proxyの設定がされていない場合は、Tor判定のみを行います。
         """)
 
     if not results:
@@ -2399,42 +2463,69 @@ def display_results(results, current_mode_full_text, display_mode):
 
     # --- 4. 選択された全ターゲットに対してレポートを表示 ---
     if target_results:
+        # 進捗状況を可視化するためのプログレスバー（オプション）
+        total_selected = len(target_results)
+        
         for i, res in enumerate(target_results):
             target_ip = res.get('Target_IP', 'N/A')
             clean_ip = get_copy_target(target_ip)
             
             with st.container():
-                st.markdown(f"##### 🎯 [{i+1}/{len(target_results)}] Target: `{target_ip}`")
+                # チェックボックス用のユニークなキーを生成
+                done_key = f"done_target_{clean_ip}_{i}"
                 
-                c1, c2 = st.columns([2, 1])
-                with c1:
-                    # リンク集
-                    st.markdown(f"**🛡️ 外部調査リンク:**")
-                    st.markdown(f"{res.get('Secondary_Security_Links', '-')}")
+                # タイトルとチェックボックスを横に並べる
+                col_title, col_chk = st.columns([4, 1])
+                with col_chk:
+                    is_done = st.checkbox("✅ 調査完了", key=done_key)
+
+                # チェック状態に応じて表示UIを動的に切り替える
+                if is_done:
+                    # 完了時：グレーアウト ＆ 取り消し線
+                    with col_title:
+                        st.markdown(f"<h5 style='color: #9e9e9e; text-decoration: line-through;'>🎯 [{i+1}/{total_selected}] Target: {target_ip}</h5>", unsafe_allow_html=True)
                     
-                    # RIRリンクとコピー用コードブロック
-                    st.markdown(f"**📚 RIR / Whois 窓口:** {res.get('RIR_Link', '-')}")
+                    # 詳細情報を Expander に格納し、デフォルトで閉じておく（画面のスペースを空ける）
+                    container_context = st.expander("📁 完了済みの詳細データを再確認する", expanded=False)
+                else:
+                    # 未完了時：通常表示
+                    with col_title:
+                        st.markdown(f"##### 🎯 [{i+1}/{total_selected}] Target: `{target_ip}`")
                     
-                    # コピーしやすいようにIPのみを表示
-                    st.code(clean_ip, language=None)
+                    # 詳細情報を Container に格納し、そのまま展開して表示する
+                    container_context = st.container()
+
+                # 詳細情報の描画（完了・未完了問わず中身は同じ）
+                with container_context:
+                    c1, c2 = st.columns([2, 1])
+                    with c1:
+                        # リンク集
+                        st.markdown(f"**🛡️ 外部調査リンク:**")
+                        st.markdown(f"{res.get('Secondary_Security_Links', '-')}")
+                        
+                        # RIRリンクとコピー用コードブロック
+                        st.markdown(f"**📚 RIR / Whois 窓口:** {res.get('RIR_Link', '-')}")
+                        
+                        # コピーしやすいようにIPのみを表示
+                        st.code(clean_ip, language=None)
+                        
+                        # 補足情報
+                        st.caption(f"ISP: {res.get('ISP_JP', '-')} / RDAP: {res.get('RDAP_JP', '-')}")
                     
-                    # 補足情報
-                    st.caption(f"ISP: {res.get('ISP_JP', '-')} / RDAP: {res.get('RDAP_JP', '-')}")
-                
-                with c2:
-                    # HTMLレポート生成
-                    html_report = generate_individual_html_report(res, clean_ip)
-                    if html_report:
-                        st.download_button(
-                            label=f"⬇️ レポートDL ({clean_ip})",
-                            data=html_report,
-                            file_name=f"Report_{clean_ip}.html",
-                            mime="text/html",
-                            key=f"dl_btn_multi_{clean_ip}_{i}",
-                            use_container_width=True
-                        )
-                    else:
-                        st.button("データなし", disabled=True, key=f"no_dl_{i}")
+                    with c2:
+                        # HTMLレポート生成
+                        html_report = generate_individual_html_report(res, clean_ip)
+                        if html_report:
+                            st.download_button(
+                                label=f"⬇️ レポートDL ({clean_ip})",
+                                data=html_report,
+                                file_name=f"Report_{clean_ip}.html",
+                                mime="text/html",
+                                key=f"dl_btn_multi_{clean_ip}_{i}", # if分岐で片方しか実行されないため同じキーでOK
+                                use_container_width=True
+                            )
+                        else:
+                            st.button("データなし", disabled=True, key=f"no_dl_{i}")
                 
                 st.divider()
     else:
@@ -2645,15 +2736,6 @@ def main():
                     ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力することで、IPアドレスの匿名通信判定を取得します。").strip()    
             else:
                 ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力することで、IPアドレスの匿名通信判定を取得します。").strip()    
-
-            # モード選択変数の初期化
-            ip2proxy_mode = "自動節約 (不審なIPのみ)"
-            if ip2proxy_api_key:
-                ip2proxy_mode = st.radio(
-                    "IP2Proxy 判定モード",
-                    ["自動節約 (不審なIPのみ)", "全件検査 (API消費大)"],
-                    help="「自動」は海外IPや不審なISPにのみAPIを使用し枠を節約します。「全件」はすべてのIPに匿名通信判定を行いますが、APIの月間枠を消費します。"
-                )
 
             # 3. SecurityTrails の設定
             st_api_key = ""
@@ -2933,7 +3015,7 @@ def main():
     st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🌸アップデート情報 (令和８年３月３日) - 各種API連携・レポート出力の実装・UI変更 🌸", expanded=False):
+    with st.expander("🌸アップデート情報 (令和８年３月６日) - 各種API連携・レポート出力の実装・UI変更 🌸", expanded=False):
         st.markdown("""
         **Update:**\n
         **🕵️ 匿名通信判定 (IP2Proxy / IP2Location.io 連携)**: 
@@ -2944,13 +3026,11 @@ def main():
         * IPアドレスからホスト名を特定する「逆引き」機能を実装。Windows標準コマンドの制限（複数レコードの欠落）を克服するため、専用ライブラリによる直接クエリを採用しました。これに伴い、DNSクエリのタイムアウトを防ぐ**「動的負荷調整ロジック（自動シングルスレッド化）」**を搭載しています。\n
         **📄 詳細レポート (HTML)**:
         * RDAP、ipinfo、IP2Proxy、SecurityTrailsに加え、逆引き結果も一つのHTMLファイルに集約。タブ切り替えによるシームレスな閲覧と、書類提出に最適な「一括印刷機能」を搭載しました。 \n
-        **🏢 企業名「名寄せ」の任意選択機能**:
-        * RDAPとWhois（API）の回答結果の差異を解消するため、ISP名や組織名の「名寄せ（日本語企業名への統一）」のオン/オフを選択できるようになりました。オフに設定することで、レジストリから取得した生データをそのまま表示し、より厳密な実態調査が可能です。\n
         **🔎 検索一覧ビューのUIデザイン変更**:
         * 行クリック、または「国別」「ISP別」フィルタで対象を絞り込み、ヒットした全件分の調査リンクとレポートDLボタンを表示させます。            
         """)
     # ------------------------------------------------
-    # 【改善】タブを使って入力モードを切り替え、画面を広く使う
+    # タブを使って入力モードを切り替え、画面を広く使う
     input_tab1, input_tab2 = st.tabs(["📋 テキスト貼り付け", "📂 ファイル読み込み"])
 
     with input_tab1:
@@ -3257,7 +3337,7 @@ def main():
         st.success("🔑 **IPinfo Pro Active:** 高精度なISP情報・地理位置を取得します。")
 
     if not ip2proxy_api_key:
-        st.warning("⚠️ **IP2Proxy Inactive:** TOR通信のみ正確に判定します。それ以外の匿名通信の判定は、名称のキーワードマッチング等によるヒューリスティックな推測結果のみが表示されます。")
+        st.warning("⚠️ **IP2Proxy Inactive:** 未設定時はTorノードのみを検知し、それ以外のプロキシ/VPN判定は空欄となります。高精度な判定が必要な場合はAPIキーを設定してください。")
     else:
         st.success("🕵️ **IP2Proxy Evidence Active:** 不審判定時に自動で匿名通信判定結果を取得します。")
 
@@ -3378,7 +3458,6 @@ def main():
                                 use_rdns_option,
                                 pro_api_key,
                                 ip2proxy_api_key,
-                                ip2proxy_mode,
                                 st_api_key,
                                 st_start_date,
                                 st_end_date
@@ -3600,32 +3679,89 @@ def main():
                 render_merged_analysis(df_with_res)
             # ------------------------------------------------
 
-            # --- UI改善：ダウンロードセンター ---
+        # --- UI改善：ダウンロードセンター ---
         st.markdown("---")
         st.markdown("### 📥 レポート ＆ データ出力")
 
-        # メイン：最も価値の高い「分析済みレポート」を大きく配置
+        # 【修正】全入力順・全件ベースのデータフレーム構築 (グラフ用)
+        df_for_analysis = pd.DataFrame()
+        
+        # 1. 検索結果を辞書化 (高速ルックアップ用)
+        result_lookup = {r['Target_IP']: r for r in st.session_state.raw_results}
+        
+        # 2. 全入力順のリストを取得
+        full_input_list = st.session_state.get('original_input_list', [])
+
+        if full_input_list:
+            # 入力された全行をベースに、Whois情報を紐付けたリストを作成
+            full_analysis_data = []
+            for t in full_input_list:
+                # ターゲットに対する検索結果を取得 (なければ空の辞書)
+                info = result_lookup.get(t, {})
+                
+                row = {
+                    '入力データ': t,
+                    '国名': info.get('Country_JP', 'N/A'),
+                    'Whois結果（日本語名称）': info.get('ISP_JP', 'N/A'),
+                    'プロキシ種別': info.get('Proxy_Type', 'Standard Connection'),
+                    'IoTリスク': info.get('IoT_Risk', 'N/A'),
+                    'ステータス': info.get('Status', 'Pending/Error')
+                }
+                
+                # CSV/Excelアップロード時の元データがある場合は、それも全行結合
+                if st.session_state.get('original_df') is not None:
+                    # original_df のインデックスと full_input_list のインデックスが一致することを前提
+                    # (このブロックに入る前に入力リストの構築で順序を保持しているため)
+                    pass 
+
+            # もし original_df がある場合は、それをベースに列を追加する方が確実
+            if st.session_state.get('original_df') is not None:
+                df_for_analysis = st.session_state['original_df'].copy()
+                ip_col = st.session_state['ip_column_name']
+                
+                # 各Whois情報の列を全行に対してマッピング
+                df_for_analysis['国名'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('Country_JP', 'N/A'))
+                df_for_analysis['Whois結果（日本語名称）'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('ISP_JP', 'N/A'))
+                df_for_analysis['プロキシ種別'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('Proxy_Type', 'Standard Connection'))
+                df_for_analysis['IoTリスク'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('IoT_Risk', 'N/A'))
+                df_for_analysis['ステータス'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('Status', 'N/A'))
+            else:
+                # テキスト貼り付けなどの場合は、作成した full_analysis_data を使用
+                temp_rows = []
+                for t in full_input_list:
+                    info = result_lookup.get(t, {})
+                    temp_rows.append({
+                        '対象IP/Domain': t,
+                        '国名': info.get('Country_JP', 'N/A'),
+                        'Whois結果（日本語名称）': info.get('ISP_JP', 'N/A'),
+                        'プロキシ種別': info.get('Proxy_Type', 'Standard Connection'),
+                        'IoTリスク': info.get('IoT_Risk', 'N/A'),
+                        'ステータス': info.get('Status', 'N/A')
+                    })
+                df_for_analysis = pd.DataFrame(temp_rows)
+
         main_col1, main_col2 = st.columns(2)
         
         with main_col1:
-            st.info("📊 **分析マスター (推奨)**\n\n生データに加えて、ISP別・国別・時間帯別の集計表とグラフが自動生成されたExcelファイルです。")
-            if not df_with_res.empty:
-                # 時間帯分析用の列選択（ひっそりと配置）
-                time_cols = [c for c in df_with_res.columns if any(k in c.lower() for k in ['date', 'time', 'jst'])]
+            st.info("📊 **分析マスター (全入力順)**\n\nアップロードされた全行に基づき、ISP別・国別・時間帯別の集計表とグラフを生成します。")
+            if not df_for_analysis.empty:
+                # 時間帯分析用の列選択
+                time_cols = [c for c in df_for_analysis.columns if any(k in c.lower() for k in ['date', 'time', 'jst'])]
                 selected_time_col = None
                 if time_cols:
                     selected_time_col = st.selectbox(
                         "時間分析に使用する列:", 
-                        df_with_res.columns, 
-                        index=df_with_res.columns.get_loc(time_cols[0]),
-                        key="time_col_selector_new"
+                        df_for_analysis.columns, 
+                        index=df_for_analysis.columns.get_loc(time_cols[0]),
+                        key="time_col_selector_final"
                     )
                 
-                excel_advanced = create_advanced_excel(df_with_res, selected_time_col)
+                # 全入力順データでExcelを生成
+                excel_advanced = create_advanced_excel(df_for_analysis, selected_time_col)
                 st.download_button(
-                    label="📥 Excelレポート (集計・グラフ付き) を保存",
+                    label="📥 Excelレポート (全入力順・グラフ付き) を保存",
                     data=excel_advanced,
-                    file_name="whois_analysis_master.xlsx",
+                    file_name="whois_analysis_full_report.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                     type="primary"
@@ -3639,7 +3775,7 @@ def main():
             st.download_button(
                 label="📥 HTMLレポート (閲覧・印刷用) を表示",
                 data=html_report,
-                file_name="whois_analysis_report.html",
+                file_name="whois_analysis_summary.html",
                 mime="text/html",
                 use_container_width=True
             )
