@@ -2347,15 +2347,16 @@ def display_results(results, current_mode_full_text, display_mode):
                         st.markdown(f"**🛡️ 外部調査リンク:**")
                         st.markdown(f"{res.get('Secondary_Security_Links', '-')}")
                         
-                        # RIRリンクとコピー用コードブロック
+                        # RIRリンク
                         st.markdown(f"**📚 RIR / Whois 窓口:** {res.get('RIR_Link', '-')}")
                         
-                        # コピーしやすいようにIPのみを表示
-                        st.code(clean_ip, language=None)
+                        # コピー枠の横幅を絞り、マウス移動の負担を極小化する
+                        code_col, _ = st.columns([1, 2])
+                        with code_col:
+                            st.code(clean_ip, language=None)
                         
                         # 補足情報
-                        st.caption(f"ISP: {res.get('ISP_JP', '-')} / RDAP: {res.get('RDAP_JP', '-')}")
-                    
+                        st.caption(f"ISP: {res.get('ISP_JP', '-')} / RDAP: {res.get('RDAP_JP', '-')}")    
                     with c2:
                         # HTMLレポート生成
                         html_report = generate_individual_html_report(res, clean_ip)
