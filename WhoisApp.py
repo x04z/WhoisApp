@@ -2367,7 +2367,7 @@ def display_results(results, current_mode_full_text, display_mode):
                                 file_name=f"Report_{clean_ip}.html",
                                 mime="text/html",
                                 key=f"dl_btn_multi_{clean_ip}_{i}", # if分岐で片方しか実行されないため同じキーでOK
-                                use_container_width=True
+                                width="stretch"
                             )
                         else:
                             st.button("データなし", disabled=True, key=f"no_dl_{i}")
@@ -3116,7 +3116,7 @@ def main():
             preview_df.insert(0, '📝 判定結果', preview_df[ip_col].apply(check_status))
             
         # プレースホルダーにデータフレームを描画
-        preview_container.dataframe(preview_df, use_container_width=True)
+        preview_container.dataframe(preview_df, width="stretch")
 
     has_new_targets = (targets != st.session_state.targets_cache)
     
@@ -3243,9 +3243,9 @@ def main():
         execute_search = st.button(
         "🚀 上記の確認事項を了承して検索を開始する",
         type="primary",
-        use_container_width=True,
+        width="stretch",
         disabled=(len(targets) == 0 and len(st.session_state.deferred_ips) == 0)
-        )
+    )
 
     if ('execute_search' in locals() and execute_search and (has_new_targets or len(st.session_state.deferred_ips) > 0)) or is_currently_searching:
         
@@ -3548,11 +3548,11 @@ def main():
                         data=excel_advanced,
                         file_name="whois_analysis_full_report.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
+                        width="stretch",
                         type="primary"
                     )
                 else:
-                    st.button("データなし", disabled=True, use_container_width=True)
+                    st.button("データなし", disabled=True, width="stretch")
 
             with main_col2:
                 st.success("🌐 **全件グラフ HTMLレポート**\n\nブラウザで閲覧・印刷可能なグラフィカルな分析レポートです。")
@@ -3562,7 +3562,7 @@ def main():
                     data=html_report,
                     file_name="whois_analysis_summary.html",
                     mime="text/html",
-                    use_container_width=True
+                    width="stretch"
                 )
 
             with st.expander("🛠️ システム連携用・RAWデータ (CSV / 単純Excel)"):
@@ -3586,25 +3586,25 @@ def main():
                     csv_display = csv_display.rename(columns=rename_map)
                     with c1:
                         st.markdown("**画面表示順 (現在の並び)**")
-                        st.download_button("CSV形式", csv_display.to_csv(index=False).encode('utf-8-sig'), "results_display.csv", "text/csv", use_container_width=True)
-                        st.download_button("Excel形式", convert_df_to_excel(csv_display), "results_display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                        st.download_button("CSV形式", csv_display.to_csv(index=False).encode('utf-8-sig'), "results_display.csv", "text/csv", width="stretch")
+                        st.download_button("Excel形式", convert_df_to_excel(csv_display), "results_display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
                     
                     full_output_data = [{'Target_IP': t, **result_lookup.get(t, {'ISP': 'N/A', 'Status': 'Error'})} for t in full_input_list]
                     full_output_df = pd.DataFrame(full_output_data).astype(str).rename(columns=rename_map)
                     csv_full = full_output_df.drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link', 'ISP', 'Country'], errors='ignore')
                     with c2:
                         st.markdown("**全データ (入力した順番)**")
-                        st.download_button("CSV形式", csv_full.to_csv(index=False).encode('utf-8-sig'), "results_full.csv", "text/csv", use_container_width=True)
-                        st.download_button("Excel形式", convert_df_to_excel(csv_full), "results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                        st.download_button("CSV形式", csv_full.to_csv(index=False).encode('utf-8-sig'), "results_full.csv", "text/csv", width="stretch")
+                        st.download_button("Excel形式", convert_df_to_excel(csv_full), "results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
                 with sub_tab2:
                     sc1, sc2, sc3 = st.columns(3)
                     with sc1:
-                        st.download_button("🎯 ターゲット別件数 (CSV)", freq_full_df.to_csv(index=False).encode('utf-8-sig'), "freq_all.csv", "text/csv", use_container_width=True)
+                        st.download_button("🎯 ターゲット別件数 (CSV)", freq_full_df.to_csv(index=False).encode('utf-8-sig'), "freq_all.csv", "text/csv", width="stretch")
                     with sc2:
-                        st.download_button("🏢 ISP別件数 (CSV)", isp_full_df.to_csv(index=False).encode('utf-8-sig'), "isp_all.csv", "text/csv", use_container_width=True)
+                        st.download_button("🏢 ISP別件数 (CSV)", isp_full_df.to_csv(index=False).encode('utf-8-sig'), "isp_all.csv", "text/csv", width="stretch")
                     with sc3:
-                        st.download_button("🌍 国別件数 (CSV)", country_full_df.to_csv(index=False).encode('utf-8-sig'), "country_all.csv", "text/csv", use_container_width=True)
+                        st.download_button("🌍 国別件数 (CSV)", country_full_df.to_csv(index=False).encode('utf-8-sig'), "country_all.csv", "text/csv", width="stretch")
 
 if __name__ == "__main__":
     main()
