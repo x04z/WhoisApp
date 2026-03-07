@@ -1139,7 +1139,7 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
             
             # 高さを250pxに固定してコンパクトに
             chart = alt.layer(base, heatmap).resolve_scale(color='independent').properties(height=250)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
         else:
             st.info("データなし")
 
@@ -1152,7 +1152,7 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
                 y=alt.Y('ISP:N', sort='-x', title=''),
                 tooltip=['ISP', 'Count']
             ).properties(height=250)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
         else:
             st.info("データなし")
 
@@ -1165,7 +1165,7 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
                 color=alt.Color(field="Country", type="nominal", legend=alt.Legend(title="国名", orient="right")),
                 tooltip=["Country", "Count"]
             ).properties(height=250)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
         else:
             st.info("データなし")
 
@@ -1178,7 +1178,7 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
                 color=alt.Color(field="Proxy_Type", type="nominal", legend=alt.Legend(title="判定", orient="right")),
                 tooltip=["Proxy_Type", "Count"]
             ).properties(height=250)
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
         else:
             st.info("データなし")
 
@@ -2247,7 +2247,7 @@ def display_results(results, current_mode_full_text, display_mode):
     selection_state = st.dataframe(
         df,
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         height=450,
         on_select="rerun", 
         selection_mode="multi-row",
@@ -3233,7 +3233,7 @@ def main():
     total_ip_targets_for_display = len(ip_targets) + len(st.session_state.deferred_ips)
 
     if is_currently_searching:
-        if st.button("❌ 検索を中止する", type="secondary", use_container_width=True):
+        if st.button("❌ 検索を中止する", type="secondary", width="stretch"):
             st.session_state.cancel_search = True
             st.session_state.is_searching = False
             st.session_state.deferred_ips = {}
