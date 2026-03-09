@@ -757,7 +757,8 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
     
     if cidr_block and cidr_block in cidr_cache_snapshot:
         cached_data = cidr_cache_snapshot[cidr_block]
-        if time.time() - cached_data['Timestamp'] < 86400:
+        # KeyError回避のため .get() を使用 (キーがない場合は0を返し、必ず再取得させる)
+        if time.time() - cached_data.get('Timestamp', 0) < 86400:
             result.update(cached_data) 
             result['Status'] = "Success (Cache)" 
             result['Secondary_Security_Links'] = create_secondary_links(ip)
@@ -875,6 +876,9 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         result['ISP_JP'] = isp_jp
         result['Country_JP'] = country_jp
         result['ISP'] = result['ISP_JP'] if result['ISP_JP'] != 'N/A' else result['ISP_API_Raw']
+
+        # キャッシュの鮮度判定用に現在時刻のタイムスタンプを付与
+        result['Timestamp'] = time.time()
 
         if cidr_block:
             new_cache_entry = { cidr_block: result } 
