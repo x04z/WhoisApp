@@ -17,6 +17,8 @@ import subprocess
 import dns.resolver
 import dns.reversename
 import dns
+import zipfile
+import datetime
 
 # --- Excelグラフ生成用ライブラリ ---
 from openpyxl import Workbook
@@ -36,7 +38,7 @@ st.set_page_config(layout="wide", page_title="検索大臣", page_icon="🔎")
 # ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
 # 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
 HARDCODED_IPINFO_KEY = "" 
-HARDCODED_IP2PROXY_KEY = ""
+HARDCODED_VPNAPI_KEY = ""
 HARDCODED_SECURITYTRAILS_KEY = ""
 # ==========================================
 
@@ -64,8 +66,8 @@ MODE_SETTINGS = {
 }
 IP_API_URL = "http://ip-api.com/json/{ip}?fields=status,country,countryCode,isp,org,query,message"
 IPINFO_API_URL = "https://ipinfo.io/{ip}" 
-IP2PROXY_API_URL = "https://api.ip2location.io/?key={key}&ip={ip}&format=json"
-RDAP_BOOTSTRAP_URL = "https://rdap.apnic.net/ip/{ip}" 
+VPNAPI_URL = "https://vpnapi.io/api/{ip}?key={key}"
+RDAP_BOOTSTRAP_URL = "https://rdap.apnic.net/ip/{ip}"
 
 RATE_LIMIT_WAIT_SECONDS = 120 
   
@@ -86,6 +88,7 @@ SECONDARY_TOOL_BASE_LINKS = {
     'DomainSearch.jp': 'https://www.domainsearch.jp/',
     'Aguse': 'https://www.aguse.jp/',
     'IP2Proxy': 'https://www.ip2proxy.com/',
+    'VPNAPI.io': 'https://vpnapi.io/',
     'DNS Checker': 'https://dnschecker.org/',
     'DNSlytics': 'https://dnslytics.com/',
     'IP Location': 'https://iplocation.io/',
@@ -232,7 +235,6 @@ ISP_REMAP_RULES = [
     ('biglobe', 'ビッグローブ株式会社'), ('iij', '株式会社インターネットイニシアティブ(IIJ)'),
     ('transix', 'インターネットマルチフィード株式会社 (transix)'),
     ('v6plus', 'JPNE (v6プラス)'),
-    ('rakuten', '楽天グループ'),
     ('logiclinks', '株式会社LogicLinks'),('lgls', '株式会社LogicLinks'),
     ('maps', 'アルテリア・ネットワークス株式会社 (MAPS)'),
     ('plala', '株式会社NTTドコモ (ぷらら)'),('docomo', '株式会社NTTドコモ'),('maps', '株式会社NTTドコモ (MAPS)'),
@@ -398,6 +400,7 @@ def create_secondary_links(target):
         'Aguse (Domain)': '日本語表示。ブラックリスト判定や、サーバー証明書情報が見やすい。',
         'ipinfo.io': '地図上の位置、ホスティング(クラウド)かどうかの詳細判定に強い。',
         'IP2Proxy': '匿名プロキシやVPNからのアクセスかどうかを専門的に判定。',
+        'VPNAPI.io': '匿名プロキシやVPNからのアクセスかどうかを専門的に判定。(本ツールでAPI実装済み)',
         'IP Location': 'IPアドレスの地理的位置をGoogleマップ等で視覚的に表示。',
         'Whois.com': 'ドメインの保有者情報（英語）を確認するのに最適。',
         'DNS Checker': 'IPv6のWhois情報が世界中でどう見えているかを確認。',
@@ -426,11 +429,13 @@ def create_secondary_links(target):
             links['Aguse'] = f'https://www.aguse.jp/?url={encoded_target}'
             links['ipinfo.io'] = f'https://ipinfo.io/{encoded_target}'
             links['IP2Proxy'] = f'https://www.ip2proxy.com/{encoded_target}'
+            links['VPNAPI.io'] = f'https://vpnapi.io/api/{encoded_target}'
             links['IP Location'] = f'https://iplocation.io/ip/{encoded_target}'
         else:
             links['VirusTotal'] = f'https://www.virustotal.com/gui/search/{encoded_target}'
             links['ipinfo.io'] = f'https://ipinfo.io/{encoded_target}'
             links['IP2Proxy'] = f'https://www.ip2proxy.com/{encoded_target}'
+            links['VPNAPI.io'] = f'https://vpnapi.io/api/{encoded_target}'
             links['IP Location'] = f'https://iplocation.io/ip/{encoded_target}'
             links['DNS Checker'] = f'https://dnschecker.org/ipv6-whois-lookup.php?query={encoded_target}'
     else:
@@ -661,21 +666,21 @@ def check_internetdb_risk(ip, max_retries=3):
         except ValueError:
             return "エラー: データ解析失敗 (相手から不正なデータが返されました)"
         
-# IP2Proxy API取得関数
-def get_ip2proxy_data(ip, api_key):
+# VPNAPI.io 取得関数
+def get_vpnapi_data(ip, api_key):
     """
-    IP2Proxy Web Service APIを使用してプロキシ判定の詳細データを取得する。
+    VPNAPI.io APIを使用してプロキシ・VPN判定の詳細データを取得する。
     """
     if not api_key:
         return None
     try:
-        url = IP2PROXY_API_URL.format(ip=ip, key=api_key)
+        url = VPNAPI_URL.format(ip=ip, key=api_key)
         response = session.get(url, timeout=5)
         response.raise_for_status()
         if response.status_code == 200:
             data = response.json()
-            # ip2location.io の仕様：is_proxy キーが存在するかで判定
-            if "is_proxy" in data:
+            # vpnapi.io の仕様：security キーが存在するかで判定
+            if "security" in data:
                 return data
     except requests.exceptions.Timeout:
         pass
@@ -731,7 +736,7 @@ def resolve_ip_nslookup(ip):
     return hostnames, raw_output
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, api_key=None, ip2proxy_api_key=None, st_api_key=None, st_start_date=None, st_end_date=None):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, api_key=None, vpnapi_key=None, st_api_key=None, st_start_date=None, st_end_date=None):
 
     actual_ip = extract_actual_ip(ip)
     
@@ -742,7 +747,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         'ISP': 'N/A', 
         'Country': 'N/A', 'Country_JP': 'N/A', 'CountryCode': 'N/A', 
         'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
-        'RDAP_JSON': None, 'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
+        'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
         'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
         'Proxy_Type': ''
     }
@@ -808,21 +813,23 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 result['Status'] = f"エラー: IP情報取得失敗 ({data.get('message', '原因不明')})"
                 return result, None, None
 
-        # --- IP2Proxy 高精度判定 (全件実施) ---
+        # --- 匿名通信 高精度判定 (Tor & VPNAPI.io) ---
         # 1. 初期値の設定 (Tor判定のみ先行)
         if actual_ip in tor_nodes:
             result['Proxy_Type'] = "Tor Node"
         else:
-            result['Proxy_Type'] = "" 
+            result['Proxy_Type'] = ""
 
-        # 2. IP2Proxy API による実地検証
-        if ip2proxy_api_key:
-            # ヒューリスティック判定を廃止し、キーがあれば強制的に全件APIを叩く
-            proxy_data = get_ip2proxy_data(actual_ip, ip2proxy_api_key)
+        # 2. VPNAPI.io による実地検証
+        if vpnapi_key:
+            proxy_data = get_vpnapi_data(actual_ip, vpnapi_key)
             if proxy_data:
-                result['IP2PROXY_JSON'] = proxy_data
-                if proxy_data.get('is_proxy') is True:
-                    p_type = proxy_data.get('proxy_type', 'VPN/Proxy')
+                result['VPNAPI_JSON'] = proxy_data
+                sec = proxy_data.get('security', {})
+                # いずれかの匿名化手法がTrueか判定
+                if any(sec.values()):
+                    detected = [k.upper() for k, v in sec.items() if v]
+                    p_type = "/".join(detected)
                     result['Proxy_Type'] = f"[{p_type}] (Confirmed)"
                 else:
                     result['Proxy_Type'] = "Standard Connection (API Verified)"
@@ -920,7 +927,7 @@ def get_domain_details(domain, st_api_key=None, st_start_date=None, st_end_date=
         # IP用フィールドは空またはNone
         'RDAP': '', 
         'RDAP_JSON': None,
-        'IP2PROXY_JSON': None, 
+        'VPNAPI_JSON': None, 
         'RDAP_URL': '', 
         'IPINFO_JSON': None, 
         'IoT_Risk': '',
@@ -946,7 +953,7 @@ def get_simple_mode_details(target):
         'RIR_Link': rir_link_content,
         'Secondary_Security_Links': create_secondary_links(target),
         'Status': 'Success (簡易モード)',
-        'RDAP': '', 'RDAP_JSON': None, 'IP2PROXY_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
+        'RDAP': '', 'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
         'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None
     }
 
@@ -1540,7 +1547,7 @@ def generate_individual_html_report(res, clean_ip):
     rdap_url = res.get('RDAP_URL')
     rdap_json = res.get('RDAP_JSON')
     ipinfo_json = res.get('IPINFO_JSON')
-    ip2proxy_json = res.get('IP2PROXY_JSON')
+    vpnapi_json = res.get('VPNAPI_JSON')
     domain_rdap_json = res.get('DOMAIN_RDAP_JSON')
     domain_rdap_url = res.get('DOMAIN_RDAP_URL')
     st_json = res.get('ST_JSON')
@@ -1864,80 +1871,66 @@ def generate_individual_html_report(res, clean_ip):
         """
         contents_html += ipinfo_content
 
-    # --- 7. IP2Proxy ---
-    if ip2proxy_json:
-        tab_id = "tab-ip2proxy"
+    # --- 7. VPNAPI.io ---
+    if vpnapi_json:
+        tab_id = "tab-vpnapi"
         if not first_tab_id: first_tab_id = tab_id
-        tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">IP2Proxy</button>\n'
+        tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">VPNAPI.io</button>\n'
         
-        is_proxy_val = ip2proxy_json.get('is_proxy')
-        if is_proxy_val is True:
-            proxy_status_text = "該当あり (プロキシ検知)"
+        sec = vpnapi_json.get('security', {})
+        if any(sec.values()):
+            proxy_status_text = "該当あり (匿名通信検知)"
             status_color = "red"
-        elif is_proxy_val is False:
+            detected_types = [k.upper() for k, v in sec.items() if v]
+            p_type_val = " / ".join(detected_types)
+        else:
             proxy_status_text = "該当なし"
             status_color = "green"
-        else:
-            proxy_status_text = "情報なし"
-            status_color = "gray"
-
-        p_type_val = ip2proxy_json.get('proxy_type', '情報なし')
-        if p_type_val == "-" or p_type_val is None: 
             p_type_val = "情報なし"
-            p_type_desc = ""
-        else:
-            proxy_descriptions = {
-                "VPN": "【VPN Anonymizer】 自身のIPアドレスを隠蔽し、匿名性を確保するために利用される。",
-                "PUB": "【Open Proxies】 公開プロキシ。",
-                "WEB": "【Web Proxies】 Webベースのプロキシ。",
-                "TOR": "【Tor Exit Nodes】 Tor匿名化ネットワークの出口ノード。",
-                "SES": "【Search Engine Spider】 検索エンジンのクローラーやボット。",
-                "DCH": "【Data Center Ranges】 ホスティング事業者やデータセンター。",
-                "RES": "【Residential Proxies】 一般家庭のISP回線を経由したプロキシ。",
-                "CPN": "【Consumer Privacy Network】 プライバシーネットワーク。",
-                "EPN": "【Enterprise Private Network】 企業の専用ネットワーク。"
-            }
-            p_type_desc = proxy_descriptions.get(p_type_val, "")
 
-        c_name_val = ip2proxy_json.get('country_name', '情報なし')
-        if c_name_val == "-": c_name_val = "情報なし"
+        net = vpnapi_json.get('network', {})
+        org_val = net.get('autonomous_system_organization', '情報なし')
 
-        raw_json_str = json.dumps(ip2proxy_json, indent=4, ensure_ascii=False)
+        loc = vpnapi_json.get('location', {})
+        c_name_val = loc.get('country', '情報なし')
+
+        raw_json_str = json.dumps(vpnapi_json, indent=4, ensure_ascii=False)
         escaped_json = html.escape(raw_json_str)
-        # &quot; 対応
-        highlight_keys_ip2p = ['is_proxy', 'proxy_type', 'country_name', 'ip', 'as', 'isp']
-        for hk in highlight_keys_ip2p:
-            simple_pattern = r'(&quot;' + hk + r'&quot;:\s*.*?,?\n)'
+
+        # " 対応
+        highlight_keys_vpn = ['vpn', 'proxy', 'tor', 'relay', 'country', 'ip', 'autonomous_system_organization']
+        for hk in highlight_keys_vpn:
+            simple_pattern = r'("' + hk + r'":\s*.*?,?\n)'
             escaped_json = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json)
 
-        ip2p_req_ip = ip2proxy_json.get('ip', clean_ip)
-        req_ip2proxy_url = f"https://api.ip2location.io/?key=********&ip={ip2p_req_ip}&format=json"
+        vpn_req_ip = vpnapi_json.get('ip', clean_ip)
+        req_vpnapi_url = f"https://vpnapi.io/api/{vpn_req_ip}?key=********"
 
-        ip2p_content = f"""
+        vpnapi_content = f"""
         <div id="{tab_id}" class="tab-content">
-            <h1 class="theme-ip2proxy">匿名通信判定結果</h1>
+            <h1 class="theme-ip2proxy">匿名通信判定結果 (VPNAPI.io)</h1>
             <div class="description" style="background-color: #f3e5f5; border-color: #ce93d8;">
-                <strong>IP2Proxy / IP2Location.io (PX1):</strong><br>
-                IP2Proxyとは、IPアドレスが匿名ネットワークとして利用されているかを検知するためのプロキシ検知データベースである。
+                <strong>VPNAPI.io:</strong><br>
+                VPNAPI.ioは、対象IPアドレスがVPN、プロキシ、Torノード、またはリレーネットワークとして利用されているかを検知するための高精度データベースです。
             </div>
             <h2>基本情報</h2>
             <table>
-                <tr><th>対象IPアドレス<br>(Key: ip)</th><td><strong>{ip2p_req_ip}</strong></td></tr>
+                <tr><th>対象IPアドレス<br>(Key: ip)</th><td><strong>{vpn_req_ip}</strong></td></tr>
                 <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
-                <tr><th>リクエストURL<br>(Request URL)</th><td><a href="{req_ip2proxy_url}" target="_blank" style="color: #6a1b9a; word-break: break-all;">{req_ip2proxy_url}</a></td></tr>
+                <tr><th>リクエストURL<br>(Request URL)</th><td><a href="{req_vpnapi_url}" target="_blank" style="color: #6a1b9a; word-break: break-all;">{req_vpnapi_url}</a></td></tr>
             </table>
-            <h2>IP2Proxy取得結果</h2>
+            <h2>VPNAPI.io 取得結果</h2>
             <table>
-                <tr><th>プロキシ判定<br>(Key: is_proxy)</th><td><strong style="color:{status_color};">{proxy_status_text}</strong></td></tr>
-                <tr><th>プロキシ種別<br>(Key: proxy_type)</th><td><strong>{p_type_val}</strong><span class="help-text">{p_type_desc}</span></td></tr>
-                <tr><th>運用組織名<br>(Key: as)</th><td><strong>{ip2proxy_json.get('as', '情報なし')}</strong></td></tr>
-                <tr><th>判定国名<br>(Key: country_name)</th><td><strong>{c_name_val}</strong></td></tr>
+                <tr><th>プロキシ判定<br>(Security)</th><td><strong style="color:{status_color};">{proxy_status_text}</strong></td></tr>
+                <tr><th>検知種別<br>(Detected Types)</th><td><strong>{p_type_val}</strong></td></tr>
+                <tr><th>運用組織名<br>(Key: autonomous_system_organization)</th><td><strong>{org_val}</strong></td></tr>
+                <tr><th>判定国名<br>(Key: country)</th><td><strong>{c_name_val}</strong></td></tr>
             </table>
             <h2>解析用生データ (JSON形式)</h2>
             <div class="raw-data">{escaped_json}</div>
         </div>
         """
-        contents_html += ip2p_content
+        contents_html += vpnapi_content
 
     # --- 8. SecurityTrails ---
     if st_json:
@@ -2169,6 +2162,125 @@ def generate_individual_html_report(res, clean_ip):
     """
     return full_html
 
+def generate_combined_html_report(target_results):
+    """複数の個別レポートを1つのHTMLファイル（目次付き）に統合する関数"""
+    combined_body = ""
+    toc_links = []
+    common_style = ""
+    
+    for i, res in enumerate(target_results):
+        target_ip = res.get('Target_IP', 'N/A')
+        clean_ip = get_copy_target(target_ip)
+        html = generate_individual_html_report(res, clean_ip)
+        if not html: continue
+        
+        # 1つ目のHTMLから共通スタイルを抽出
+        if not common_style:
+            style_match = re.search(r'<style>(.*?)</style>', html, re.DOTALL)
+            if style_match: common_style = style_match.group(1)
+            
+        body_match = re.search(r'<body>(.*?)</body>', html, re.DOTALL)
+        if body_match:
+            bc = body_match.group(1)
+            uid = f"_{i}"
+            
+            # 個別レポート用のコントロールパネルを削除
+            bc = re.sub(r'<div class="controls no-print">.*?</button>\s*</div>', '', bc, flags=re.DOTALL)
+            
+            # 2件目以降は、長文になる解説（description）と補足（help-text）をHTMLから完全に削除して圧縮
+            if i > 0:
+                bc = re.sub(r'<div class="description".*?</div>', '', bc, flags=re.DOTALL)
+                bc = re.sub(r'<span class="help-text">.*?</span>', '', bc, flags=re.DOTALL)
+            
+            # タブIDとJS関数名の置換（複数IP間でタブ切り替えが干渉しないようにUIDを付与）
+            bc = bc.replace('id="tab-', f'id="tab{uid}-')
+            bc = bc.replace('id="btn-tab-', f'id="btn-tab{uid}-')
+            bc = bc.replace("openTab(event, 'tab-", f"openTab{uid}(event, 'tab{uid}-")
+            bc = bc.replace('function openTab(evt, tabId)', f'function openTab{uid}(evt, tabId)')
+            bc = bc.replace('openTab(null, ', f'openTab{uid}(null, ')
+            bc = re.sub(r"openTab\{uid\}\(null,\s*'tab-(.*?)'\);", rf"openTab{uid}(null, 'tab{uid}-\1');", bc)
+            
+            # DOM取得スコープの限定
+            bc = bc.replace('document.getElementsByClassName("tab-content")', f'document.getElementById("report-wrapper{uid}").getElementsByClassName("tab-content")')
+            bc = bc.replace('document.getElementsByClassName("tab-button")', f'document.getElementById("report-wrapper{uid}").getElementsByClassName("tab-button")')
+            
+            # 個別印刷イベントの削除
+            bc = re.sub(r'window\.onbeforeprint\s*=\s*function\(\)\s*\{.*?\};', '', bc, flags=re.DOTALL)
+            bc = re.sub(r'window\.onafterprint\s*=\s*function\(\)\s*\{.*?\};', '', bc, flags=re.DOTALL)
+            
+            toc_links.append(f"<li><a href='#target{uid}' style='text-decoration: none; color: #1e3a8a; font-weight: bold;'>{clean_ip}</a></li>")
+            
+            # 重複するH2見出しを削除し、目次からのアンカー用divのみを配置
+            combined_body += f"""
+            <div id='target{uid}' style='margin-bottom: 60px; padding-bottom: 20px; border-bottom: 3px dashed #ccc; page-break-inside: avoid;'>
+                <div id='report-wrapper{uid}'>{bc}</div>
+            </div>
+            """
+
+    if not combined_body: return None
+    
+    # 統合用の追加CSSと印刷制御JS
+    common_style += """
+        body { background-color: #f0f2f5; }
+        .main-container { background-color: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 900px; margin: 0 auto; }
+        .toc { background-color: #e3f2fd; padding: 20px; border-radius: 5px; margin-bottom: 40px; border: 1px solid #bbdefb; }
+        .toc h2 { margin-top: 0; color: #1565c0; font-size: 22px; border-bottom: 2px solid #1565c0; padding-bottom: 5px; }
+        .toc ul { column-count: 2; list-style-type: none; padding-left: 0; }
+        .toc li { margin-bottom: 8px; padding: 5px; background: white; border-radius: 3px; border: 1px solid #ddd; text-align: center; }
+        .toc li:hover { background: #bbdefb; }
+        .combined-controls { background: #e3f2fd; padding: 15px; border-radius: 5px; border: 1px solid #bbdefb; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
+        .combined-controls label { font-size: 14px; cursor: pointer; font-weight: bold; color: #1565c0; margin-right: 15px; display: inline-block; }
+        .combined-controls button { padding: 10px 20px; font-size: 14px; font-weight: bold; background-color: #1e3a8a; color: white; border: none; border-radius: 5px; cursor: pointer; transition: 0.3s; }
+        .combined-controls button:hover { background-color: #1565c0; }
+        @media print {
+            body { background-color: white; }
+            .main-container { box-shadow: none; padding: 0; max-width: 100%; }
+            .toc { page-break-after: always; }
+        }
+    """
+    
+    combined_js = """
+    <script>
+        window.onbeforeprint = function() {
+            let tabcontents = document.getElementsByClassName("tab-content");
+            for (let j = 0; j < tabcontents.length; j++) { tabcontents[j].style.display = "block"; }
+        };
+    </script>
+    """
+
+    full_combined_html = f"""
+    <!DOCTYPE html>
+    <html lang="ja">
+    <head>
+        <meta charset="UTF-8">
+        <title>Combined IP-OSINT Report</title>
+        <style>{common_style}</style>
+    </head>
+    <body>
+        <div class="main-container">
+            <h1 style="text-align: center; color: #333; font-size: 28px; margin-bottom: 30px;">🔎 統合 IP-OSINT 調査レポート</h1>
+            
+            <div class="combined-controls no-print">
+                <div>
+                    <label><input type="checkbox" checked onchange="document.body.classList.toggle('hide-desc', !this.checked)"> 解説・ヘルプテキストを表示</label>
+                    <label><input type="checkbox" checked onchange="document.body.classList.toggle('hide-hl', !this.checked)"> JSONのハイライトを有効化</label>
+                    <label><input type="checkbox" onchange="document.body.classList.toggle('compress-json', this.checked)"> 生データ(JSON)を圧縮表示</label>
+                </div>
+                <button onclick="window.print()">🖨️ この統合レポートを一括印刷する</button>
+            </div>
+
+            <div class="toc no-print">
+                <h2>📑 目次 (Target List)</h2>
+                <ul>{''.join(toc_links)}</ul>
+            </div>
+            {combined_body}
+        </div>
+        {combined_js}
+    </body>
+    </html>
+    """
+    return full_combined_html
+
 def display_results(results, current_mode_full_text, display_mode):
     st.markdown("### 📝 検索結果")
 
@@ -2176,7 +2288,7 @@ def display_results(results, current_mode_full_text, display_mode):
     with st.expander("⚠️ 判定アイコンと表示ルールについて"):
         st.info("""
         ### 🔍 判定ロジックの概要
-        本ツールは、起動時に取得する**最新のTorノードリスト**および、**IP2Proxy (IP2Location.io) 専門データベース**とのAPI連携により、通信主体の属性を判定しています。
+        本ツールは、起動時に取得する**最新のTorノードリスト**および、**VPNAPI.io 専門データベース**とのAPI連携により、通信主体の属性を判定しています。
         
         インターネット上の通信は、その用途に応じて「個人宅・法人拠点からの直接接続」と「非対面的な中継・ホスティング経由の接続」に大別されます。本機能は後者を検知し、調査の優先順位判断を支援することを目的としています。
         
@@ -2210,7 +2322,7 @@ def display_results(results, current_mode_full_text, display_mode):
             
         ---
         
-        ※ IP2Proxyの設定がされていない場合は、Tor判定のみを行います。
+        ※ VPNAPI.ioの設定がされていない場合は、Tor判定のみを行います。
         """)
 
     if not results:
@@ -2307,8 +2419,53 @@ def display_results(results, current_mode_full_text, display_mode):
 
     # --- 4. 選択された全ターゲットに対してレポートを表示 ---
     if target_results:
-        # 進捗状況を可視化するためのプログレスバー（オプション）
         total_selected = len(target_results)
+
+        # 📦 一括ダウンロードボタン (複数選択時のみ表示)
+        if total_selected > 1:
+            st.markdown("##### 📦 複数レポート一括ダウンロード")
+            col_btn1, col_btn2 = st.columns(2)
+            
+            # 1. 統合レポート(HTML)の生成
+            combined_html = generate_combined_html_report(target_results)
+            
+            # 2. ZIPファイルの生成
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+                valid_reports_count = 0
+                for res in target_results:
+                    target_ip = res.get('Target_IP', 'N/A')
+                    clean_ip = get_copy_target(target_ip)
+                    html_report = generate_individual_html_report(res, clean_ip)
+                    if html_report:
+                        safe_filename = re.sub(r'[\\/*?:"<>|]', "_", clean_ip)
+                        zip_file.writestr(f"Report_{safe_filename}.html", html_report.encode('utf-8'))
+                        valid_reports_count += 1
+            
+            if valid_reports_count > 0:
+                current_time = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                
+                with col_btn1:
+                    st.download_button(
+                        label=f"📜 {valid_reports_count} 件を1つの統合レポート(HTML)で保存",
+                        data=combined_html.encode('utf-8') if combined_html else "",
+                        file_name=f"Combined_Report_{current_time}.html",
+                        mime="text/html",
+                        type="primary",
+                        width="stretch",
+                        help="選択した全件のレポートが1つのWebページに目次付きでまとまります。閲覧や共有に最も便利です。"
+                    )
+                with col_btn2:
+                    st.download_button(
+                        label=f"🗜️ {valid_reports_count} 件の個別レポートをZIPで保存",
+                        data=zip_buffer.getvalue(),
+                        file_name=f"Whois_Reports_Batch_{current_time}.zip",
+                        mime="application/zip",
+                        type="secondary",
+                        width="stretch",
+                        help="各IPごとに独立したHTMLファイルを作成し、ZIPに圧縮してダウンロードします。"
+                    )
+            st.divider()
         
         for i, res in enumerate(target_results):
             target_ip = res.get('Target_IP', 'N/A')
@@ -2570,17 +2727,17 @@ def main():
             else:
                 pro_api_key = st.text_input("ipinfo.io API Key", type="password", key="input_ipinfo", help="入力するとipinfo.ioの高精度データベースを使用します。空欄の場合はip-api.comを使用します。").strip()
 
-            # 2. IP2Proxy (IP2Location.io) の設定
-            ip2proxy_api_key = ""
-            if HARDCODED_IP2PROXY_KEY:
-                use_hc_ip2p = st.checkbox("埋め込みキー (IP2Proxy) を使用", value=True, help="オフにすると、埋め込まれたAPIキーを無効化し、空欄または手動入力モードに切り替えます。")
-                if use_hc_ip2p:
-                    ip2proxy_api_key = HARDCODED_IP2PROXY_KEY
-                    st.success(f"✅ IP2Proxy Key Loaded: {ip2proxy_api_key[:4]}***")
+            # 2. VPNAPI.io の設定
+            vpnapi_key = ""
+            if HARDCODED_VPNAPI_KEY:
+                use_hc_vpnapi = st.checkbox("埋め込みキー (VPNAPI.io) を使用", value=True, help="オフにすると、埋め込まれたAPIキーを無効化し、空欄または手動入力モードに切り替えます。")
+                if use_hc_vpnapi:
+                    vpnapi_key = HARDCODED_VPNAPI_KEY
+                    st.success(f"✅ VPNAPI Key Loaded: {vpnapi_key[:4]}***")
                 else:
-                    ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力することで、IPアドレスの匿名通信判定を取得します。").strip()    
+                    vpnapi_key = st.text_input("VPNAPI.io API Key", type="password", key="input_vpnapi", help="VPNAPI.ioのAPIキーを入力することで、IPアドレスの匿名通信判定を取得します。").strip()    
             else:
-                ip2proxy_api_key = st.text_input("IP2Proxy API Key", type="password", key="input_ip2p", help="IP2Proxy Web ServiceのAPIキーを入力することで、IPアドレスの匿名通信判定を取得します。").strip()    
+                vpnapi_key = st.text_input("VPNAPI.io API Key", type="password", key="input_vpnapi", help="VPNAPI.ioのAPIキーを入力することで、IPアドレスの匿名通信判定を取得します。").strip()
 
             # 3. SecurityTrails の設定
             st_api_key = ""
@@ -2685,8 +2842,8 @@ def main():
                 - **メリット**: VPN/Proxy/Hostingの判定精度が劇的に向上し、企業名の特定精度も高まります。
                 - **注意**: データプランの種類（無料プラン、有料プラン）やAPIの利用状況に応じて、提供される情報の項目が異なり、無料版は、地理的位置情報やISP情報などの基本的なデータに限定されます。
                         
-            - **🕵️ 匿名通信判定 (IP2Proxy Key)**
-                - **メリット**: VPN、Proxy、Tor等の利用が疑われる不審なIPに対し、IP2Location.ioの専門データベースから「匿名通信該当結果」を自動取得します。
+            - **🕵️ 匿名通信判定 (VPNAPI.io Key)**
+                - **メリット**: VPN、Proxy、Tor等の利用が疑われる不審なIPに対し、VPNAPI.ioの専門データベースから「匿名通信該当結果」を自動取得します。
 
             - **📜 過去のDNS履歴取得 (SecurityTrails Key)**
                 - **メリット**: ドメイン（FQDN）を入力した際、WAF（Cloudflare等）で秘匿される前の過去の生IP（オリジンサーバー）や、紐づいていたIPアドレスの変遷を取得できます。
@@ -2758,7 +2915,7 @@ def main():
                 - **特徴**: 厳密。各地域のレジストリに登録された組織名を特定します。
             - **インフラ紐付け (rDNS/PTR)**: 
                 - **役割**: 「そのIPにはどんなホスト名が付いているか？」を特定。Windowsの `nslookup` の制限を回避するため、専用のリゾルバを用いて全レコードを抽出します。
-            - **匿名性判定 (IP2Proxy)**: 
+            - **匿名性判定 (VPNAPI.io)**: 
                 - **役割**: 「そのIPは意図的に隠蔽（VPN/Proxy等）されているか？」を答えます。
                 - **特徴**: 不審な判定時に専門DBから詳細なJSONを取得します。
             - **レコード履歴特定 (SecurityTrails)**: 
@@ -2814,7 +2971,7 @@ def main():
             **Q. 各種APIキーはどこで手に入りますか？**\n
             A. 本ツールで利用可能な高度判定用APIキーは、以下の公式サイトから無料で登録・取得できます（いずれも無料枠が存在します）。
             * **高精度判定 (ipinfo)**: [ipinfo.io サインアップ](https://ipinfo.io/signup)
-            * **匿名通信判定 (IP2Proxy)**: [IP2Location.io サインアップ](https://www.ip2location.io/sign-up)
+            * **匿名通信判定 (VPNAPI.io)**: [VPNAPI.io サインアップ](https://vpnapi.io/signup)
             * **過去のDNS履歴取得 (SecurityTrails)**: [SecurityTrails サインアップ](https://securitytrails.com/app/signup)
 
             **Q. ISP名と [RDAP: 〇〇] の名前が違うのですが？**\n
@@ -2860,19 +3017,17 @@ def main():
     st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🌸アップデート情報 (令和８年３月６日) - 各種API連携・レポート出力の実装・UI変更 🌸", expanded=False):
+    with st.expander("🌸アップデート情報 (令和８年３月９日) - VPNAPI.io連携 🌸", expanded=False):
         st.markdown("""
         **Update:**\n
-        **🕵️ 匿名通信判定 (IP2Proxy / IP2Location.io 連携)**: 
+        **🕵️ 匿名通信判定 (VPNAPI.io 連携)**: 
         * VPN、Proxy、Tor、データセンター等の利用を専門データベースで照合可能になりました。不審なIPを検知した際、自動で「匿名通信判定情報」を取得します。\n
-        **📜 過去のDNS履歴取得 (SecurityTrails 連携)**: 
-        * ドメインを入力した際、対象ドメインに過去紐付いていたIPアドレス（A/AAAAレコード）の変遷をSecurityTrails APIから自動取得可能になりました。\n
-        **🔄 高精度IP逆引き (dnspython 連携)**: 
-        * IPアドレスからホスト名を特定する「逆引き」機能を実装。Windows標準コマンドの制限（複数レコードの欠落）を克服するため、専用ライブラリによる直接クエリを採用しました。これに伴い、DNSクエリのタイムアウトを防ぐ**「動的負荷調整ロジック（自動シングルスレッド化）」**を搭載しています。\n
-        **📄 詳細レポート (HTML)**:
-        * RDAP、ipinfo、IP2Proxy、SecurityTrailsに加え、逆引き結果も一つのHTMLファイルに集約。タブ切り替えによるシームレスな閲覧と、書類提出に最適な「一括印刷機能」を搭載しました。 \n
-        **🔎 検索一覧ビューのUIデザイン変更**:
-        * 行クリック、または「国別」「ISP別」フィルタで対象を絞り込み、ヒットした全件分の調査リンクとレポートDLボタンを表示させます。            
+        * これまでは、IP2Proxyの無料版APIを使用していましたが、VPNAPI.ioのAPIに切り替えることで、より詳細な判定結果と高い精度を実現しています。\n
+        **🗜️ 個別調査レポート(HTML)のZIP一括ダウンロード機能**: 
+        * 複数のターゲットを選択した際、生成された全てのHTMLレポートを1つのZIPファイルに圧縮して一括ダウンロードできるようになりました。大量のIP調査時における手作業の負担を大幅に軽減します。\n
+        **🛡️ RDAP・逆引き実行時の安全装置とUI最適化**: 
+        * 公式レジストリ(RDAP)への過剰な連続アクセスによる制限（HTTP 429エラー等）を防ぐため、RDAP有効時は自動的に「単一スレッド / 5秒待機」の安全モードで動作するよう改修しました。\n
+        * また、RDAPやIP逆引き(rDNS)のオプション有効時は、設定の競合を防ぐために「API処理モード(速度設定)」の選択UIが自動で非表示となり、現在の制限状態が明示されるよう設計を見直しました。            
         """)
     # ------------------------------------------------
     # タブを使って入力モードを切り替え、画面を広く使う
@@ -3148,6 +3303,17 @@ def main():
     # 設定エリアをExpanderに格納し、デフォルトで閉じておく
     with st.expander("⚙️ 検索表示・解析オプション (クリックして展開)", expanded=False):
         col_set1, col_set2 = st.columns(2)
+        
+        # UIの評価順序を制御するため、先に右カラム(col_set2)のチェックボックスを定義する
+        with col_set2:
+            st.markdown("**解析モード:** (追加の解析オプションを選択)")
+            # InternetDBオプション
+            use_internetdb_option = st.checkbox("IoTリスク検知 (InternetDBを利用)", value=True, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。不要な場合はオフにすることで処理を最適化できます。")
+            # RDAPオプション
+            use_rdap_option = st.checkbox("公式レジストリ情報 (RDAP公式台帳の併用 - 5秒待機)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。アクセス制限を避けるため処理速度が固定されます。")
+            # 逆引き(rDNS)オプション
+            use_rdns_option = st.checkbox("IP逆引き (Reverse DNS - dnspython)", value=False, help="対象IPアドレスに対してdnspythonを実行し、ホスト名(PTRレコード)を取得して詳細レポートに追加します。")
+
         with col_set1:
             display_mode = st.radio(
                 "**表示モード:** (検索結果の表示形式とAPI使用有無を設定)",
@@ -3156,35 +3322,37 @@ def main():
                 horizontal=False
             )
             st.markdown("---") 
-            # 1. API 処理モードの選択
-            api_mode_options = list(MODE_SETTINGS.keys()) + ["カスタム設定 (任意調整)"]
-            api_mode_selection = st.radio(
-                "**API 処理モード:** (速度と安定性のトレードオフ)",
-                api_mode_options,
-                key="api_mode_radio",
-                horizontal=False
-            )
-            # 2. 変数の確定ロジック (KeyError 回避策)
-            if api_mode_selection == "カスタム設定 (任意調整)":
-                st.markdown("---")
-                max_workers = st.slider("並列スレッド数 (同時処理数)", 1, 5, 2, help="数を増やすと速くなりますが、API制限にかかりやすくなります。")
-                delay_between_requests = st.slider("リクエスト間待機時間 (秒)", 0.1, 5.0, 1.5, 0.1, help="値を増やすほど安全ですが、検索に時間がかかります。")
+            
+            # RDAPまたはrDNSがオンの場合は、ユーザーに設定させずUI上で固定値を明示する
+            if use_rdap_option:
+                st.info("ℹ️ **RDAP有効時の制限**\n公式台帳のアクセス制限を回避するため、自動的に「単一スレッド / 5秒待機」に固定されます。速度を優先する場合は右側のチェックを外してください。")
+                max_workers = 1
+                delay_between_requests = 5.0
+            elif use_rdns_option:
+                st.info("ℹ️ **逆引き(rDNS)有効時の制限**\nDNSクエリの競合を防ぐため、自動的に「単一スレッド / 2秒待機」に固定されます。速度を優先する場合は右側のチェックを外してください。")
+                max_workers = 1
+                delay_between_requests = 2.0
             else:
-                selected_settings = MODE_SETTINGS[api_mode_selection]
-                max_workers = selected_settings["MAX_WORKERS"]
-                delay_between_requests = selected_settings["DELAY_BETWEEN_REQUESTS"]
+                # 1. API 処理モードの選択
+                api_mode_options = list(MODE_SETTINGS.keys()) + ["カスタム設定 (任意調整)"]
+                api_mode_selection = st.radio(
+                    "**API 処理モード:** (速度と安定性のトレードオフ)",
+                    api_mode_options,
+                    key="api_mode_radio",
+                    horizontal=False
+                )
+                # 2. 変数の確定ロジック (KeyError 回避策)
+                if api_mode_selection == "カスタム設定 (任意調整)":
+                    st.markdown("---")
+                    max_workers = st.slider("並列スレッド数 (同時処理数)", 1, 5, 2, help="数を増やすと速くなりますが、API制限にかかりやすくなります。")
+                    delay_between_requests = st.slider("リクエスト間待機時間 (秒)", 0.1, 5.0, 1.5, 0.1, help="値を増やすほど安全ですが、検索に時間がかかります。")
+                else:
+                    selected_settings = MODE_SETTINGS[api_mode_selection]
+                    max_workers = selected_settings["MAX_WORKERS"]
+                    delay_between_requests = selected_settings["DELAY_BETWEEN_REQUESTS"]
             
             # 3. 共通定数の設定
             rate_limit_wait_seconds = RATE_LIMIT_WAIT_SECONDS
-            
-        with col_set2:
-            st.markdown("**解析モード:** (追加の解析オプションを選択)")
-            # InternetDBオプション
-            use_internetdb_option = st.checkbox("IoTリスク検知 (InternetDBを利用)", value=True, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。不要な場合はオフにすることで処理を最適化できます。")
-            # RDAPオプション
-            use_rdap_option = st.checkbox("公式レジストリ情報 (RDAP公式台帳の併用 - 低速)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。通信が増えるため処理が遅くなります。")
-            # 逆引き(rDNS)オプション
-            use_rdns_option = st.checkbox("IP逆引き (Reverse DNS - dnspython)", value=False, help="対象IPアドレスに対してdnspythonを実行し、ホスト名(PTRレコード)を取得して詳細レポートに追加します。")
 
     mode_mapping = {
         "標準モード": "標準モード (1ターゲット = 1行)",
@@ -3218,10 +3386,10 @@ def main():
     else:
         st.success("🔑 **IPinfo Pro Active:** 高精度なISP情報・地理位置を取得します。")
 
-    if not ip2proxy_api_key:
-        st.warning("⚠️ **IP2Proxy Inactive:** 未設定時はTorノードのみを検知し、それ以外のプロキシ/VPN判定は空欄となります。高精度な判定が必要な場合はAPIキーを設定してください。")
+    if not vpnapi_key:
+        st.warning("⚠️ **VPNAPI.io Inactive:** 未設定時はTorノードのみを検知し、それ以外のプロキシ/VPN判定は空欄となります。高精度な判定が必要な場合はAPIキーを設定してください。")
     else:
-        st.success("🕵️ **IP2Proxy Evidence Active:** 不審判定時に自動で匿名通信判定結果を取得します。")
+        st.success("🕵️ **VPNAPI.io Evidence Active:** 不審判定時に自動で匿名通信判定結果を取得します。")
 
     if not use_internetdb_option:
         st.caption("※ **IoT Check Inactive:** IoT/脆弱性リスク検知はスキップされます。")
@@ -3313,17 +3481,22 @@ def main():
                     cidr_cache_snapshot = st.session_state.cidr_cache.copy() 
                     learned_isps_snapshot = st.session_state.learned_proxy_isps.copy()
                     
-                    # --- 逆引き(rDNS)有効時の動的負荷調整 (安全装置) ---
+                    # --- 各種オプション有効時の動的負荷調整 (安全装置) ---
                     current_max_workers = max_workers
                     current_delay = delay_between_requests
                     
-                    if use_rdns_option:
+                    if use_rdap_option:
+                        # RDAPエンドポイントの厳格なアクセス制限(429エラー)を回避するため強制保護
+                        current_max_workers = 1
+                        if current_delay < 5.0:
+                            current_delay = 5.0
+                        st.info("ℹ️ RDAP公式台帳のアクセス制限を回避するため、安全モード（シングルスレッド/最低5秒待機）で実行中...")
+                    elif use_rdns_option:
                         # DNSクエリの競合とタイムアウトを防ぐため強制的にシングルスレッド化
                         current_max_workers = 1 
-                        # 待機時間が短い場合は、安全のために最低2.0秒まで引き上げる
                         if current_delay < 2.0:
                             current_delay = 2.0
-                        st.info("ℹ️ 逆引き精度向上のため、負荷調整モード（シングルスレッド/待機延長）で実行中...")
+                        st.info("ℹ️ 逆引き精度向上のため、負荷調整モード（シングルスレッド/最低2秒待機）で実行中...")
 
                     with ThreadPoolExecutor(max_workers=current_max_workers) as executor:
                         future_to_ip = {
@@ -3339,7 +3512,7 @@ def main():
                                 use_internetdb_option,
                                 use_rdns_option,
                                 pro_api_key,
-                                ip2proxy_api_key,
+                                vpnapi_key,
                                 st_api_key,
                                 st_start_date,
                                 st_end_date
@@ -3496,9 +3669,10 @@ def main():
                     ip_col = st.session_state['ip_column_name']
                     
                     df_for_analysis['国名'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('Country_JP', 'N/A'))
+                    df_for_analysis['Whois結果（元データ）'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('ISP', 'N/A'))
                     df_for_analysis['Whois結果（日本語名称）'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('ISP_JP', 'N/A'))
-                    df_for_analysis['RDAP結果（日本語名称）'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('RDAP_JP', 'N/A'))
                     df_for_analysis['RDAP結果（元データ）'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('RDAP_Name_Raw', 'N/A'))
+                    df_for_analysis['RDAP結果（日本語名称）'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('RDAP_JP', 'N/A'))
                     df_for_analysis['プロキシ種別'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('Proxy_Type', ''))
                     df_for_analysis['IoTリスク'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('IoT_Risk', 'N/A'))
                     df_for_analysis['ステータス'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('Status', 'N/A'))
@@ -3509,9 +3683,10 @@ def main():
                         temp_rows.append({
                             '対象IP/Domain': t,
                             '国名': info.get('Country_JP', 'N/A'),
+                            'Whois結果（元データ）': info.get('ISP', 'N/A'),
                             'Whois結果（日本語名称）': info.get('ISP_JP', 'N/A'),
-                            'RDAP結果（日本語名称）': info.get('RDAP_JP', 'N/A'),
                             'RDAP結果（元データ）': info.get('RDAP_Name_Raw', 'N/A'),
+                            'RDAP結果（日本語名称）': info.get('RDAP_JP', 'N/A'),
                             'プロキシ種別': info.get('Proxy_Type', ''),
                             'IoTリスク': info.get('IoT_Risk', 'N/A'),
                             'ステータス': info.get('Status', 'N/A')
