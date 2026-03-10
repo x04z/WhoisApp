@@ -601,6 +601,34 @@ def get_securitytrails_data(domain, api_key, start_date=None, end_date=None):
 
     return None
 
+# SecurityTrails API取得関数 (Reverse IP / ドメイン逆検索)
+def get_securitytrails_reverse_ip(ip, api_key):
+    """ SecurityTrails APIを使用してIPアドレスに紐づくドメイン群を取得する """
+    if not api_key or not ip:
+        return None
+    
+    headers = {
+        "APIKEY": api_key,
+        "accept": "application/json",
+        "content-type": "application/json"
+    }
+    
+    # IPv4かIPv6かでフィルタのキーを分岐
+    ip_key = "ipv4" if is_ipv4(ip) else "ipv6"
+    payload = {
+        "filter": {
+            ip_key: ip
+        }
+    }
+    
+    try:
+        url = "https://api.securitytrails.com/v1/domains/list"
+        res = session.post(url, headers=headers, json=payload, timeout=10)
+        res.raise_for_status()
+        return res.json()
+    except Exception:
+        return None
+
 # Shodan InternetDB API Logic (No API Key Required)
 def check_internetdb_risk(ip, max_retries=3):
     """
@@ -736,7 +764,7 @@ def resolve_ip_nslookup(ip):
     return hostnames, raw_output
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, api_key=None, vpnapi_key=None, st_api_key=None, st_start_date=None, st_end_date=None):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, use_st_reverse_ip, api_key=None, vpnapi_key=None, st_api_key=None, st_start_date=None, st_end_date=None):
 
     actual_ip = extract_actual_ip(ip)
     
@@ -749,7 +777,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
         'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
         'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
-        'Proxy_Type': ''
+        'Proxy_Type': '', 'ST_REVERSE_IP_JSON': None
     }
     new_cache_entry = None
     new_learned_isp = None
@@ -862,6 +890,10 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         if use_rdns:
             rdns_hosts, rdns_raw = resolve_ip_nslookup(actual_ip)
             if rdns_raw: result['RDNS_DATA'] = {'hosts': rdns_hosts, 'raw': rdns_raw}
+
+        if use_st_reverse_ip and st_api_key:
+            st_rev_res = get_securitytrails_reverse_ip(actual_ip, st_api_key)
+            if st_rev_res: result['ST_REVERSE_IP_JSON'] = st_rev_res
 
         if use_internetdb:
             result['IoT_Risk'] = check_internetdb_risk(actual_ip)
@@ -2034,6 +2066,57 @@ def generate_individual_html_report(res, clean_ip):
         """
         contents_html += st_content
 
+    # --- 8.5 SecurityTrails (Reverse IP) ---
+    st_rev_json = res.get('ST_REVERSE_IP_JSON')
+    if st_rev_json:
+        tab_id = "tab-st-revip"
+        if not first_tab_id: first_tab_id = tab_id
+        tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">Reverse IP</button>\n'
+        
+        records = st_rev_json.get("records", [])
+        total_records = st_rev_json.get("meta", {}).get("total_records", len(records))
+        
+        rev_html_rows = ""
+        for rec in records:
+            hostname = html.escape(rec.get("hostname", ""))
+            if hostname:
+                rev_html_rows += f"<tr><td><strong>{hostname}</strong></td></tr>"
+                
+        if not rev_html_rows:
+            rev_html_rows = "<tr><td style='text-align:center;'>紐づくドメインは見つかりませんでした。</td></tr>"
+            
+        raw_json_str_rev = json.dumps(st_rev_json, indent=4, ensure_ascii=False)
+        escaped_json_rev = html.escape(raw_json_str_rev)
+        
+        # JSONハイライト機能の追加："hostname" の行を対象にする
+        import re
+        simple_pattern_rev = r'("(?:hostname)":\s*".*?")'
+        escaped_json_rev = re.sub(simple_pattern_rev, r'<span class="json-hl">\1</span>', escaped_json_rev)
+        
+        rev_content = f"""
+        <div id="{tab_id}" class="tab-content">
+            <h1 class="theme-ip2proxy" style="color: #0288d1; border-color: #0288d1;">Reverse IP 検索結果 (SecurityTrails)</h1>
+            <div class="description" style="background-color: #e1f5fe; border-color: #81d4fa;">
+                <strong>Reverse IP Lookup：</strong><br>
+                対象のIPアドレスがA/AAAAレコードとして設定されているドメイン群を、SecurityTrailsのPassive DNSデータベースから逆引き検索した結果を示す。同一インフラに同居している他のサービス群の特定に利用する。
+            </div>
+            <h2>対象IPアドレス及び取得結果</h2>
+            <table>
+                <tr><th>対象IPアドレス<br>(Target IP)</th><td><strong>{clean_ip}</strong></td></tr>
+                <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                <tr><th>ヒット総数<br>(Total Records)</th><td><strong>{total_records} 件</strong> (※最大100件表示)</td></tr>
+            </table>
+            <h2>紐づくドメイン一覧</h2>
+            <table>
+                <tr><th>ドメイン名 (Hostname)</th></tr>
+                {rev_html_rows}
+            </table>
+            <h2>参照元データ (JSON形式)</h2>
+            <div class="raw-data">{escaped_json_rev}</div>
+        </div>
+        """
+        contents_html += rev_content
+
     # --- 9. rDNS ---
     if rdns_raw:
         tab_id = "tab-rdns"
@@ -3021,9 +3104,11 @@ def main():
     st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🌸アップデート情報 (令和８年３月９日) - VPNAPI.io連携 🌸", expanded=False):
+    with st.expander("🌸アップデート情報 (令和８年３月１０日) - VPNAPI.io連携・パッシブDNSを用いた逆引き検索 🌸", expanded=False):
         st.markdown("""
         **Update:**\n
+        ** 📜 過去のDNS履歴取得 (SecurityTrails 連携)**:
+        * パッシブDNSを用いたReverse IP（逆引きドメイン一括検索）などの機能を追加しました。SecurtyTrailsのAPIを利用して、ドメインに紐づいていた過去のIPアドレスの履歴を取得できるようになりました。これにより、WAF等で現在のIPが秘匿されている場合でも、過去の生IP（オリジンサーバー）を特定できる可能性が高まります。\n
         **🕵️ 匿名通信判定 (VPNAPI.io 連携)**: 
         * VPN、Proxy、Tor、データセンター等の利用を専門データベースで照合可能になりました。不審なIPを検知した際、自動で「匿名通信判定情報」を取得します。\n
         * これまでは、IP2Proxyの無料版APIを使用していましたが、VPNAPI.ioのAPIに切り替えることで、より詳細な判定結果と高い精度を実現しています。\n
@@ -3317,6 +3402,13 @@ def main():
             use_rdap_option = st.checkbox("公式レジストリ情報 (RDAP公式台帳の併用 - 5秒待機)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。アクセス制限を避けるため処理速度が固定されます。")
             # 逆引き(rDNS)オプション
             use_rdns_option = st.checkbox("IP逆引き (Reverse DNS - dnspython)", value=False, help="対象IPアドレスに対してdnspythonを実行し、ホスト名(PTRレコード)を取得して詳細レポートに追加します。")
+            # SecurityTrails Reverse IPオプション
+            use_st_reverse_ip = st.checkbox(
+                "Reverse IP (SecurityTrails API)", 
+                value=False, 
+                disabled=not bool(st_api_key), 
+                help="SecurityTrails APIを使用し、対象IPに紐づくドメイン群を逆検索します。※APIキーの設定が必要です。"
+            )
 
         with col_set1:
             display_mode = st.radio(
@@ -3515,6 +3607,7 @@ def main():
                                 use_rdap_option,
                                 use_internetdb_option,
                                 use_rdns_option,
+                                use_st_reverse_ip,
                                 pro_api_key,
                                 vpnapi_key,
                                 st_api_key,
