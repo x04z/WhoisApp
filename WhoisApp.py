@@ -3779,11 +3779,11 @@ def main():
                         info = result_lookup.get(t, {})
                         temp_rows.append({
                             '対象IP/Domain': t,
-                            '国名': info.get('Country_JP', 'N/A'),
                             'Whois結果（元データ）': info.get('ISP', 'N/A'),
                             'Whois結果（日本語名称）': info.get('ISP_JP', 'N/A'),
                             'RDAP結果（元データ）': info.get('RDAP_Name_Raw', 'N/A'),
                             'RDAP結果（日本語名称）': info.get('RDAP_JP', 'N/A'),
+                            '国名': info.get('Country_JP', 'N/A'),
                             'プロキシ種別': info.get('Proxy_Type', ''),
                             'IoTリスク': info.get('IoT_Risk', 'N/A'),
                             'ステータス': info.get('Status', 'N/A')
@@ -3846,11 +3846,11 @@ def main():
                     csv_display = pd.DataFrame(display_res).astype(str)
                     rename_map = {
                         'Target_IP': 'IPアドレス',
-                        'Country_JP': '国名', 
                         'ISP_API_Raw': 'Whois(元データ)',
                         'ISP_JP': 'Whois(日本語名)',
                         'RDAP_Name_Raw': 'RDAP(元データ)',
                         'RDAP_JP': 'RDAP(日本語名)',
+                        'Country_JP': '国名', 
                         'Proxy_Type': 'Proxy種別',
                         'IoT_Risk': 'IoTリスク',
                         'Status': 'ステータス'
