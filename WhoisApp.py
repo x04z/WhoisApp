@@ -184,8 +184,6 @@ TLD_INFO = {
 }
 
 # --- ISP名称の日本語マッピング (企業名統一版) ---
-
-# --- ISP名称の日本語マッピング (企業名統一版) ---
 ISP_JP_NAME = {
     # --- NTT Group ---
     'NTT Communications Corporation': 'NTTドコモビジネス株式会社', 
