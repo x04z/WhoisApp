@@ -297,6 +297,82 @@ def fetch_disposable_domains():
         pass
     return set()
 
+# --- 捨てアド (Disposable Email) 検知用グローバル辞書 ---
+DISPOSABLE_MX_SERVICES = {
+    'sute.jp': '捨てメアド (メルアドぽいぽい)',
+    'erinn.biz': '捨てメアド (メルアドぽいぽい)',
+    'kuku.lu': '捨てメアド (メルアドぽいぽい)',
+    'instaddr.com': '捨てメアド (メルアドぽいぽい)',
+    'instaddr.jp': '捨てメアド (メルアドぽいぽい)',
+    'm.miril.jp': '捨てメアド (メルアドぽいぽい)',
+    '10minutemail': '10 Minute Mail',
+    'guerrillamail': 'Guerrilla Mail',
+    'temp-mail': 'Temp Mail',
+    'nada.email': 'Nada / Tmpmail',
+    'maildrop.cc': 'Maildrop',
+    'yopmail.com': 'YOPmail',
+    'tempmail.plus': 'Temp Mail Plus',
+    '1secmail.com': '1SecMail',
+    'throwawaymail.com': 'Throwaway Mail',
+    'tempmail.org': 'Temp-Mail.org',
+    'mail.tm': 'Mail.tm',
+    'sharklasers.com': 'Guerrilla Mail',
+    'dispostable.com': 'Dispostable',
+    'getnada.com': 'Nada.email',
+    'mailinator.com': 'Mailinator',
+    'moakt.com': 'Moakt',
+    'tmails.net': 'T-Mails',
+    '33mail.com': '33mail',
+    'airmail.cc': 'Airmail',
+    'generator.email': 'Generator.email'
+}
+
+DISPOSABLE_DOMAIN_SERVICES = {
+    'instaddr.com': '捨てメアド (メルアドぽいぽい)',
+    'instaddr.jp': '捨てメアド (メルアドぽいぽい)',
+    'm.miril.jp': '捨てメアド (メルアドぽいぽい)',
+    '10minutemail.com': '10 Minute Mail',
+    '10minutemail.net': '10 Minute Mail',
+    'guerrillamail.com': 'Guerrilla Mail',
+    'mailinator.com': 'Mailinator',
+    'yopmail.com': 'YOPmail'
+}
+
+def check_disposable_domain(domain, nslookup_raw):
+    """ MXレコードやドメイン名から捨てアドサービスを検知し、特定されたサービス名のリストを返す """
+    dynamic_disposable_list = fetch_disposable_domains()
+    detected_services = []
+    raw_lower = nslookup_raw.lower() if nslookup_raw else ""
+    query_domain_lower = domain.lower()
+    
+    import re
+    mx_targets = re.findall(r'\bin\s+mx\s+\d+\s+(\S+)', raw_lower)
+    targets_to_check = mx_targets + [query_domain_lower]
+    
+    # 1. 既知の辞書を使った特定
+    for target in targets_to_check:
+        target = target.strip('.')
+        for pattern, service_name in DISPOSABLE_MX_SERVICES.items():
+            if pattern in target and service_name not in detected_services:
+                detected_services.append(service_name)
+        for pattern, service_name in DISPOSABLE_DOMAIN_SERVICES.items():
+            if pattern in target and service_name not in detected_services:
+                detected_services.append(service_name)
+                
+    # 2. 外部DB（GitHubリスト）による特定不可ドメインの捕捉
+    if not detected_services and dynamic_disposable_list:
+        for target in targets_to_check:
+            target = target.strip('.')
+            parts = target.split('.')
+            for i in range(len(parts) - 1): 
+                domain_to_check = '.'.join(parts[i:])
+                if domain_to_check in dynamic_disposable_list:
+                    label = f"外部DB検知 ({domain_to_check} / サービス名特定不可)"
+                    if label not in detected_services:
+                        detected_services.append(label)
+                    break 
+    return detected_services   
+
 def get_jp_names(english_isp, country_code):
     jp_country = COUNTRY_JP_NAME.get(country_code, country_code)
     
@@ -1069,7 +1145,11 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
 
     return result, new_cache_entry, new_learned_isp
 
-def get_domain_details(domain, st_api_key=None, st_start_date=None, st_end_date=None):
+def get_domain_details(domain, nslookup_raw="", st_api_key=None, st_start_date=None, st_end_date=None):
+
+    # 捨てアド検知を実行
+    detected_disposables = check_disposable_domain(domain, nslookup_raw)
+    proxy_type_val = f"⚠️ 捨てアド ({' / '.join(detected_disposables)})" if detected_disposables else "N/A (Domain)"
 
     # TLD情報辞書から公式レジストリのリンクと日本語名を動的生成
     tld_val = domain.split('.')[-1].lower() if '.' in domain else ""
@@ -1135,15 +1215,9 @@ def get_domain_details(domain, st_api_key=None, st_start_date=None, st_end_date=
         'Status': 'Success (Domain)',
         
         'RDAP': '', 'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
-        'Proxy_Type': 'N/A (Domain)',
-        'DOMAIN_RDAP_JSON': domain_rdap_json, 
-        'DOMAIN_RDAP_URL': domain_rdap_url, 
-        'ST_JSON': st_json, 
-        'RDNS_DATA': None,
-        'DOMAIN_WHOIS_TEXT': domain_whois_text,
-        'DOMAIN_WHOIS_SERVER': domain_whois_server,
-        'IP_WHOIS_TEXT': None,
-        'IP_WHOIS_SERVER': None
+        'Proxy_Type': proxy_type_val,
+        'DISPOSABLE_SERVICES': detected_disposables,
+        'DOMAIN_RDAP_JSON': domain_rdap_json,
     }
 
 def get_simple_mode_details(target):
@@ -1168,6 +1242,7 @@ def get_simple_mode_details(target):
         'Status': 'Success (簡易モード)',
         'RDAP': '', 'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
         'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
+        'DISPOSABLE_SERVICES': [],
         'DOMAIN_WHOIS_TEXT': None, 'DOMAIN_WHOIS_SERVER': None,
         'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None
     }
@@ -1893,89 +1968,10 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         ip_list_str = "<br>".join([html.escape(ip) for ip in nslookup_ips]) if nslookup_ips else "取得なし"
         
         # --- 捨てアド (Disposable Email) 検知ロジック ---
-        disposable_mx_services = {
-            # 日本最大手インフラ (メルアドぽいぽい / InstAddr)
-            'sute.jp': '捨てメアド (メルアドぽいぽい)',
-            'erinn.biz': '捨てメアド (メルアドぽいぽい)',
-            'kuku.lu': '捨てメアド (メルアドぽいぽい)',
-            'instaddr.com': '捨てメアド (メルアドぽいぽい)',
-            'instaddr.jp': '捨てメアド (メルアドぽいぽい)',
-            'm.miril.jp': '捨てメアド (メルアドぽいぽい)',
-
-            # その他海外定番
-            '10minutemail': '10 Minute Mail',
-            'guerrillamail': 'Guerrilla Mail',
-            'temp-mail': 'Temp Mail',
-            'nada.email': 'Nada / Tmpmail',
-            'maildrop.cc': 'Maildrop',
-            'yopmail.com': 'YOPmail',
-            'tempmail.plus': 'Temp Mail Plus',
-            '1secmail.com': '1SecMail',
-            'throwawaymail.com': 'Throwaway Mail',
-            'tempmail.org': 'Temp-Mail.org',
-            'mail.tm': 'Mail.tm',
-            'sharklasers.com': 'Guerrilla Mail',
-            'dispostable.com': 'Dispostable',
-            'getnada.com': 'Nada.email',
-            'mailinator.com': 'Mailinator',
-            'moakt.com': 'Moakt',
-            'tmails.net': 'T-Mails',
-            '33mail.com': '33mail',
-            'airmail.cc': 'Airmail',
-            'generator.email': 'Generator.email'
-        }
-
-        # ドメインそのものから特定するための追加辞書 (MXが引けなかった場合の保険)
-        disposable_domain_services = {
-            'instaddr.com': '捨てメアド (メルアドぽいぽい)',
-            'instaddr.jp': '捨てメアド (メルアドぽいぽい)',
-            'm.miril.jp': '捨てメアド (メルアドぽいぽい)',
-            '10minutemail.com': '10 Minute Mail',
-            '10minutemail.net': '10 Minute Mail',
-            'guerrillamail.com': 'Guerrilla Mail',
-            'mailinator.com': 'Mailinator',
-            'yopmail.com': 'YOPmail'
-        }
+        detected_services = res.get('DISPOSABLE_SERVICES', [])
         
-        # GitHubから取得した約4000件の最新ブロックリスト
-        dynamic_disposable_list = fetch_disposable_domains()
-        
-        mx_alert_html = ""
-        detected_services = []
-        raw_lower = nslookup_raw.lower()
-        query_domain_lower = domain_name_for_nslookup.lower()
-        
-        # 取得した生データからMXターゲット（例: mx.sute.jp）を正規表現で正確に抽出
-        import re
-        mx_targets = re.findall(r'\bin\s+mx\s+\d+\s+(\S+)', raw_lower)
-        
-        # 検索されたドメイン自身と、そのMXレコードのターゲット両方を検査対象にする
-        targets_to_check = mx_targets + [query_domain_lower]
-        
-        # 1. まず「既知の辞書」を使って、正確なサービス名の特定を試みる
-        for target in targets_to_check:
-            target = target.strip('.')
-            for pattern, service_name in disposable_mx_services.items():
-                if pattern in target and service_name not in detected_services:
-                    detected_services.append(service_name)
-            for pattern, service_name in disposable_domain_services.items():
-                if pattern in target and service_name not in detected_services:
-                    detected_services.append(service_name)
-                    
-        # 2. サービス名が【1つも特定できなかった場合】のみ、外部DB（GitHubリスト）に頼る
-        if not detected_services and dynamic_disposable_list:
-            for target in targets_to_check:
-                target = target.strip('.')
-                parts = target.split('.')
-                for i in range(len(parts) - 1): 
-                    domain_to_check = '.'.join(parts[i:])
-                    if domain_to_check in dynamic_disposable_list:
-                        label = f"外部DB検知 ({domain_to_check} / サービス名特定不可)"
-                        if label not in detected_services:
-                            detected_services.append(label)
-                        break
-                        
         table_alert_row = ""
+        mx_alert_html = ""
         if detected_services:
             services_str = html.escape("、".join(detected_services))
             mx_alert_html = f"""
@@ -4088,7 +4084,10 @@ def main():
 
             else:
                 if not any(res['ISP'] == 'Domain/Host' for res in st.session_state.raw_results) and domain_targets:
-                    st.session_state.raw_results.extend([get_domain_details(d, st_api_key, st_start_date, st_end_date) for d in domain_targets])
+                    for d in domain_targets:
+                        dns_data = st.session_state.get('resolved_dns_map', {}).get(d, {})
+                        ns_raw = dns_data.get('raw', '') if isinstance(dns_data, dict) else str(dns_data)
+                        st.session_state.raw_results.append(get_domain_details(d, ns_raw, st_api_key, st_start_date, st_end_date))
                     st.session_state.finished_ips.update(domain_targets)
                     
                 prog_bar_container = st.empty()
