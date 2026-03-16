@@ -160,6 +160,31 @@ COUNTRY_JP_NAME = {
     "US": "アメリカ合衆国","VN": "ベトナム社会主義共和国","YE": "イエメン共和国","ZM": "ザンビア共和国","ZW": "ジンバブエ共和国"
 }
 
+# --- TLD (Top Level Domain) 情報辞書 ---
+TLD_INFO = {
+    "ru": {"name": "Russian Federation", "jp_name": "ロシア連邦", "url": "https://cctld.ru/en"},
+    "cn": {"name": "China", "jp_name": "中華人民共和国", "url": "https://www.cnnic.cn/"},
+    "jp": {"name": "Japan", "jp_name": "日本", "url": "https://jprs.jp/"},
+    "kr": {"name": "Republic of Korea", "jp_name": "大韓民国", "url": "https://kisa.or.kr/"},
+    "kp": {"name": "Democratic People's Republic of Korea", "jp_name": "北朝鮮", "url": "N/A"},
+    "tw": {"name": "Taiwan", "jp_name": "台湾", "url": "https://www.twnic.tw/"},
+    "hk": {"name": "Hong Kong", "jp_name": "香港", "url": "https://www.hkirc.hk/"},
+    "us": {"name": "United States", "jp_name": "アメリカ合衆国", "url": "https://www.about.us/"},
+    "uk": {"name": "United Kingdom", "jp_name": "イギリス", "url": "https://www.nominet.uk/"},
+    "io": {"name": "British Indian Ocean Territory", "jp_name": "英領インド洋地域 (IT系多用)", "url": "https://www.nic.io/"},
+    "co": {"name": "Colombia", "jp_name": "コロンビア (企業多用)", "url": "https://www.cointernet.com.co/"},
+    "tv": {"name": "Tuvalu", "jp_name": "ツバル (メディア多用)", "url": "https://www.nic.tv/"},
+    "com": {"name": "Commercial", "jp_name": "商用組織 (VeriSign)", "url": "https://www.verisign.com/"},
+    "net": {"name": "Network", "jp_name": "ネットワーク組織 (VeriSign)", "url": "https://www.verisign.com/"},
+    "org": {"name": "Organization", "jp_name": "非営利組織 (PIR)", "url": "https://pir.org/"},
+    "info": {"name": "Information", "jp_name": "情報提供 (Identity Digital)", "url": "https://identity.digital/"},
+    "biz": {"name": "Business", "jp_name": "ビジネス (GoDaddy)", "url": "https://www.go.co/"},
+    "xyz": {"name": "General", "jp_name": "一般 (XYZ.COM)", "url": "https://gen.xyz/"},
+    "top": {"name": "General", "jp_name": "一般 (.TOP Registry)", "url": "https://www.nic.top/"},
+}
+
+# --- ISP名称の日本語マッピング (企業名統一版) ---
+
 # --- ISP名称の日本語マッピング (企業名統一版) ---
 ISP_JP_NAME = {
     # --- NTT Group ---
@@ -259,6 +284,18 @@ def fetch_tor_exit_nodes():
     except:
         return set()
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_disposable_domains():
+    """ GitHubの有名リポジトリから最新の捨てアドドメイン一覧を取得 (1日1回更新) """
+    try:
+        url = "https://raw.githubusercontent.com/disposable-email-domains/disposable-email-domains/master/disposable_email_blocklist.conf"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            # 空行とコメントを除外し、小文字でセット（集合）に格納して高速化
+            return set([line.strip().lower() for line in response.text.splitlines() if line.strip() and not line.startswith('//')])
+    except Exception:
+        pass
+    return set()
 
 def get_jp_names(english_isp, country_code):
     jp_country = COUNTRY_JP_NAME.get(country_code, country_code)
@@ -481,6 +518,7 @@ def fetch_rdap_data(ip):
     return None
 
 # ドメイン専用RDAP取得関数
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_domain_rdap_data(domain):
     """ ドメイン専用のRDAP情報を取得する関数 (rdap.org リゾルバを利用) """
     try:
@@ -497,6 +535,93 @@ def fetch_domain_rdap_data(domain):
     except ValueError:
         pass
     return None
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_classic_whois(target):
+    """ OS非依存：Port 43を利用した旧式WHOIS取得 (ドメイン・IP両対応) """
+    import socket
+    import ipaddress
+    try:
+        is_ip = False
+        try:
+            ipaddress.ip_address(target)
+            is_ip = True
+        except ValueError:
+            pass
+            
+        # 1. IANAから権威WHOISサーバーを特定
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(5)
+            s.connect(('whois.iana.org', 43))
+            if is_ip:
+                s.send((target + "\r\n").encode('utf-8'))
+            else:
+                tld = target.split('.')[-1].lower()
+                s.send((tld + "\r\n").encode('utf-8'))
+            
+            response = b""
+            while True:
+                data = s.recv(4096)
+                if not data: break
+                response += data
+            
+        iana_response = response.decode('utf-8', errors='replace')
+        whois_server = None
+        for line in iana_response.splitlines():
+            line_lower = line.lower()
+            if line_lower.startswith('whois:'):
+                whois_server = line.split(':', 1)[1].strip()
+                break
+            elif line_lower.startswith('refer:'):
+                whois_server = line.split(':', 1)[1].strip()
+                break
+        
+        # IANAに記載がない場合の汎用推測
+        if not whois_server:
+            if is_ip:
+                whois_server = "whois.arin.net" # IPのフォールバック
+            else:
+                tld = target.split('.')[-1].lower()
+                whois_server = f"{tld}.whois-servers.net" # ドメインのフォールバック
+            
+        # 2. 権威サーバーに直接クエリを投げる
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(5)
+            s.connect((whois_server, 43))
+            
+            # JPRS (.jp) の場合、英語出力を強制するために /e を付与する
+            if not is_ip and target.endswith('.jp'):
+                query_str = f"{target}/e\r\n"
+            else:
+                query_str = f"{target}\r\n"
+                
+            s.send(query_str.encode('utf-8'))
+            whois_text = b""
+            while True:
+                data = s.recv(4096)
+                if not data: break
+                whois_text += data
+        
+        # エンコーディング対応 (JPRS等のISO-2022-JP対応)
+        try:
+            decoded_text = whois_text.decode('iso-2022-jp').strip()
+        except UnicodeDecodeError:
+            decoded_text = whois_text.decode('utf-8', errors='replace').strip()
+            
+        if not decoded_text:
+            return "Error: WHOISサーバーに接続できましたが、データが空でした（応答なし）。\n短時間での連続アクセスによる一時的なブロック（Rate Limit）の可能性が高いです。", whois_server
+            
+        return decoded_text, whois_server
+        
+    except socket.timeout:
+        error_msg = "Error: WHOISサーバーからの応答がタイムアウトしました。\n短時間での連続アクセスによる一時的な制限（Rate Limit）の可能性が高いです。\nしばらく時間をおいてから再度お試しください。"
+        return error_msg, whois_server if 'whois_server' in locals() and whois_server else "不明"
+    except ConnectionRefusedError:
+        error_msg = "Error: WHOISサーバーへの接続が拒否されました。\n接続制限、または相手方サーバーがダウンしている可能性があります。"
+        return error_msg, whois_server if 'whois_server' in locals() and whois_server else "不明"
+    except Exception as e:
+        error_msg = f"Error: WHOIS情報の取得中にシステムエラーが発生しました ({str(e)})"
+        return error_msg, "不明"
 
 # SecurityTrails API取得関数 (過去のAレコード・AAAAレコード履歴)
 def get_securitytrails_data(domain, api_key, start_date=None, end_date=None):
@@ -778,7 +903,9 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
         'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
         'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
-        'Proxy_Type': '', 'ST_REVERSE_IP_JSON': None
+        'Proxy_Type': '', 'ST_REVERSE_IP_JSON': None,
+        'DOMAIN_WHOIS_TEXT': None, 'DOMAIN_WHOIS_SERVER': None,
+        'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None
     }
     new_cache_entry = None
     new_learned_isp = None
@@ -875,6 +1002,12 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 rdap_jp, _ = get_jp_names(raw_rdap_name, result['CountryCode'])
                 result['RDAP_JP'] = rdap_jp
 
+            # IPアドレス用のClassic WHOISも取得して保管する
+            w_text_ip, w_server_ip = fetch_classic_whois(actual_ip)
+            if w_text_ip:
+                result['IP_WHOIS_TEXT'] = w_text_ip
+                result['IP_WHOIS_SERVER'] = w_server_ip
+
             is_composite = (actual_ip != ip and "(" in ip)
             if is_composite:
                 domain_part = ip.split("(")[0].strip()
@@ -882,6 +1015,12 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 if res_d:
                     result['DOMAIN_RDAP_JSON'] = res_d['json']
                     result['DOMAIN_RDAP_URL'] = res_d['url']
+                
+                # RDAPの成否に関わらず、生のWHOISテキストは証拠として常に取得を試みる
+                w_text, w_server = fetch_classic_whois(domain_part)
+                if w_text:
+                    result['DOMAIN_WHOIS_TEXT'] = w_text
+                    result['DOMAIN_WHOIS_SERVER'] = w_server
 
         is_composite = (actual_ip != ip and "(" in ip)
         if is_composite and st_api_key:
@@ -932,66 +1071,105 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
 
 def get_domain_details(domain, st_api_key=None, st_start_date=None, st_end_date=None):
 
-    icann_link = f"[ICANN Whois (手動検索)]({RIR_LINKS['ICANN Whois']})"
+    # TLD情報辞書から公式レジストリのリンクと日本語名を動的生成
+    tld_val = domain.split('.')[-1].lower() if '.' in domain else ""
+    tld_jp_name = ""
+    if tld_val in TLD_INFO and TLD_INFO[tld_val]["url"] != "N/A":
+        reg_name = TLD_INFO[tld_val]["jp_name"]
+        tld_jp_name = f"{reg_name} (.{tld_val.upper()})"
+        reg_url = TLD_INFO[tld_val]["url"]
+        domain_link = f"[{reg_name} (.{tld_val.upper()} Registry)]({reg_url})"
+    else:
+        tld_jp_name = f"未分類 (.{tld_val.upper()})" if tld_val else "不明"
+        domain_link = f"[ICANN Whois (手動検索)]({RIR_LINKS['ICANN Whois']})"
     
     # --- 1. SecurityTrails (日付フィルタ対応) ---
     st_json = None
     if st_api_key:
         st_json = get_securitytrails_data(domain, st_api_key, st_start_date, st_end_date)
     
-    # --- 2. ドメインRDAPの取得  ---
+    # --- 2. ドメインRDAPとWHOISの取得  ---
     domain_rdap_json = None
     domain_rdap_url = ''
+    domain_whois_text = None
+    domain_whois_server = None
+    rdap_name_raw = '' # 初期値を空にする
+
     try:
-        # 既に定義されている fetch_domain_rdap_data を呼び出す
         rdap_res = fetch_domain_rdap_data(domain)
         if rdap_res:
             domain_rdap_json = rdap_res['json']
             domain_rdap_url = rdap_res['url']
+            
+            # RDAPからレジストラ（登録代行業者）の特定を試みる
+            entities = domain_rdap_json.get("entities", [])
+            for ent in entities:
+                roles = ent.get("roles", [])
+                vcard_array = ent.get("vcardArray", [])
+                if len(vcard_array) > 1:
+                    for vcard in vcard_array[1]:
+                        if "registrar" in roles and vcard[0] == "fn":
+                            rdap_name_raw = vcard[3] # 確定した業者名を入れる
+                            break
+                if rdap_name_raw: break
+        
+        # 生のWHOISテキストは常に裏で取得しておく（個別レポート用）
+        domain_whois_text, domain_whois_server = fetch_classic_whois(domain)
+            
     except Exception:
         pass
 
     # --- 3. 結果の返却 ---
     return {
         'Target_IP': domain, 
+        'ISP_API_Raw': '', # ドメイン時は一覧のWhois列を空にする
+        'ISP_JP': '',      # ドメイン時は一覧のWhois列を空にする
+        'RDAP_Name_Raw': rdap_name_raw, # RDAPで取れた業者名（なければ空）
+        'RDAP_JP': tld_jp_name,        # 唯一の確定情報である国名/TLDを表示
         'ISP': 'Domain/Host', 
-        'Country': 'N/A', 
-        'CountryCode': 'N/A',
-        'RIR_Link': icann_link,
+        'Country': tld_val.upper() if tld_val else 'N/A',
+        'Country_JP': reg_name if 'reg_name' in locals() else 'N/A',
+        'CountryCode': tld_val.upper() if tld_val else 'N/A',
+        'RIR_Link': domain_link,
         'Secondary_Security_Links': create_secondary_links(domain),
         'Status': 'Success (Domain)',
         
-        # IP用フィールドは空またはNone
-        'RDAP': '', 
-        'RDAP_JSON': None,
-        'VPNAPI_JSON': None, 
-        'RDAP_URL': '', 
-        'IPINFO_JSON': None, 
-        'IoT_Risk': '',
-        
-        # ドメイン用フィールドにデータを格納 (これで表示されるようになる)
+        'RDAP': '', 'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
+        'Proxy_Type': 'N/A (Domain)',
         'DOMAIN_RDAP_JSON': domain_rdap_json, 
         'DOMAIN_RDAP_URL': domain_rdap_url, 
         'ST_JSON': st_json, 
-        'RDNS_DATA': None
+        'RDNS_DATA': None,
+        'DOMAIN_WHOIS_TEXT': domain_whois_text,
+        'DOMAIN_WHOIS_SERVER': domain_whois_server,
+        'IP_WHOIS_TEXT': None,
+        'IP_WHOIS_SERVER': None
     }
 
 def get_simple_mode_details(target):
     if is_valid_ip(target):
         rir_link_content = f"[Whois (汎用検索 - APNIC窓口)]({RIR_LINKS['APNIC']})"
     else:
-        rir_link_content = f"[ICANN Whois (手動検索)]({RIR_LINKS['ICANN Whois']})"
+        tld_val = target.split('.')[-1].lower() if '.' in target else ""
+        if tld_val in TLD_INFO and TLD_INFO[tld_val]["url"] != "N/A":
+            reg_name = TLD_INFO[tld_val]["jp_name"]
+            reg_url = TLD_INFO[tld_val]["url"]
+            rir_link_content = f"[{reg_name} (.{tld_val.upper()} Registry)]({reg_url})"
+        else:
+            rir_link_content = f"[ICANN Whois (手動検索)]({RIR_LINKS['ICANN Whois']})"
         
     return {
         'Target_IP': target, 
-        'ISP': 'N/A (簡易モード)', 
+        'ISP': 'N/A (簡易モード)',
         'Country': 'N/A (簡易モード)',
         'CountryCode': 'N/A',
         'RIR_Link': rir_link_content,
         'Secondary_Security_Links': create_secondary_links(target),
         'Status': 'Success (簡易モード)',
         'RDAP': '', 'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
-        'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None
+        'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
+        'DOMAIN_WHOIS_TEXT': None, 'DOMAIN_WHOIS_SERVER': None,
+        'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None
     }
 
 # --- ヘルパー関数群 ---
@@ -1580,7 +1758,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
     
     # オプションが指定されていない場合はすべてTrue（全出力）とする
     if report_opts is None:
-        report_opts = {"subnet": True, "rdap": True, "ipinfo": True, "vpnapi": True, "st": True, "rdns": True}
+        report_opts = {"tld": True, "dns": True, "subnet": True, "rdap": True, "whois": True, "ipinfo": True, "vpnapi": True, "st": True, "rdns": True}
     import html
     import re
     import datetime
@@ -1594,6 +1772,10 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
     vpnapi_json = res.get('VPNAPI_JSON')
     domain_rdap_json = res.get('DOMAIN_RDAP_JSON')
     domain_rdap_url = res.get('DOMAIN_RDAP_URL')
+    domain_whois_text = res.get('DOMAIN_WHOIS_TEXT')
+    domain_whois_server = res.get('DOMAIN_WHOIS_SERVER')
+    ip_whois_text = res.get('IP_WHOIS_TEXT') 
+    ip_whois_server = res.get('IP_WHOIS_SERVER')  
     st_json = res.get('ST_JSON')
     
     rdns_data = res.get('RDNS_DATA', {})
@@ -1616,8 +1798,8 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
     if isinstance(nslookup_data, str):
         nslookup_raw = nslookup_data
     
-    if not ((rdap_url and rdap_json) or ipinfo_json or domain_rdap_json or nslookup_raw or st_json or rdns_raw):
-        return None
+    if not ((rdap_url and rdap_json) or ipinfo_json or domain_rdap_json or domain_whois_text or nslookup_raw or st_json or rdns_raw or ip_whois_text):
+        return None # レポート生成に必要なデータがない場合は None を返す
 
     jst_timezone = datetime.timezone(datetime.timedelta(hours=9))
     now_jst = datetime.datetime.now(jst_timezone)
@@ -1628,6 +1810,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
     first_tab_id = None
     
     # --- 2. サブネット情報 (IPv4の場合のみ計算) ---
+
     try:
         ip_obj = ipaddress.ip_address(clean_ip)
         if ip_obj.version == 4 and report_opts.get("subnet", True):
@@ -1696,7 +1879,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         pass
 
     # --- 3. nslookup (DNS正引き) ---
-    if nslookup_raw:
+    if nslookup_raw and report_opts.get("dns", True):
         tab_id = "tab-nslookup"
         if not first_tab_id: first_tab_id = tab_id
         tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">DNS正引き</button>\n'
@@ -1706,23 +1889,120 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             escaped_ip = html.escape(ip_str)
             escaped_nslookup = escaped_nslookup.replace(escaped_ip, f'<span class="json-hl">{escaped_ip}</span>')
             
-        cmd_str = f"resolver = dns.resolver.Resolver(); resolver.nameservers=['8.8.8.8']; resolver.resolve('{domain_name_for_nslookup}', 'A/AAAA')"
+        cmd_str = f"resolver = dns.resolver.Resolver(); resolver.nameservers=['8.8.8.8']; resolver.resolve('{domain_name_for_nslookup}', 'A/AAAA/MX')"
         ip_list_str = "<br>".join([html.escape(ip) for ip in nslookup_ips]) if nslookup_ips else "取得なし"
         
+        # --- 捨てアド (Disposable Email) 検知ロジック ---
+        disposable_mx_services = {
+            # 日本最大手インフラ (メルアドぽいぽい / InstAddr)
+            'sute.jp': '捨てメアド (メルアドぽいぽい)',
+            'erinn.biz': '捨てメアド (メルアドぽいぽい)',
+            'kuku.lu': '捨てメアド (メルアドぽいぽい)',
+            'instaddr.com': '捨てメアド (メルアドぽいぽい)',
+            'instaddr.jp': '捨てメアド (メルアドぽいぽい)',
+            'm.miril.jp': '捨てメアド (メルアドぽいぽい)',
+
+            # その他海外定番
+            '10minutemail': '10 Minute Mail',
+            'guerrillamail': 'Guerrilla Mail',
+            'temp-mail': 'Temp Mail',
+            'nada.email': 'Nada / Tmpmail',
+            'maildrop.cc': 'Maildrop',
+            'yopmail.com': 'YOPmail',
+            'tempmail.plus': 'Temp Mail Plus',
+            '1secmail.com': '1SecMail',
+            'throwawaymail.com': 'Throwaway Mail',
+            'tempmail.org': 'Temp-Mail.org',
+            'mail.tm': 'Mail.tm',
+            'sharklasers.com': 'Guerrilla Mail',
+            'dispostable.com': 'Dispostable',
+            'getnada.com': 'Nada.email',
+            'mailinator.com': 'Mailinator',
+            'moakt.com': 'Moakt',
+            'tmails.net': 'T-Mails',
+            '33mail.com': '33mail',
+            'airmail.cc': 'Airmail',
+            'generator.email': 'Generator.email'
+        }
+
+        # ドメインそのものから特定するための追加辞書 (MXが引けなかった場合の保険)
+        disposable_domain_services = {
+            'instaddr.com': '捨てメアド (メルアドぽいぽい)',
+            'instaddr.jp': '捨てメアド (メルアドぽいぽい)',
+            'm.miril.jp': '捨てメアド (メルアドぽいぽい)',
+            '10minutemail.com': '10 Minute Mail',
+            '10minutemail.net': '10 Minute Mail',
+            'guerrillamail.com': 'Guerrilla Mail',
+            'mailinator.com': 'Mailinator',
+            'yopmail.com': 'YOPmail'
+        }
+        
+        # GitHubから取得した約4000件の最新ブロックリスト
+        dynamic_disposable_list = fetch_disposable_domains()
+        
+        mx_alert_html = ""
+        detected_services = []
+        raw_lower = nslookup_raw.lower()
+        query_domain_lower = domain_name_for_nslookup.lower()
+        
+        # 取得した生データからMXターゲット（例: mx.sute.jp）を正規表現で正確に抽出
+        import re
+        mx_targets = re.findall(r'\bin\s+mx\s+\d+\s+(\S+)', raw_lower)
+        
+        # 検索されたドメイン自身と、そのMXレコードのターゲット両方を検査対象にする
+        targets_to_check = mx_targets + [query_domain_lower]
+        
+        # 1. まず「既知の辞書」を使って、正確なサービス名の特定を試みる
+        for target in targets_to_check:
+            target = target.strip('.')
+            for pattern, service_name in disposable_mx_services.items():
+                if pattern in target and service_name not in detected_services:
+                    detected_services.append(service_name)
+            for pattern, service_name in disposable_domain_services.items():
+                if pattern in target and service_name not in detected_services:
+                    detected_services.append(service_name)
+                    
+        # 2. サービス名が【1つも特定できなかった場合】のみ、外部DB（GitHubリスト）に頼る
+        if not detected_services and dynamic_disposable_list:
+            for target in targets_to_check:
+                target = target.strip('.')
+                parts = target.split('.')
+                for i in range(len(parts) - 1): 
+                    domain_to_check = '.'.join(parts[i:])
+                    if domain_to_check in dynamic_disposable_list:
+                        label = f"外部DB検知 ({domain_to_check} / サービス名特定不可)"
+                        if label not in detected_services:
+                            detected_services.append(label)
+                        break
+                        
+        table_alert_row = ""
+        if detected_services:
+            services_str = html.escape("、".join(detected_services))
+            mx_alert_html = f"""
+            <div style="background-color: #ffebee; border-left: 5px solid #f44336; padding: 15px; margin-bottom: 20px; border-radius: 4px;">
+                <strong style="color: #c62828; font-size: 1.1em;">使い捨てメールサービス (Disposable Email) を検知</strong><br>
+                <span style="color: #b71c1c; font-size: 0.9em;">対象のドメイン、またはそのMX（メール交換）レコードが、使い捨てメールサービスのインフラを示している。</span>
+            </div>
+            """
+            table_alert_row = f"""
+                <tr><th>使い捨てメール判定<br>(Disposable Service)</th><td><strong style="color: #c62828;">該当あり ({services_str})</strong></td></tr>
+            """
+
         nslookup_content = f"""
         <div id="{tab_id}" class="tab-content">
-            <h1 class="theme-rdap" style="color: #424242; border-color: #424242;">DNS正引き解決結果 (dnspython)</h1>
+            <h1 class="theme-rdap" style="color: #424242; border-color: #424242;">DNS正引き・MX解決結果 (dnspython)</h1>
+            {mx_alert_html}
             <div class="description" style="background-color: #eceff1; border-color: #cfd8dc;">
                 <strong>DNS (Domain Name System) 正引き解決記録：</strong><br>
-                入力されたドメイン名に対し、IPアドレス（A/AAAAレコード）の特定を行った結果を示す。<br>
-                一般的な <code>nslookup</code> コマンドは実行環境のDNS設定に依存するが、本ツールではPythonの専門ライブラリを使用して、信頼性の高いパブリックDNS（Google/Cloudflare）へ<strong>直接かつ強制的に問い合わせ</strong>を行っている。<br>
-                これにより、実行環境に依存せず、nslookupと同等以上の確実な名前解決を実現している。
+                入力されたドメイン名に対し、IPアドレス（A/AAAA/MXレコード）の特定を行った結果を示す。<br>
+                一般的な <code>nslookup</code> コマンドは実行環境のDNS設定に依存するが、本ツールではPythonの専門ライブラリを使用して、信頼性の高いパブリックDNS（Google/Cloudflare）へ<strong>直接的に問い合わせ</strong>を行っている。<br>
             </div>
             <h2>対象ドメイン及び取得結果</h2>
             <table>
                 <tr><th>対象ドメイン<br>(Target Domain)</th><td><strong>{html.escape(domain_name_for_nslookup)}</strong></td></tr>
                 <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
                 <tr><th>取得IPアドレス<br>(Resolved IPs)</th><td><strong>{ip_list_str}</strong></td></tr>
+                {table_alert_row}
             </table>
             <h2>内部実行クエリ (Python)</h2>
             <div class="raw-data" style="background-color: #263238; color: #eceff1; font-weight: bold; font-family: Consolas, monospace;">>>> {cmd_str}</div>
@@ -1732,13 +2012,47 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         """
         contents_html += nslookup_content
 
-    # --- 4. RDAP (Domain) ---
+    # --- 4. ドメイン情報 (TLD) ---
+    if domain_name_for_nslookup and report_opts.get("tld", True):
+        tab_id = "tab-domain-info"
+        if not first_tab_id: first_tab_id = tab_id
+        tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">ドメイン情報</button>\n'
+        
+        tld_val = domain_name_for_nslookup.split('.')[-1].lower() if '.' in domain_name_for_nslookup else ""
+        tld_data = TLD_INFO.get(tld_val, {"name": "その他の国・地域 / gTLD", "jp_name": "未分類", "url": "N/A"})
+        iana_url = f"https://www.iana.org/domains/root/db/{tld_val}.html" if tld_val else ""
+        
+        tld_url_html = f'<a href="{tld_data["url"]}" target="_blank" style="color: #0066cc; font-weight: bold;">{tld_data["url"]}</a>' if tld_data["url"] != "N/A" else "情報なし"
+        iana_url_html = f'<a href="{iana_url}" target="_blank" style="color: #0066cc; font-weight: bold;">{iana_url}</a>' if iana_url else "情報なし"
+        
+        domain_info_content = f"""
+        <div id="{tab_id}" class="tab-content">
+            <h1 class="theme-rdap" style="color: #2e7d32; border-color: #2e7d32;">ドメイン統括情報 (TLD)</h1>
+            <div class="description" style="background-color: #e8f5e9; border-color: #a5d6a7;">
+                <strong>Domain Information：</strong><br>
+                対象ドメインを管轄するトップレベルドメイン(TLD)情報を示す。
+            </div>
+            <h2>対象ドメイン</h2>
+            <table>
+                <tr><th>対象ドメイン<br>(Target Domain)</th><td><strong style="font-size: 1.2em;">{html.escape(domain_name_for_nslookup)}</strong></td></tr>
+            </table>
+            <h2>トップレベルドメイン (TLD) 管理情報</h2>
+            <table>
+                <tr><th>TLD</th><td><strong>.{html.escape(tld_val)}</strong></td></tr>
+                <tr><th>管轄国 / 種別 (日本語)</th><td><strong>{html.escape(tld_data['jp_name'])}</strong> ({html.escape(tld_data['name'])})</td></tr>
+                <tr><th>管理元 (レジストリ) URL</th><td>{tld_url_html}</td></tr>
+                <tr><th>IANA 公式データベース</th><td>{iana_url_html}</td></tr>
+            </table>
+        </div>
+        """
+        contents_html += domain_info_content
+
+    # --- 4.1 RDAP (Domain) ---
     if domain_rdap_json and domain_rdap_url and report_opts.get("rdap", True):
         tab_id = "tab-domain-rdap"
         if not first_tab_id: first_tab_id = tab_id
         tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">RDAP(Domain)</button>\n'
-        d_name = domain_rdap_json.get("ldhName", "情報なし")
-
+        
         parsed_url_d = urlparse(domain_rdap_url)
         registry_name_d = parsed_url_d.netloc if parsed_url_d.netloc else "不明"
 
@@ -1753,48 +2067,54 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
 
         entities = domain_rdap_json.get("entities", [])
         registrar_name = "情報なし"
+        registrant_org = "情報なし"
         for ent in entities:
-            if "registrar" in ent.get("roles", []):
-                if "vcardArray" in ent and len(ent["vcardArray"]) > 1:
-                    for vcard in ent["vcardArray"][1]:
-                        if vcard[0] == "fn":
-                            registrar_name = vcard[3]
-                            break
-                break
+            roles = ent.get("roles", [])
+            vcard_array = ent.get("vcardArray", [])
+            if len(vcard_array) > 1:
+                for vcard in vcard_array[1]:
+                    if "registrar" in roles and vcard[0] == "fn":
+                        registrar_name = vcard[3]
+                    if "registrant" in roles and vcard[0] in ["org", "fn"]:
+                        registrant_org = vcard[3]
+
+        nameservers_data = domain_rdap_json.get("nameservers", [])
+        ns_list = [ns.get("ldhName") for ns in nameservers_data if ns.get("ldhName")]
+        ns_html = "<br>".join(ns_list) if ns_list else "情報なし"
         
         raw_json_str_d = json.dumps(domain_rdap_json, indent=4, ensure_ascii=False)
         escaped_json_d = html.escape(raw_json_str_d)
         
-        # &quot; を対象にするよう変更
-        highlight_keys_d = ['registrar', 'registration', 'expiration']
+        # ダブルクォーテーションがエスケープされた &quot; に対応したハイライト
+        highlight_keys_d = ['registrar', 'registrant', 'registration', 'expiration', 'nameservers']
         for hk in highlight_keys_d:
             escaped_json_d = escaped_json_d.replace(f'&quot;{hk}&quot;', f'<span class="json-hl">&quot;{hk}&quot;</span>')
-
-        extracted_values = [registrar_name, reg_date, exp_date]
-        for val in extracted_values:
+        
+        for val in [registrar_name, registrant_org, reg_date, exp_date]:
             if val and val != "情報なし":
                 esc_val = html.escape(val)
-                # 値のハイライトも &quot; に対応
                 escaped_json_d = escaped_json_d.replace(f'&quot;{esc_val}&quot;', f'<span class="json-hl">&quot;{esc_val}&quot;</span>')
 
         domain_rdap_content = f"""
         <div id="{tab_id}" class="tab-content">
-            <h1 class="theme-rdap">RDAP取得結果（ドメイン）</h1>
-            <div class="description" style="background-color: #e8eaf6; border-color: #9fa8da;">
-                ICANN管轄下のトップレベルドメイン（.com, .net, .jp等）の法的登録情報を公式レジストリから直接取得したデータであり、対象ドメインの「レジストラ（登録代行業者）」「登録日時」「有効期限」などのメタデータを確認でき、インフラ運用者（IPの持ち主）とは異なる、ドメイン自体の契約者を示す。
+            <h1 class="theme-rdap" style="color: #2e7d32; border-color: #2e7d32;">RDAP取得結果（ドメイン属性）</h1>
+            <div class="description" style="background-color: #e8f5e9; border-color: #a5d6a7;">
+                <strong>Domain RDAP Information：</strong><br>
+                公式レジストリから直接取得した法的登録情報（RDAP）を示す。
             </div>
             <h2>対象ドメイン及び回答元レジストリ情報等</h2>
             <table>
-                <tr><th>対象ドメイン<br>(Target Domain)</th><td><strong>{d_name}</strong></td></tr>
-                <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                <tr><th>対象ドメイン<br>(Target Domain)</th><td><strong style="font-size: 1.2em;">{html.escape(domain_name_for_nslookup)}</strong></td></tr>
                 <tr><th>回答元レジストリ<br>(Registry)</th><td><strong>{registry_name_d}</strong></td></tr>
                 <tr><th>参照元URL<br>(Source)</th><td><a href="{domain_rdap_url}" target="_blank" style="color: #0066cc; word-break: break-all; font-weight: bold;">{domain_rdap_url}</a></td></tr>
             </table>
-            <h2>RDAP取得結果（ドメイン）</h2>
+            <h2>RDAP取得結果</h2>
             <table>
-                <tr><th>レジストラ<br>(Key: registrar)</th><td><strong>{registrar_name}</strong></td></tr>
-                <tr><th>登録日時<br>(Key: registration)</th><td><strong>{reg_date}</strong></td></tr>
-                <tr><th>有効期限<br>(Key: expiration)</th><td><strong>{exp_date}</strong></td></tr>
+                <tr><th>登録組織名<br>(Registrant Org)</th><td><strong>{registrant_org}</strong></td></tr>
+                <tr><th>管理レジストラ<br>(Registrar)</th><td><strong>{registrar_name}</strong></td></tr>
+                <tr><th>ネームサーバー<br>(Nameservers)</th><td><strong>{ns_html}</strong></td></tr>
+                <tr><th>登録日時<br>(Registration Date)</th><td><strong>{reg_date}</strong></td></tr>
+                <tr><th>有効期限<br>(Expiration Date)</th><td><strong>{exp_date}</strong></td></tr>
             </table>
             <h2>参照元データ (JSON形式)</h2>
             <div class="raw-data">{escaped_json_d}</div>
@@ -1802,8 +2122,41 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         """
         contents_html += domain_rdap_content
 
+    # --- 4.2 WHOIS (Domain) ---
+    if domain_whois_text and report_opts.get("whois", True):
+        tab_id = "tab-domain-whois"
+        if not first_tab_id: first_tab_id = tab_id
+        tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">WHOIS(Domain)</button>\n'
+        
+        escaped_whois = html.escape(str(domain_whois_text))
+        escaped_server = html.escape(str(domain_whois_server))
+        escaped_domain = html.escape(domain_name_for_nslookup)
+        
+        equiv_cmd = f"$ whois -h {escaped_server} {escaped_domain}"
+        
+        domain_whois_content = f"""
+        <div id="{tab_id}" class="tab-content">
+            <h1 class="theme-rdap" style="color: #607d8b; border-color: #607d8b;">WHOIS取得結果（Port 43）</h1>
+            <div class="description" style="background-color: #eceff1; border-color: #cfd8dc;">
+                <strong>Domain WHOIS Information：</strong><br>
+                Whoisプロトコル（ポート43経由）で権威サーバーから取得した生のWHOISテキストデータを示す。
+            </div>
+            <h2>対象ドメイン及び回答元サーバー</h2>
+            <table>
+                <tr><th>対象ドメイン<br>(Target Domain)</th><td><strong style="font-size: 1.2em;">{escaped_domain}</strong></td></tr>
+                <tr><th>回答元サーバー<br>(WHOIS Server)</th><td><strong>{escaped_server}</strong></td></tr>
+                <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+            </table>
+            <h2>実行コマンド</h2>
+            <div class="raw-data" style="background-color: #263238; color: #eceff1; font-weight: bold; font-family: Consolas, monospace; margin-bottom: 20px;">{equiv_cmd}</div>
+            <h2>WHOISデータ</h2>
+            <div class="raw-data" style="font-family: Consolas, monospace; white-space: pre-wrap;">{escaped_whois}</div>
+        </div>
+        """
+        contents_html += domain_whois_content
+
     # --- 5. RDAP (IP) ---
-    if rdap_url and rdap_json and report_opts.get("rdap", True):
+    if rdap_json and rdap_url and report_opts.get("rdap", True):
         tab_id = "tab-rdap"
         if not first_tab_id: first_tab_id = tab_id
         
@@ -1835,7 +2188,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             remarks_html = f"""
                 <tr>
                     <th>備考・プロジェクト情報<br>(Remarks / Description)</th>
-                    <td><strong>{remarks_text}</strong><span class="help-text">RDAPデータの備考欄に記載されている付加情報であり、保有者と運用者が異なる理由（共同プロジェクト、クラウド基盤の利用など）が記載されている場合がある。</span></td>
+                    <td><strong>{remarks_text}</strong><span class="help-text">RDAPデータの備考欄に記載されている付加情報であり、保有者と運用者が異なる理由等が記載されている場合がある。</span></td>
                 </tr>
             """
 
@@ -1849,30 +2202,26 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         raw_json_str = json.dumps(rdap_json, indent=4, ensure_ascii=False)
         escaped_json = html.escape(raw_json_str)
         
-        # 正規表現を &quot; に対応させる
+        # &quot; に対応した正規表現でのハイライト処理
         highlight_keys = ['name', 'country', 'startAddress', 'endAddress']
         for hk in highlight_keys:
-            # HTMLエスケープ後は " が &quot; になっているため、正規表現もそれに合わせる
             simple_pattern = r'(&quot;' + hk + r'&quot;:\s*&quot;.*?&quot;)'
             escaped_json = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json)
         
         if descriptions:
-            # remarks/description キー自体のハイライト
             escaped_json = re.sub(r'(&quot;(remarks|description)&quot;\s*:)', r'<span class="json-hl">\1</span>', escaped_json)
-            # 実際の記述内容(Value)のハイライト
             for desc in descriptions:
                 esc_desc = html.escape(desc)
-                # 値も &quot; で囲まれている
                 target_str = f'&quot;{esc_desc}&quot;'
                 replacement = f'<span class="json-hl">{target_str}</span>'
                 escaped_json = escaped_json.replace(target_str, replacement)
 
         rdap_content = f"""
         <div id="{tab_id}" class="tab-content">
-            <h1 class="theme-rdap">RDAP取得結果</h1>
-            <div class="description">
-                <strong>登録データアクセスプロトコル（RDAP）：</strong><br>
-                RDAPとは、インターネット資源（IPアドレス等）の登録主体（組織又は個人）を法的に特定し得る登録情報を取得するための標準化された通信プロトコルである。
+            <h1 class="theme-rdap" style="color: #1e3a8a; border-color: #1e3a8a;">RDAP取得結果（IPアドレス属性）</h1>
+            <div class="description" style="background-color: #e3f2fd; border-color: #90caf9;">
+                <strong>IP RDAP Information：</strong><br>
+                インターネット資源（IPアドレス等）の登録主体（組織又は個人）を法的に特定し得る登録情報を取得した結果を示す。
             </div>
             <h2>対象IPアドレス及び回答元レジストリ情報等</h2>
             <table>
@@ -1881,18 +2230,51 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
                 <tr><th>回答元レジストリ<br>(Registry)</th><td><strong>{registry_name}</strong></td></tr>
                 <tr><th>参照元URL<br>(Source)</th><td><a href="{actual_rdap_url}" target="_blank" style="color: #0066cc; word-break: break-all; font-weight: bold;">{actual_rdap_url}</a></td></tr>
             </table>
-            <h2>RDAP取得結果（IPアドレス）</h2>
+            <h2>RDAP取得結果</h2>
             <table>
                 <tr><th>法的保有者<br>(Key: name)</th><td><strong>{name_val}</strong><span class="help-text">対象のIPアドレスブロックを公式に管理・保有している組織名（レジストリ登録情報）を示す。</span></td></tr>
                 {remarks_html}
                 <tr><th>登録国コード<br>(Key: country)</th><td><strong>{country_display}</strong><span class="help-text">当該IPアドレス資源が法的に割り当てられている管轄国を示す。</span></td></tr>
-                <tr><th>IPアドレス割当範囲<br>(Key: startAddress, endAddress)</th><td><strong>{start_ip} ～ {end_ip}</strong><span class="help-text">対象のIPアドレスを包含する、レジストリから当該組織に対して運用および管理権限が委譲（割り当て）された一連のIPアドレス帯域を示す。</span></td></tr>
+                <tr><th>IPアドレス割当範囲<br>(Key: startAddress, endAddress)</th><td><strong>{start_ip} ～ {end_ip}</strong><span class="help-text">対象のIPアドレスを包含する、レジストリから当該組織に対して運用および管理権限が委譲されたIPアドレス帯域を示す。</span></td></tr>
             </table>
             <h2>参照元データ (JSON形式)</h2>
             <div class="raw-data">{escaped_json}</div>
         </div>
         """
         contents_html += rdap_content
+
+    # --- 5.1 WHOIS (IP) ---
+    if ip_whois_text and report_opts.get("whois", True):
+        tab_id = "tab-ip-whois"
+        if not first_tab_id: first_tab_id = tab_id
+        tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">WHOIS(IP)</button>\n'
+        
+        escaped_whois = html.escape(str(ip_whois_text))
+        escaped_server = html.escape(str(ip_whois_server))
+        escaped_ip = html.escape(clean_ip)
+        
+        equiv_cmd = f"$ whois -h {escaped_server} {escaped_ip}"
+        
+        ip_whois_content = f"""
+        <div id="{tab_id}" class="tab-content">
+            <h1 class="theme-rdap" style="color: #607d8b; border-color: #607d8b;">WHOIS取得結果（Port 43）</h1>
+            <div class="description" style="background-color: #eceff1; border-color: #cfd8dc;">
+                <strong>IP WHOIS Information：</strong><br>
+                WHOISプロトコル（ポート43経由）で取得したWHOISテキストデータを示す。
+            </div>
+            <h2>対象IPアドレス及び回答元サーバー</h2>
+            <table>
+                <tr><th>対象IPアドレス<br>(Target IP)</th><td><strong>{escaped_ip}</strong></td></tr>
+                <tr><th>回答元サーバー<br>(WHOIS Server)</th><td><strong>{escaped_server}</strong></td></tr>
+                <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+            </table>
+            <h2>実行コマンド</h2>
+            <div class="raw-data" style="background-color: #263238; color: #eceff1; font-weight: bold; font-family: Consolas, monospace; margin-bottom: 20px;">{equiv_cmd}</div>
+            <h2>WHOISデータ</h2>
+            <div class="raw-data" style="font-family: Consolas, monospace; white-space: pre-wrap;">{escaped_whois}</div>
+        </div>
+        """
+        contents_html += ip_whois_content
 
     # --- 6. IPinfo ---
     if ipinfo_json and report_opts.get("ipinfo", True):
@@ -2023,7 +2405,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             <h1 class="theme-ip2proxy">匿名通信判定結果 (VPNAPI.io)</h1>
             <div class="description" style="background-color: #f3e5f5; border-color: #ce93d8;">
                 <strong>VPNAPI.io:</strong><br>
-                VPNAPI.ioは、対象IPアドレスがVPN、プロキシ、Torノード、またはリレーネットワークとして利用されているかを検知するための高精度データベースです。
+                VPNAPI.ioは、対象IPアドレスがVPN、プロキシ、Torノード、またはリレーネットワークとして利用されているかを検知するための高精度データベースである。
             </div>
             <h2>基本情報</h2>
             <table>
@@ -2587,17 +2969,34 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         st.markdown("##### ⚙️ レポート出力項目の選択")
         st.caption("※ APIキーが未入力の項目や、検索設定でオフになっていた機能はグレーアウト（無効化）されます。")
         
-        col_opt1, col_opt2, col_opt3, col_opt4, col_opt5, col_opt6 = st.columns(6)
-        with col_opt1: opt_subnet = st.checkbox("サブネット", value=True)
-        with col_opt2: opt_rdap = st.checkbox("RDAP", value=use_rdap_option, disabled=not use_rdap_option)
-        with col_opt3: opt_ipinfo = st.checkbox("IPinfo", value=bool(pro_api_key), disabled=not bool(pro_api_key))
-        with col_opt4: opt_vpnapi = st.checkbox("VPNAPI.io", value=bool(vpnapi_key), disabled=not bool(vpnapi_key))
-        with col_opt5: opt_st = st.checkbox("SecTrails", value=bool(st_api_key), disabled=not bool(st_api_key))
-        with col_opt6: opt_rdns = st.checkbox("逆引き", value=use_rdns_option, disabled=not use_rdns_option)
+        # 選択されたターゲットにドメインが含まれているか、IPが含まれているかを判定
+        has_domain_in_selection = any(not is_valid_ip(r.get('Target_IP', '')) or "(" in r.get('Target_IP', '') for r in target_results)
+        has_ip_in_selection = any(is_valid_ip(extract_actual_ip(r.get('Target_IP', ''))) for r in target_results)
+
+        col_opt1, col_opt2, col_opt3, col_opt4, col_opt5, col_opt6, col_opt7, col_opt8, col_opt9 = st.columns(9)
+        # ドメイン関連項目は、選択肢にドメイン（または複合型）が含まれない場合はグレーアウト
+        with col_opt1: opt_tld = st.checkbox("ドメイン情報", value=has_domain_in_selection, disabled=not has_domain_in_selection)
+        with col_opt2: opt_dns = st.checkbox("正引き", value=has_domain_in_selection, disabled=not has_domain_in_selection)
+        
+        # IP関連項目（サブネット等）は、選択肢に純粋なIPが含まれない場合はグレーアウト
+        with col_opt3: opt_subnet = st.checkbox("サブネット", value=has_ip_in_selection, disabled=not has_ip_in_selection)
+        
+        # RDAPとWHOISを独立して選択可能にする
+        with col_opt4: opt_rdap = st.checkbox("RDAP", value=use_rdap_option, disabled=not use_rdap_option)
+        with col_opt5: opt_whois = st.checkbox("WHOIS", value=True) # 常にオンで操作可能にする
+        
+        # 既存の制限にもターゲット属性の条件を追加
+        with col_opt6: opt_ipinfo = st.checkbox("IPinfo", value=bool(pro_api_key) and has_ip_in_selection, disabled=not bool(pro_api_key) or not has_ip_in_selection)
+        with col_opt7: opt_vpnapi = st.checkbox("VPNAPI.io", value=bool(vpnapi_key) and has_ip_in_selection, disabled=not bool(vpnapi_key) or not has_ip_in_selection)
+        with col_opt8: opt_st = st.checkbox("SecTrails", value=bool(st_api_key) and has_domain_in_selection, disabled=not bool(st_api_key) or not has_domain_in_selection)
+        with col_opt9: opt_rdns = st.checkbox("逆引き", value=use_rdns_option and has_ip_in_selection, disabled=not use_rdns_option or not has_ip_in_selection)
         
         current_report_opts = {
+            "tld": opt_tld,
+            "dns": opt_dns,
             "subnet": opt_subnet,
             "rdap": opt_rdap,
+            "whois": opt_whois,
             "ipinfo": opt_ipinfo,
             "vpnapi": opt_vpnapi,
             "st": opt_st,
@@ -2955,7 +3354,8 @@ def main():
         st.markdown("---")
         if st.button("🔄 IPキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
             st.session_state['cidr_cache'] = {} 
-            st.info("IP/CIDRキャッシュをクリアしました。")
+            st.cache_data.clear()
+            st.info("IP/CIDRキャッシュおよびAPI通信キャッシュを完全にクリアしました。")
             st.rerun()
 
     if selected_menu == "仕様・解説":
@@ -3200,22 +3600,26 @@ def main():
     st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🌸アップデート情報 (令和８年３月１６日) - サブネット・ネットワーク範囲計算機能の追加など 🌸", expanded=False):
+    with st.expander("🌸アップデート情報 (令和８年３月１７日) - 捨てアド検知・WHOIS対応・サブネット計算など 🌸", expanded=False):
         st.markdown("""
         **Update:**\n
+        **⚠️ 使い捨てメール（捨てアド）インフラの特定・警告機能**: 
+        * ドメイン検索時、MXレコードを自動取得・解析し、「捨てメアド (メルアドぽいぽい)」などの使い捨てメールサービスの受信インフラを特定・警告する機能を追加しました。さらにGitHub上の公開ブロックリスト（数千件規模）と動的連携し、未知の海外捨てアドも網羅的に検知します。\n
+        **🔍 WHOIS (Port 43) 通信の実装とUI分離**: 
+        * 単一検索やドメイン・IP調査において、OS環境に依存せずTCPポート43番へ直接接続し、生のWHOISテキストデータを取得する機能を実装しました。レポートUIにおいても「RDAP（JSONベース）」と「WHOIS（テキストベース）」のタブを独立させ、視認性を高めました。\n
         **🧮 動的サブネット・ネットワーク範囲計算機能の追加**: 
         * 個別IPのHTMLレポートに「サブネット情報」タブを追加しました。RDAPから取得した公式割当範囲（startAddress / endAddress）に基づき、正確なCIDRブロックとネットワーク境界を自動で逆算し可視化します。公式情報がない場合は実務上の基準である /24 を適用します。\n
         **⚙️ レポート出力項目の個別選択とUI最適化**: 
-        * 一括ダウンロードや個別レポート出力時に、必要な情報ブロック（サブネット、RDAP、IPinfo、VPNAPI、SecurityTrails、逆引き）だけを選択・除外できるフィルター機能を追加し、ペーパーレス化と可読性を向上させました。\n
+        * 一括ダウンロードや個別レポート出力時に、必要な情報ブロック（サブネット、RDAP、WHOIS、IPinfo、VPNAPI、SecurityTrails、逆引きなど）だけを選択・除外できるフィルター機能を追加し、ペーパーレス化と可読性を向上させました。\n
         * さらに、APIキー未設定の機能や、検索前のオプションでオフに設定した機能については、レポート出力選択のチェックボックスが自動的に無効化（グレーアウト）されるようUIを改善しました。
         """)
     # ------------------------------------------------
     # タブを使って入力モードを切り替え、画面を広く使う
-    input_tab1, input_tab2 = st.tabs(["📋 テキスト貼り付け", "📂 ファイル読み込み"])
+    input_tab1, input_tab2, input_tab3 = st.tabs(["📋 テキスト貼り付け", "📂 ファイル読み込み", "🔍 単一検索 (WHOIS)"])
 
     with input_tab1:
         manual_input = st.text_area(
-            "検索対象を入力 (IPアドレス または ドメイン)",
+            "検索対象を入力 (複数行可: IPアドレス または ドメイン)",
             height=200, # 高さを少し広げて見やすく
             placeholder="8.8.8.8\nexample.com\n2404:6800:...",
             help="1行に1つのターゲットを入力してください。"
@@ -3237,12 +3641,21 @@ def main():
         uploaded_file = st.file_uploader(label_text, type=allowed_types)
         st.caption(help_text)
         
-    # ====== ⚠️ ここからインデントを1段下げてタブの外に出す ======
+    with input_tab3:
+        single_input = st.text_input(
+            "単一の検索対象を入力 (IPアドレス または ドメイン)",
+            placeholder="8.8.8.8 または example.com",
+            help="1つのターゲットだけを素早く検索してレポートを生成します。"
+        )
+
     raw_targets = []
-    df_orig = None # 初期化
+    df_orig = None
 
     if manual_input:
         raw_targets.extend(manual_input.splitlines())
+        
+    if single_input:
+        raw_targets.append(single_input.strip())
     
     if uploaded_file:
         # --- 公開モードの場合の読み込み処理 (st版ロジック) ---
@@ -3375,6 +3788,24 @@ def main():
                 pass # IPv6がないのは一般的
             except Exception as e:
                 raw_lines.append(f";; IPv6 Query Failed: {str(e)}")
+
+            # --- MXレコード (Mail Exchange) 取得 ---
+            try:
+                # MXレコードは捨てアド特定の生命線であるため、専用の長いライフタイムを設定して取得を試みる
+                resolver_mx = dns.resolver.Resolver(configure=False)
+                resolver_mx.nameservers = ['8.8.8.8', '1.1.1.1', '8.8.4.4', '9.9.9.9']
+                resolver_mx.timeout = 5
+                resolver_mx.lifetime = 10
+                
+                answers_mx = resolver_mx.resolve(domain, 'MX')
+                for rdata in answers_mx:
+                    mx_target = rdata.exchange.to_text(omit_final_dot=True)
+                    mx_pref = rdata.preference
+                    raw_lines.append(f"{domain}. \tIN \tMX \t{mx_pref} {mx_target}")
+            except dns.resolver.NoAnswer:
+                raw_lines.append(f";; MX record not found for {domain}")
+            except Exception as e:
+                raw_lines.append(f";; MX Query Failed: {str(e)}")
 
         except Exception as e:
             raw_lines.append(f";; Critical DNS Error: {str(e)}")
@@ -3971,3 +4402,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+            
