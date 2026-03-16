@@ -169,6 +169,7 @@ ISP_JP_NAME = {
     'NTT DOCOMO, INC.': '株式会社NTTドコモ',
     'NTT PC Communications, Inc.': 'NTTPCコミュニケーションズ株式会社',
     'NTT Communications Corporation / EDION': 'OCN(NTTドコモビジネス株式会社)',
+    'BP-DOUJIMA': 'エヌ・ティ・ティ・ブロードバンドプラットフォーム株式会社',
     
     # --- KDDI Group ---
     'Kddi Corporation': 'KDDI株式会社',
@@ -231,13 +232,13 @@ ISP_REMAP_RULES = [
     ('vectant', 'アルテリア・ネットワークス株式会社'), ('arteria', 'アルテリア・ネットワークス株式会社'),('v-vne', 'アルテリア・ネットワークス株式会社'),
     ('softbank', 'ソフトバンク株式会社'), ('bbtec', 'ソフトバンク株式会社'),
     ('ocn', 'OCN(NTTドコモビジネス株式会社)'), ('nifty', 'ニフティ株式会社'), ('asahi net', '株式会社朝日ネット'),
+    ('rakuten mobile', '楽天モバイル株式会社'),('rmn', '楽天モバイル株式会社'), ('rakuten communications', '楽天コミュニケーションズ株式会社'),
     ('so-net', 'ソニーネットワークコミュニケーションズ株式会社'), ('nuro', 'ソニー (NURO)'),
     ('biglobe', 'ビッグローブ株式会社'), ('iij', '株式会社インターネットイニシアティブ(IIJ)'),
     ('transix', 'インターネットマルチフィード株式会社 (transix)'),
     ('v6plus', 'JPNE (v6プラス)'),
     ('logiclinks', '株式会社LogicLinks'),('lgls', '株式会社LogicLinks'),
-    ('maps', 'アルテリア・ネットワークス株式会社 (MAPS)'),
-    ('plala', '株式会社NTTドコモ (ぷらら)'),('docomo', '株式会社NTTドコモ'),('maps', '株式会社NTTドコモ (MAPS)'),
+    ('plala', '株式会社NTTドコモ (ぷらら)'),('docomo', '株式会社NTTドコモ'),('maps', '株式会社NTTドコモ'),
     ('wi2', '株式会社ワイヤ・アンド・ワイヤレス'),
 ]
 
@@ -1567,12 +1568,19 @@ def create_advanced_excel(df, time_col_name=None):
             
     return output.getvalue()
 
-def generate_individual_html_report(res, clean_ip):
+def generate_individual_html_report(res, clean_ip, report_opts=None):
     """ 
     個別IPの詳細HTMLレポートを生成する独立関数
-    (BugFix: HTMLエスケープ後の&quot;に対応し、ハイライトを確実に適用)
     """
     import json
+    import html
+    import re
+    import datetime
+    from urllib.parse import urlparse
+    
+    # オプションが指定されていない場合はすべてTrue（全出力）とする
+    if report_opts is None:
+        report_opts = {"subnet": True, "rdap": True, "ipinfo": True, "vpnapi": True, "st": True, "rdns": True}
     import html
     import re
     import datetime
@@ -1619,6 +1627,74 @@ def generate_individual_html_report(res, clean_ip):
     contents_html = ""
     first_tab_id = None
     
+    # --- 2. サブネット情報 (IPv4の場合のみ計算) ---
+    try:
+        ip_obj = ipaddress.ip_address(clean_ip)
+        if ip_obj.version == 4 and report_opts.get("subnet", True):
+            tab_id = "tab-subnet"
+            if not first_tab_id: first_tab_id = tab_id
+            tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">サブネット情報</button>\n'
+            
+            # デフォルトは/24
+            target_net = ipaddress.IPv4Network(f"{clean_ip}/24", strict=False)
+            calc_source = "デフォルト推測 (/24 基準)"
+            
+            # RDAPデータがある場合、その割当範囲から正確なCIDRを算出
+            if rdap_json and "startAddress" in rdap_json and "endAddress" in rdap_json:
+                try:
+                    s_ip = ipaddress.IPv4Address(rdap_json["startAddress"])
+                    e_ip = ipaddress.IPv4Address(rdap_json["endAddress"])
+                    # 範囲をCIDRのリストに変換
+                    cidrs = list(ipaddress.summarize_address_range(s_ip, e_ip))
+                    # 対象IPが属するCIDRブロックを特定して適用
+                    for cidr in cidrs:
+                        if ip_obj in cidr:
+                            target_net = cidr
+                            calc_source = "RDAP公式割当範囲"
+                            break
+                except Exception:
+                    pass
+            
+            first_octet = int(str(ip_obj).split('.')[0])
+            
+            if 1 <= first_octet <= 126: ip_class = "クラスA"
+            elif 128 <= first_octet <= 191: ip_class = "クラスB"
+            elif 192 <= first_octet <= 223: ip_class = "クラスC"
+            elif 224 <= first_octet <= 239: ip_class = "クラスD マルチキャスト"
+            elif 240 <= first_octet <= 255: ip_class = "クラスE 実験用"
+            else: ip_class = "不明"
+
+            host_min = str(target_net[1]) if target_net.num_addresses > 2 else "なし"
+            host_max = str(target_net[-2]) if target_net.num_addresses > 2 else "なし"
+            num_hosts = max(0, target_net.num_addresses - 2)
+
+            subnet_content = f"""
+            <div id="{tab_id}" class="tab-content">
+                <h1 class="theme-ipinfo" style="color: #00695c; border-color: #00695c;">サブネット・ネットワーク範囲計算</h1>
+                <div class="description" style="background-color: #e0f2f1; border-color: #b2dfdb;">
+                    <strong>論理ネットワーク範囲：</strong><br>
+                    入力されたIPアドレスが属するネットワーク境界を算出する。RDAPから公式のIPアドレス割当範囲が取得できた場合はその範囲に基づく正確なCIDRを適用し、情報がない場合は一般的なCクラス相当（/24）を基準として計算する。
+                </div>
+                <h2>IPアドレスクラス及び基本情報</h2>
+                <table>
+                    <tr><th>対象IPアドレス</th><td><strong>{clean_ip}</strong></td></tr>
+                    <tr><th>IPアドレスクラス</th><td><strong>{ip_class}</strong></td></tr>
+                    <tr><th>算出基準</th><td><strong>{calc_source}</strong></td></tr>
+                </table>
+                <h2>ネットワーク範囲の計算結果</h2>
+                <table>
+                    <tr><th>サブネットマスク</th><td><strong>/{target_net.prefixlen} ({target_net.netmask})</strong></td></tr>
+                    <tr><th>ネットワークアドレス<br>(開始IP)</th><td><strong>{target_net.network_address}</strong></td></tr>
+                    <tr><th>ホストアドレス範囲<br>(使用可能IP)</th><td><strong>{host_min} ～ {host_max}</strong></td></tr>
+                    <tr><th>ブロードキャストアドレス<br>(終了IP)</th><td><strong>{target_net.broadcast_address}</strong></td></tr>
+                    <tr><th>アドレス数</th><td><strong>IPアドレス総数: {target_net.num_addresses:,} (ホストアドレス数: {num_hosts:,})</strong></td></tr>
+                </table>
+            </div>
+            """
+            contents_html += subnet_content
+    except ValueError:
+        pass
+
     # --- 3. nslookup (DNS正引き) ---
     if nslookup_raw:
         tab_id = "tab-nslookup"
@@ -1657,7 +1733,7 @@ def generate_individual_html_report(res, clean_ip):
         contents_html += nslookup_content
 
     # --- 4. RDAP (Domain) ---
-    if domain_rdap_json and domain_rdap_url:
+    if domain_rdap_json and domain_rdap_url and report_opts.get("rdap", True):
         tab_id = "tab-domain-rdap"
         if not first_tab_id: first_tab_id = tab_id
         tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">RDAP(Domain)</button>\n'
@@ -1727,7 +1803,7 @@ def generate_individual_html_report(res, clean_ip):
         contents_html += domain_rdap_content
 
     # --- 5. RDAP (IP) ---
-    if rdap_url and rdap_json:
+    if rdap_url and rdap_json and report_opts.get("rdap", True):
         tab_id = "tab-rdap"
         if not first_tab_id: first_tab_id = tab_id
         
@@ -1819,7 +1895,7 @@ def generate_individual_html_report(res, clean_ip):
         contents_html += rdap_content
 
     # --- 6. IPinfo ---
-    if ipinfo_json:
+    if ipinfo_json and report_opts.get("ipinfo", True):
         tab_id = "tab-ipinfo"
         if not first_tab_id: first_tab_id = tab_id
         
@@ -1908,7 +1984,7 @@ def generate_individual_html_report(res, clean_ip):
         contents_html += ipinfo_content
 
     # --- 7. VPNAPI.io ---
-    if vpnapi_json:
+    if vpnapi_json and report_opts.get("vpnapi", True):
         tab_id = "tab-vpnapi"
         if not first_tab_id: first_tab_id = tab_id
         tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">VPNAPI.io</button>\n'
@@ -1969,7 +2045,7 @@ def generate_individual_html_report(res, clean_ip):
         contents_html += vpnapi_content
 
     # --- 8. SecurityTrails ---
-    if st_json:
+    if st_json and report_opts.get("securitytrails", True):
         tab_id = "tab-st"
         if not first_tab_id: first_tab_id = tab_id
         tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">SecurityTrails</button>\n'
@@ -2068,7 +2144,7 @@ def generate_individual_html_report(res, clean_ip):
 
     # --- 8.5 SecurityTrails (Reverse IP) ---
     st_rev_json = res.get('ST_REVERSE_IP_JSON')
-    if st_rev_json:
+    if st_rev_json and report_opts.get("securitytrails", True):
         tab_id = "tab-st-revip"
         if not first_tab_id: first_tab_id = tab_id
         tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">Reverse IP</button>\n'
@@ -2118,7 +2194,7 @@ def generate_individual_html_report(res, clean_ip):
         contents_html += rev_content
 
     # --- 9. rDNS ---
-    if rdns_raw:
+    if rdns_raw and report_opts.get("rdns", True):
         tab_id = "tab-rdns"
         if not first_tab_id: first_tab_id = tab_id
         tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">逆引き(rDNS)</button>\n'
@@ -2249,7 +2325,7 @@ def generate_individual_html_report(res, clean_ip):
     """
     return full_html
 
-def generate_combined_html_report(target_results):
+def generate_combined_html_report(target_results, report_opts=None):
     """複数の個別レポートを1つのHTMLファイル（目次付き）に統合する関数"""
     combined_body = ""
     toc_links = []
@@ -2258,7 +2334,7 @@ def generate_combined_html_report(target_results):
     for i, res in enumerate(target_results):
         target_ip = res.get('Target_IP', 'N/A')
         clean_ip = get_copy_target(target_ip)
-        html = generate_individual_html_report(res, clean_ip)
+        html = generate_individual_html_report(res, clean_ip, report_opts)
         if not html: continue
         
         # 1つ目のHTMLから共通スタイルを抽出
@@ -2368,7 +2444,7 @@ def generate_combined_html_report(target_results):
     """
     return full_combined_html
 
-def display_results(results, current_mode_full_text, display_mode):
+def display_results(results, current_mode_full_text, display_mode, use_rdap_option, pro_api_key, vpnapi_key, st_api_key, use_rdns_option):
     st.markdown("### 📝 検索結果")
 
     # --- 2. 判定アイコンと表示ルールの解説 ---
@@ -2508,13 +2584,33 @@ def display_results(results, current_mode_full_text, display_mode):
     if target_results:
         total_selected = len(target_results)
 
+        st.markdown("##### ⚙️ レポート出力項目の選択")
+        st.caption("※ APIキーが未入力の項目や、検索設定でオフになっていた機能はグレーアウト（無効化）されます。")
+        
+        col_opt1, col_opt2, col_opt3, col_opt4, col_opt5, col_opt6 = st.columns(6)
+        with col_opt1: opt_subnet = st.checkbox("サブネット", value=True)
+        with col_opt2: opt_rdap = st.checkbox("RDAP", value=use_rdap_option, disabled=not use_rdap_option)
+        with col_opt3: opt_ipinfo = st.checkbox("IPinfo", value=bool(pro_api_key), disabled=not bool(pro_api_key))
+        with col_opt4: opt_vpnapi = st.checkbox("VPNAPI.io", value=bool(vpnapi_key), disabled=not bool(vpnapi_key))
+        with col_opt5: opt_st = st.checkbox("SecTrails", value=bool(st_api_key), disabled=not bool(st_api_key))
+        with col_opt6: opt_rdns = st.checkbox("逆引き", value=use_rdns_option, disabled=not use_rdns_option)
+        
+        current_report_opts = {
+            "subnet": opt_subnet,
+            "rdap": opt_rdap,
+            "ipinfo": opt_ipinfo,
+            "vpnapi": opt_vpnapi,
+            "st": opt_st,
+            "rdns": opt_rdns
+        }
+
         # 📦 一括ダウンロードボタン (複数選択時のみ表示)
         if total_selected > 1:
             st.markdown("##### 📦 複数レポート一括ダウンロード")
             col_btn1, col_btn2 = st.columns(2)
             
             # 1. 統合レポート(HTML)の生成
-            combined_html = generate_combined_html_report(target_results)
+            combined_html = generate_combined_html_report(target_results, current_report_opts)
             
             # 2. ZIPファイルの生成
             zip_buffer = io.BytesIO()
@@ -2523,7 +2619,7 @@ def display_results(results, current_mode_full_text, display_mode):
                 for res in target_results:
                     target_ip = res.get('Target_IP', 'N/A')
                     clean_ip = get_copy_target(target_ip)
-                    html_report = generate_individual_html_report(res, clean_ip)
+                    html_report = generate_individual_html_report(res, clean_ip, current_report_opts)
                     if html_report:
                         safe_filename = re.sub(r'[\\/*?:"<>|]', "_", clean_ip)
                         zip_file.writestr(f"Report_{safe_filename}.html", html_report.encode('utf-8'))
@@ -2603,7 +2699,7 @@ def display_results(results, current_mode_full_text, display_mode):
                         st.caption(f"ISP: {res.get('ISP_JP', '-')} / RDAP: {res.get('RDAP_JP', '-')}")    
                     with c2:
                         # HTMLレポート生成
-                        html_report = generate_individual_html_report(res, clean_ip)
+                        html_report = generate_individual_html_report(res, clean_ip, current_report_opts)
                         if html_report:
                             st.download_button(
                                 label=f"⬇️ レポートDL ({clean_ip})",
@@ -3104,19 +3200,14 @@ def main():
     st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🌸アップデート情報 (令和８年３月１０日) - VPNAPI.io連携・パッシブDNSを用いた逆引き検索 🌸", expanded=False):
+    with st.expander("🌸アップデート情報 (令和８年３月１６日) - サブネット・ネットワーク範囲計算機能の追加など 🌸", expanded=False):
         st.markdown("""
         **Update:**\n
-        ** 📜 過去のDNS履歴取得 (SecurityTrails 連携)**:
-        * パッシブDNSを用いたReverse IP（逆引きドメイン一括検索）などの機能を追加しました。SecurtyTrailsのAPIを利用して、ドメインに紐づいていた過去のIPアドレスの履歴を取得できるようになりました。これにより、WAF等で現在のIPが秘匿されている場合でも、過去の生IP（オリジンサーバー）を特定できる可能性が高まります。\n
-        **🕵️ 匿名通信判定 (VPNAPI.io 連携)**: 
-        * VPN、Proxy、Tor、データセンター等の利用を専門データベースで照合可能になりました。不審なIPを検知した際、自動で「匿名通信判定情報」を取得します。\n
-        * これまでは、IP2Proxyの無料版APIを使用していましたが、VPNAPI.ioのAPIに切り替えることで、より詳細な判定結果と高い精度を実現しています。\n
-        **🗜️ 個別調査レポート(HTML)のZIP一括ダウンロード機能**: 
-        * 複数のターゲットを選択した際、生成された全てのHTMLレポートを1つのZIPファイルに圧縮して一括ダウンロードできるようになりました。大量のIP調査時における手作業の負担を大幅に軽減します。\n
-        **🛡️ RDAP・逆引き実行時の安全装置とUI最適化**: 
-        * 公式レジストリ(RDAP)への過剰な連続アクセスによる制限（HTTP 429エラー等）を防ぐため、RDAP有効時は自動的に「単一スレッド / 5秒待機」の安全モードで動作するよう改修しました。\n
-        * また、RDAPやIP逆引き(rDNS)のオプション有効時は、設定の競合を防ぐために「API処理モード(速度設定)」の選択UIが自動で非表示となり、現在の制限状態が明示されるよう設計を見直しました。            
+        **🧮 動的サブネット・ネットワーク範囲計算機能の追加**: 
+        * 個別IPのHTMLレポートに「サブネット情報」タブを追加しました。RDAPから取得した公式割当範囲（startAddress / endAddress）に基づき、正確なCIDRブロックとネットワーク境界を自動で逆算し可視化します。公式情報がない場合は実務上の基準である /24 を適用します。\n
+        **⚙️ レポート出力項目の個別選択とUI最適化**: 
+        * 一括ダウンロードや個別レポート出力時に、必要な情報ブロック（サブネット、RDAP、IPinfo、VPNAPI、SecurityTrails、逆引き）だけを選択・除外できるフィルター機能を追加し、ペーパーレス化と可読性を向上させました。\n
+        * さらに、APIキー未設定の機能や、検索前のオプションでオフに設定した機能については、レポート出力選択のチェックボックスが自動的に無効化（グレーアウト）されるようUIを改善しました。
         """)
     # ------------------------------------------------
     # タブを使って入力モードを切り替え、画面を広く使う
@@ -3748,7 +3839,7 @@ def main():
             target_order = {ip: i for i, ip in enumerate(targets)}
             display_res.sort(key=lambda x: target_order.get(get_copy_target(x['Target_IP']), float('inf')))
 
-        display_results(display_res, current_mode_full_text, display_mode)
+        display_results(display_res, current_mode_full_text, display_mode, use_rdap_option, pro_api_key, vpnapi_key, st_api_key, use_rdns_option)
         
         if not st.session_state.is_searching or st.session_state.cancel_search:
             isp_df, country_df, freq_df, country_all_df, isp_full_df, country_full_df, freq_full_df, proxy_df = summarize_in_realtime(st.session_state.raw_results)
@@ -3779,11 +3870,11 @@ def main():
                         info = result_lookup.get(t, {})
                         temp_rows.append({
                             '対象IP/Domain': t,
+                            '国名': info.get('Country_JP', 'N/A'),
                             'Whois結果（元データ）': info.get('ISP', 'N/A'),
                             'Whois結果（日本語名称）': info.get('ISP_JP', 'N/A'),
                             'RDAP結果（元データ）': info.get('RDAP_Name_Raw', 'N/A'),
                             'RDAP結果（日本語名称）': info.get('RDAP_JP', 'N/A'),
-                            '国名': info.get('Country_JP', 'N/A'),
                             'プロキシ種別': info.get('Proxy_Type', ''),
                             'IoTリスク': info.get('IoT_Risk', 'N/A'),
                             'ステータス': info.get('Status', 'N/A')
@@ -3846,11 +3937,11 @@ def main():
                     csv_display = pd.DataFrame(display_res).astype(str)
                     rename_map = {
                         'Target_IP': 'IPアドレス',
+                        'Country_JP': '国名', 
                         'ISP_API_Raw': 'Whois(元データ)',
                         'ISP_JP': 'Whois(日本語名)',
                         'RDAP_Name_Raw': 'RDAP(元データ)',
                         'RDAP_JP': 'RDAP(日本語名)',
-                        'Country_JP': '国名', 
                         'Proxy_Type': 'Proxy種別',
                         'IoT_Risk': 'IoTリスク',
                         'Status': 'ステータス'
