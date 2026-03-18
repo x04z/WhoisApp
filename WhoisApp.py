@@ -184,6 +184,8 @@ TLD_INFO = {
 }
 
 # --- ISP名称の日本語マッピング (企業名統一版) ---
+
+# --- ISP名称の日本語マッピング (企業名統一版) ---
 ISP_JP_NAME = {
     # --- NTT Group ---
     'NTT Communications Corporation': 'NTTドコモビジネス株式会社', 
@@ -1216,6 +1218,14 @@ def get_domain_details(domain, nslookup_raw="", st_api_key=None, st_start_date=N
         'Proxy_Type': proxy_type_val,
         'DISPOSABLE_SERVICES': detected_disposables,
         'DOMAIN_RDAP_JSON': domain_rdap_json,
+        'DOMAIN_RDAP_URL': domain_rdap_url,
+        'DOMAIN_WHOIS_TEXT': domain_whois_text,
+        'DOMAIN_WHOIS_SERVER': domain_whois_server,
+        'ST_JSON': st_json, 
+        'RDNS_DATA': None,
+        'ST_REVERSE_IP_JSON': None,
+        'IP_WHOIS_TEXT': None,
+        'IP_WHOIS_SERVER': None
     }
 
 def get_simple_mode_details(target):
@@ -2421,7 +2431,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         contents_html += vpnapi_content
 
     # --- 8. SecurityTrails ---
-    if st_json and report_opts.get("securitytrails", True):
+    if st_json and report_opts.get("st", True):
         tab_id = "tab-st"
         if not first_tab_id: first_tab_id = tab_id
         tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">SecurityTrails</button>\n'
@@ -2442,7 +2452,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             for v in values:
                 ip_val = v.get("ip", "")
                 if ip_val:
-                    ips_in_rec.append(html.escape(ip_val))
+                    ips_in_rec.append(html.escape(str(ip_val)))
                     if ip_val not in seen_ips:
                         seen_ips.add(ip_val)
                         unique_ips_ordered.append(ip_val)
@@ -2451,7 +2461,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             first_seen = html.escape(str(rec.get("first_seen", "情報なし")))
             last_seen = html.escape(str(rec.get("last_seen", "情報なし")))
             orgs = rec.get("organizations", [])
-            org = html.escape(orgs[0]) if orgs else "情報なし"
+            org = html.escape(str(orgs[0])) if orgs and orgs[0] else "情報なし"
             st_html_rows += f"<tr><td>{ips}</td><td>{first_seen}</td><td>{last_seen}</td><td>{org}</td></tr>"
             
         if not st_html_rows:
@@ -2459,21 +2469,21 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             
         unique_ips_rows = ""
         for ip in unique_ips_ordered:
-            unique_ips_rows += f"<tr><td><strong>{html.escape(ip)}</strong></td></tr>"
+            unique_ips_rows += f"<tr><td><strong>{html.escape(str(ip))}</strong></td></tr>"
         if not unique_ips_rows:
             unique_ips_rows = "<tr><td style='text-align:center;'>取得されたIPアドレスはありません。</td></tr>"
 
         raw_json_str_st = json.dumps(st_json, indent=4, ensure_ascii=False)
         escaped_json_st = html.escape(raw_json_str_st)
         
-        # &quot; 対応
+        # ハイライト修正 (&quot; に対応)
         highlight_keys_st = ['ip']
         for hk in highlight_keys_st:
             simple_pattern = r'((?:&quot;|")' + hk + r'(?:&quot;|")\s*:\s*[^\n\r]*)'
             escaped_json_st = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json_st)
             
         table_heading = "レコード履歴 (抽出結果全件)" if is_date_filtered else "レコード履歴 (最新20件)"
-        target_domain_esc = html.escape(domain_name_for_nslookup)
+        target_domain_esc = html.escape(str(domain_name_for_nslookup))
         url_a = f"https://api.securitytrails.com/v1/history/{target_domain_esc}/dns/a"
         url_aaaa = f"https://api.securitytrails.com/v1/history/{target_domain_esc}/dns/aaaa"
         
@@ -2481,8 +2491,8 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         date_filter_html = ""
         if is_date_filtered and st_start_date_str and st_end_date_str:
             date_filter_html = f"""
-                <tr><th>抽出期間 (開始日)<br>(Start Date)</th><td><strong>{html.escape(st_start_date_str)}</strong></td></tr>
-                <tr><th>抽出期間 (終了日)<br>(End Date)</th><td><strong>{html.escape(st_end_date_str)}</strong></td></tr>
+                <tr><th>抽出期間 (開始日)<br>(Start Date)</th><td><strong>{html.escape(str(st_start_date_str))}</strong></td></tr>
+                <tr><th>抽出期間 (終了日)<br>(End Date)</th><td><strong>{html.escape(str(st_end_date_str))}</strong></td></tr>
             """
         
         st_content = f"""
@@ -2520,7 +2530,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
 
     # --- 8.5 SecurityTrails (Reverse IP) ---
     st_rev_json = res.get('ST_REVERSE_IP_JSON')
-    if st_rev_json and report_opts.get("securitytrails", True):
+    if st_rev_json and report_opts.get("st", True):
         tab_id = "tab-st-revip"
         if not first_tab_id: first_tab_id = tab_id
         tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">Reverse IP</button>\n'
@@ -2530,9 +2540,9 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         
         rev_html_rows = ""
         for rec in records:
-            hostname = html.escape(rec.get("hostname", ""))
+            hostname = rec.get("hostname", "")
             if hostname:
-                rev_html_rows += f"<tr><td><strong>{hostname}</strong></td></tr>"
+                rev_html_rows += f"<tr><td><strong>{html.escape(str(hostname))}</strong></td></tr>"
                 
         if not rev_html_rows:
             rev_html_rows = "<tr><td style='text-align:center;'>紐づくドメインは見つかりませんでした。</td></tr>"
@@ -2542,7 +2552,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         
         # JSONハイライト機能の追加："hostname" の行を対象にする
         import re
-        simple_pattern_rev = r'("(?:hostname)":\s*".*?")'
+        simple_pattern_rev = r'((?:&quot;|")hostname(?:&quot;|"):\s*(?:&quot;|").*?(?:&quot;|"))'
         escaped_json_rev = re.sub(simple_pattern_rev, r'<span class="json-hl">\1</span>', escaped_json_rev)
         
         rev_content = f"""
