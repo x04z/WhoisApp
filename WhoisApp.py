@@ -32,6 +32,23 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 # ページ設定
 st.set_page_config(layout="wide", page_title="検索大臣", page_icon="🔎")
 
+st.markdown("""
+<style>
+/* グラフ描画時のフェードインアニメーション */
+@keyframes fadeIn {
+    from { opacity: 0.5; transform: translateY(2px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.stAltairChart {
+    animation: fadeIn 0.6s ease-out;
+}
+/* プログレスバーの滑らかな遷移 */
+.stProgress > div > div {
+    transition: width 0.5s ease-in-out !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # ==========================================
 #  [Local User Config] API Key Hardcoding
 # ==========================================
@@ -396,10 +413,20 @@ def get_jp_names(english_isp, country_code):
     jp_country = COUNTRY_JP_NAME.get(country_code, country_code)
     return jp_isp, jp_country
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 @st.cache_resource
 def get_session():
     session = requests.Session()
     session.headers.update({"User-Agent": "WhoisBatchTool/2.4 (+RDAP)"})
+    
+    # ネットワーク瞬断に対応するための自動リトライ機能 (3回, バックオフ)
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
     return session
 
 session = get_session()
@@ -1132,6 +1159,11 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         if cidr_block:
             new_cache_entry = { cidr_block: result } 
 
+    except requests.exceptions.ConnectionError:
+        # 物理的なネットワーク切断（Wi-Fi切れ等）を検知した場合、15秒間保留キューに入れる
+        result['Status'] = '待機: ネットワーク切断 (自動再試行します)'
+        result['Defer_Until'] = time.time() + 15
+        return result, None, None
     except requests.exceptions.Timeout:
         result['Status'] = 'エラー: 応答タイムアウト (相手サーバーの混雑または停止)'
     except requests.exceptions.HTTPError as e:
@@ -3023,7 +3055,12 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                 for res in target_results:
                     target_ip = res.get('Target_IP', 'N/A')
                     clean_ip = get_copy_target(target_ip)
-                    html_report = generate_individual_html_report(res, clean_ip, current_report_opts)
+                    
+                    full_res = {**res}
+                    if clean_ip in st.session_state.get('detailed_data', {}):
+                        full_res.update(st.session_state['detailed_data'][clean_ip])
+                    
+                    html_report = generate_individual_html_report(full_res, clean_ip, current_report_opts)
                     if html_report:
                         safe_filename = re.sub(r'[\\/*?:"<>|]', "_", clean_ip)
                         zip_file.writestr(f"Report_{safe_filename}.html", html_report.encode('utf-8'))
@@ -3054,7 +3091,15 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                     )
             st.divider()
         
-        for i, res in enumerate(target_results):
+        # Rendering Overload（UI崩壊）を防ぐためのハードリミット設定
+        DISPLAY_LIMIT = 50 
+        if total_selected > DISPLAY_LIMIT:
+            st.warning(f"⚠️ **ブラウザ保護制限**: 選択された件数（{total_selected}件）が上限を超えています。UIのフリーズを防ぐため、画面上での個別プレビューは最初の {DISPLAY_LIMIT} 件のみ表示しています。\n全件分のレポートが必要な場合は、上部の「複数レポート一括ダウンロード」から取得してください。")
+            display_targets = target_results[:DISPLAY_LIMIT]
+        else:
+            display_targets = target_results
+
+        for i, res in enumerate(display_targets):
             target_ip = res.get('Target_IP', 'N/A')
             clean_ip = get_copy_target(target_ip)
             
@@ -3103,7 +3148,11 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                         st.caption(f"ISP: {res.get('ISP_JP', '-')} / RDAP: {res.get('RDAP_JP', '-')}")    
                     with c2:
                         # HTMLレポート生成
-                        html_report = generate_individual_html_report(res, clean_ip, current_report_opts)
+                        full_res = {**res}
+                        if clean_ip in st.session_state.get('detailed_data', {}):
+                            full_res.update(st.session_state['detailed_data'][clean_ip])
+                            
+                        html_report = generate_individual_html_report(full_res, clean_ip, current_report_opts)
                         if html_report:
                             st.download_button(
                                 label=f"⬇️ レポートDL ({clean_ip})",
@@ -3277,7 +3326,8 @@ def main():
     if 'target_freq_map' not in st.session_state: st.session_state['target_freq_map'] = {} 
     if 'cidr_cache' not in st.session_state: st.session_state['cidr_cache'] = {} 
     if 'debug_summary' not in st.session_state: st.session_state['debug_summary'] = {}
-    
+    if 'detailed_data' not in st.session_state: st.session_state['detailed_data'] = {}
+
     # --- セッション中のみ有効な学習済みプロキシISPリスト ---
     if 'learned_proxy_isps' not in st.session_state:
         st.session_state['learned_proxy_isps'] = {} # {ISP名: ProxyType}
@@ -4096,9 +4146,15 @@ def main():
                     for d in domain_targets:
                         dns_data = st.session_state.get('resolved_dns_map', {}).get(d, {})
                         ns_raw = dns_data.get('raw', '') if isinstance(dns_data, dict) else str(dns_data)
-                        st.session_state.raw_results.append(get_domain_details(d, ns_raw, st_api_key, st_start_date, st_end_date))
+                        res_domain = get_domain_details(d, ns_raw, st_api_key, st_start_date, st_end_date)
+                        
+                        heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT']
+                        ip_val = res_domain['Target_IP']
+                        st.session_state.detailed_data[ip_val] = {k: res_domain.pop(k) for k in heavy_keys if k in res_domain}
+                        
+                        st.session_state.raw_results.append(res_domain)
                     st.session_state.finished_ips.update(domain_targets)
-                    
+
                 prog_bar_container = st.empty()
                 status_text_container = st.empty()
                 summary_container = st.empty() 
@@ -4146,6 +4202,9 @@ def main():
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
+
+                        # UI更新用のタイマー初期化
+                        last_ui_update_time = time.time()
                         
                         while remaining and not st.session_state.cancel_search:
                             done, remaining = wait(remaining, timeout=0.1, return_when=FIRST_COMPLETED)
@@ -4166,15 +4225,26 @@ def main():
                                     if new_learned_isp:
                                         st.session_state.learned_proxy_isps.update(new_learned_isp)
                                     if res.get('Status', '').startswith('Success'):
+                                        heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT']
+                                        st.session_state.detailed_data[ip] = {k: res.pop(k) for k in heavy_keys if k in res}
+                                        
                                         st.session_state.raw_results.append(res)
                                         st.session_state.finished_ips.add(ip)
                                     elif res.get('Defer_Until'):
                                         st.session_state.deferred_ips[ip] = res['Defer_Until']
                                     else:
+                                        heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT']
+                                        st.session_state.detailed_data[ip] = {k: res.pop(k) for k in heavy_keys if k in res}
+                                        
                                         st.session_state.raw_results.append(res)
                                         st.session_state.finished_ips.add(ip)
 
-                                if total_ip_api_targets > 0:
+                                current_time_for_ui = time.time()
+                                is_last_item = not remaining and not st.session_state.deferred_ips
+
+                                if total_ip_api_targets > 0 and (current_time_for_ui - last_ui_update_time > 1.5 or is_last_item):
+                                    last_ui_update_time = current_time_for_ui # タイマーをリセット
+                                    
                                     processed_api_ips_count = len([ip for ip in st.session_state.finished_ips if is_valid_ip(ip)])
                                     pct = int(processed_api_ips_count / total_ip_api_targets * 100)
                                     elapsed_time = time.time() - st.session_state.search_start_time
@@ -4196,8 +4266,7 @@ def main():
                                     
                                     isp_df, country_df, freq_df, country_all_df, isp_full_df, country_full_df, freq_full_df, proxy_df = summarize_in_realtime(st.session_state.raw_results)
                                     
-                                    # コンテナを一度空にしてから再描画し、無限増殖を防ぐ
-                                    summary_container.empty()
+                                    # empty()による全消去を廃止し、直接上書きさせることで点滅を防ぐ
                                     with summary_container.container():
                                         draw_summary_content(isp_df, country_df, freq_df, country_all_df, proxy_df, "📊 リアルタイム分析") 
 
@@ -4220,7 +4289,6 @@ def main():
                 if len(st.session_state.finished_ips) == total_targets and not st.session_state.deferred_ips:
                     st.session_state.is_searching = False
                     st.info("✅ 全ての検索が完了しました。")
-                    summary_container.empty()
                     st.rerun()
                 
                 elif st.session_state.deferred_ips and not st.session_state.cancel_search:
@@ -4229,15 +4297,13 @@ def main():
                     
                     prog_bar_container.empty()
                     status_text_container.empty()
-                    summary_container.empty()
-                    st.warning(f"⚠️ **APIレートリミットに達しました。** 隔離中の **{len(st.session_state.deferred_ips)}** 件のIPアドレスは **{wait_time}** 秒後に再試行されます。")
+                    st.warning(f"⚠️ **ネットワーク切断、またはAPI制限を検知しました。** 保留中の **{len(st.session_state.deferred_ips)}** 件のターゲットは通信回復を待ち、**{wait_time}** 秒後に自動で再試行されます。")
                     time.sleep(min(5, wait_time)) 
                     st.rerun()
 
                 elif st.session_state.cancel_search:
                     prog_bar_container.empty()
                     status_text_container.empty()
-                    summary_container.empty()
                     st.warning("検索がユーザーによって中止されました。")
                     st.session_state.is_searching = False
                     st.rerun()
