@@ -992,6 +992,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         # KeyError回避のため .get() を使用 (キーがない場合は0を返し、必ず再取得させる)
         if time.time() - cached_data.get('Timestamp', 0) < 86400:
             result.update(cached_data) 
+            result['Target_IP'] = ip  # 本来のリクエストIPを再設定し、キャッシュによる上書きを防ぐ
             result['Status'] = "Success (Cache)" 
             result['Secondary_Security_Links'] = create_secondary_links(ip)
             return result, None, None
