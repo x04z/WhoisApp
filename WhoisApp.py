@@ -9,7 +9,9 @@ import struct
 import ipaddress
 from urllib.parse import quote
 import math
+import random
 import altair as alt 
+alt.data_transformers.disable_max_rows() # 5000行以上の大容量データセットの描画を許可する
 import json 
 import io 
 import re 
@@ -19,6 +21,135 @@ import dns.reversename
 import dns
 import zipfile
 import datetime
+import tempfile
+import os
+import bisect
+import uuid
+
+BACKUP_FILE = "whois_recovery_session.json"
+BACKUP_DETAILS_FILE = "whois_recovery_details.json"
+
+def save_recovery_data():
+    """ 検索進捗と詳細データをローカルに退避させる """
+    if IS_PUBLIC_MODE: return # パブリック環境ではストレージ保護のため無効化
+    try:
+        session_data = {
+            'raw_results': st.session_state.raw_results,
+            'targets_cache': st.session_state.targets_cache,
+            'deferred_ips': st.session_state.deferred_ips,
+            'finished_ips': list(st.session_state.finished_ips),
+            'target_freq_map': st.session_state.target_freq_map,
+            'cidr_cache': st.session_state.cidr_cache,
+            'learned_proxy_isps': st.session_state.learned_proxy_isps,
+            'resolved_dns_map': st.session_state.resolved_dns_map,
+        }
+        
+        # 一時ファイルに完全に書き込んでからリネーム(アトミック書き込み)し、クラッシュ時のデータ破損を防ぐ
+        tmp_session = BACKUP_FILE + ".tmp"
+        tmp_details = BACKUP_DETAILS_FILE + ".tmp"
+        
+        with open(tmp_session, "w", encoding="utf-8") as f:
+            json.dump(session_data, f, ensure_ascii=False)
+        with open(tmp_details, "w", encoding="utf-8") as f:
+            json.dump(st.session_state.detailed_data, f, ensure_ascii=False)
+            
+        os.replace(tmp_session, BACKUP_FILE)
+        os.replace(tmp_details, BACKUP_DETAILS_FILE)
+    except TypeError as e:
+        import logging
+        logging.error(f"[Recovery Save Error] JSONシリアライズ失敗: {e}")
+    except OSError as e:
+        import logging
+        logging.error(f"[Recovery Save Error] ファイル保存/置換失敗: {e}")
+
+def load_recovery_data():
+    """ 中断されたデータを復元し、再開フラグを立てる """
+    if IS_PUBLIC_MODE: return False
+    try:
+        if os.path.exists(BACKUP_FILE) and os.path.exists(BACKUP_DETAILS_FILE):
+            with open(BACKUP_FILE, "r", encoding="utf-8") as f:
+                session_data = json.load(f)
+            with open(BACKUP_DETAILS_FILE, "r", encoding="utf-8") as f:
+                detailed_data = json.load(f)
+                
+            st.session_state.raw_results = session_data['raw_results']
+            st.session_state.targets_cache = session_data['targets_cache']
+            st.session_state.deferred_ips = session_data['deferred_ips']
+            st.session_state.finished_ips = set(session_data['finished_ips'])
+            st.session_state.target_freq_map = session_data['target_freq_map']
+            st.session_state.cidr_cache = session_data['cidr_cache']
+            st.session_state.learned_proxy_isps = session_data['learned_proxy_isps']
+            st.session_state.resolved_dns_map = session_data['resolved_dns_map']
+            st.session_state.detailed_data = detailed_data
+            
+            st.session_state.is_searching = True
+            st.session_state.cancel_search = False
+            return True
+    except Exception:
+        pass
+    return False
+
+def clear_recovery_data():
+    """ 正常終了時や新規検索時にバックアップを破棄する """
+    if IS_PUBLIC_MODE: return
+    try:
+        if os.path.exists(BACKUP_FILE): os.remove(BACKUP_FILE)
+        if os.path.exists(BACKUP_DETAILS_FILE): os.remove(BACKUP_DETAILS_FILE)
+    except OSError as e:
+        import logging
+        logging.warning(f"バックアップファイルの削除に失敗しました: {e}")
+
+import platform
+
+def open_local_path(path):
+    """ ローカルPCでファイルやフォルダをOSの標準機能で開く """
+    if IS_PUBLIC_MODE: return
+    try:
+        if platform.system() == 'Windows':
+            os.startfile(path)
+        elif platform.system() == 'Darwin': # macOS
+            subprocess.Popen(['open', path])
+        else: # Linux etc.
+            subprocess.Popen(['xdg-open', path])
+    except Exception as e:
+        st.error(f"ファイルを開けませんでした: {e}")
+
+def save_file_to_local(filename, data, export_dir=None):
+    """ ローカル環境専用: ファイルを直接ディスクに保存して絶対パスを返す """
+    if not export_dir:
+        export_dir = os.path.join(os.getcwd(), "exports")
+    
+    os.makedirs(export_dir, exist_ok=True)
+    filepath = os.path.abspath(os.path.join(export_dir, filename))
+    
+    mode = "wb" if isinstance(data, bytes) else "w"
+    encoding = None if isinstance(data, bytes) else "utf-8"
+    
+    with open(filepath, mode, encoding=encoding) as f:
+        f.write(data)
+    return filepath
+
+def render_local_save_ui(button_label, filename, data, key_prefix, button_type="primary"):
+    """ ローカル保存ボタンと「開く」アクションを統合したUIコンポーネント """
+    save_btn = st.button(button_label, type=button_type, width="stretch", key=f"btn_save_{key_prefix}")
+    local_export_dir = st.session_state.get('local_export_dir', None)
+    
+    if save_btn:
+        saved_path = save_file_to_local(filename, data, local_export_dir)
+        st.session_state[f'saved_path_{key_prefix}'] = saved_path
+        
+    # 保存成功後のUI表示
+    if st.session_state.get(f'saved_path_{key_prefix}'):
+        saved_path = st.session_state[f'saved_path_{key_prefix}']
+        st.success(f"📂 **保存完了:** `{saved_path}`")
+        
+        col_open1, col_open2 = st.columns(2)
+        with col_open1:
+            if st.button("📄 ファイルを開く (Excel/ブラウザ等)", key=f"btn_open_file_{key_prefix}", width="stretch"):
+                open_local_path(saved_path)
+        with col_open2:
+            if st.button("📁 フォルダを開く (保存先)", key=f"btn_open_dir_{key_prefix}", width="stretch"):
+                open_local_path(os.path.dirname(saved_path))
 
 # --- Excelグラフ生成用ライブラリ ---
 from openpyxl import Workbook
@@ -87,6 +218,18 @@ VPNAPI_URL = "https://vpnapi.io/api/{ip}?key={key}"
 RDAP_BOOTSTRAP_URL = "https://rdap.apnic.net/ip/{ip}"
 
 RATE_LIMIT_WAIT_SECONDS = 120 
+
+# パブリックDNSサーバーリスト (分散処理用)
+PUBLIC_DNS_SERVERS = [
+    '8.8.8.8', '8.8.4.4',             # Google
+    '1.1.1.1', '1.0.0.1',             # Cloudflare
+    '9.9.9.9', '149.112.112.112',     # Quad9
+    '208.67.222.222', '208.67.220.220'# OpenDNS
+]
+PUBLIC_DNS_V6_SERVERS = [
+    '2001:4860:4860::8888', '2001:4860:4860::8844', # Google
+    '2606:4700:4700::1111', '2606:4700:4700::1001'  # Cloudflare
+]
   
 RIR_LINKS = {
     'RIPE': 'https://apps.db.ripe.net/db-web-ui/#/query?searchtext={ip}',
@@ -201,8 +344,6 @@ TLD_INFO = {
 }
 
 # --- ISP名称の日本語マッピング (企業名統一版) ---
-
-# --- ISP名称の日本語マッピング (企業名統一版) ---
 ISP_JP_NAME = {
     # --- NTT Group ---
     'NTT Communications Corporation': 'NTTドコモビジネス株式会社', 
@@ -292,27 +433,119 @@ ISP_JP_NAME_NORMALIZED = {normalize_isp_key(k): v for k, v in ISP_JP_NAME.items(
 
 # --- 匿名化・プロキシ判定用データ ---
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=10)
 def fetch_tor_exit_nodes():
     try:
         url = "https://check.torproject.org/exit-addresses"
         response = requests.get(url, timeout=10)
+        response.raise_for_status()
         return set([line.split()[1] for line in response.text.splitlines() if line.startswith("ExitAddress")])
-    except:
+    except requests.exceptions.RequestException as e:
+        import logging
+        logging.warning(f"Tor出口ノードリストの取得に失敗しました: {e}")
         return set()
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400*3, show_spinner=False)
+def fetch_cloud_ip_ranges():
+    """ 主要クラウドプロバイダの公式IPレンジ(JSON)を動的に取得し、二分探索用に最適化する """
+    cloud_ranges_v4 = []
+    cloud_ranges_v6 = []
+
+    def add_range(cidr_str, provider):
+        try:
+            net = ipaddress.ip_network(cidr_str, strict=False)
+            if net.version == 4:
+                cloud_ranges_v4.append((int(net.network_address), int(net.broadcast_address), provider))
+            else:
+                cloud_ranges_v6.append((int(net.network_address), int(net.broadcast_address), provider))
+        except Exception:
+            pass
+
+    # 1. AWS (Amazon Web Services)
+    try:
+        r = requests.get("https://ip-ranges.amazonaws.com/ip-ranges.json", timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            for prefix in data.get("prefixes", []): add_range(prefix.get("ip_prefix"), "AWS")
+            for prefix in data.get("ipv6_prefixes", []): add_range(prefix.get("ipv6_prefix"), "AWS")
+    except: pass
+
+    # 2. GCP (Google Cloud Platform)
+    try:
+        r = requests.get("https://www.gstatic.com/ipranges/cloud.json", timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            for prefix in data.get("prefixes", []):
+                if "ipv4Prefix" in prefix: add_range(prefix["ipv4Prefix"], "GCP")
+                if "ipv6Prefix" in prefix: add_range(prefix["ipv6Prefix"], "GCP")
+    except: pass
+
+    # 3. Azure (Microsoft Download Centerをスクレイピングして動的URLを取得)
+    try:
+        dl_page = requests.get("https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519", timeout=10)
+        match = re.search(r'href="(https://download\.microsoft\.com/download/.*?/ServiceTags_Public_.*?\.json)"', dl_page.text)
+        if match:
+            azure_url = match.group(1)
+            r = requests.get(azure_url, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                for val in data.get("values", []):
+                    for prefix in val.get("properties", {}).get("addressPrefixes", []):
+                        add_range(prefix, "Azure")
+    except: pass
+
+    # 4. Cloudflare (Reverse Proxy / WAF)
+    try:
+        r_v4 = requests.get("https://www.cloudflare.com/ips-v4", timeout=5)
+        if r_v4.status_code == 200:
+            for line in r_v4.text.splitlines(): add_range(line.strip(), "Cloudflare")
+        r_v6 = requests.get("https://www.cloudflare.com/ips-v6", timeout=5)
+        if r_v6.status_code == 200:
+            for line in r_v6.text.splitlines(): add_range(line.strip(), "Cloudflare")
+    except: pass
+
+    # 二分探索(O(log N))できるように開始IPの整数値でソート
+    cloud_ranges_v4.sort(key=lambda x: x[0])
+    cloud_ranges_v6.sort(key=lambda x: x[0])
+
+    return {"v4": cloud_ranges_v4, "v6": cloud_ranges_v6}
+
+def check_cloud_provider(ip_str, cloud_data):
+    """ IPアドレスがクラウド事業者の公式リストに含まれているかを超高速で判定する """
+    if not cloud_data: return None
+    try:
+        ip_obj = ipaddress.ip_address(ip_str)
+        ip_int = int(ip_obj)
+        target_list = cloud_data["v4"] if ip_obj.version == 4 else cloud_data["v6"]
+
+        # 二分探索で「開始IPが探しているIP以下の最大のインデックス」を見つける
+        keys = [r[0] for r in target_list]
+        idx = bisect.bisect_right(keys, ip_int) - 1
+
+        if idx >= 0:
+            start_ip, end_ip, provider = target_list[idx]
+            if start_ip <= ip_int <= end_ip:
+                return provider
+    except:
+        pass
+    return None
+
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=10)
 def fetch_disposable_domains():
     """ GitHubの有名リポジトリから最新の捨てアドドメイン一覧を取得 (1日1回更新) """
     try:
         url = "https://raw.githubusercontent.com/disposable-email-domains/disposable-email-domains/master/disposable_email_blocklist.conf"
         response = requests.get(url, timeout=10)
+        response.raise_for_status()
         if response.status_code == 200:
             # 空行とコメントを除外し、小文字でセット（集合）に格納して高速化
             return set([line.strip().lower() for line in response.text.splitlines() if line.strip() and not line.startswith('//')])
-    except Exception:
-        pass
+    except requests.exceptions.RequestException as e:
+        import logging
+        logging.warning(f"使い捨てドメインリストの取得に失敗しました: {e}")
     return set()
+
+
 
 # --- 捨てアド (Disposable Email) 検知用グローバル辞書 ---
 DISPOSABLE_MX_SERVICES = {
@@ -431,7 +664,7 @@ def get_session():
 
 session = get_session()
 
-@st.cache_data
+@st.cache_data(max_entries=10)
 def get_world_map_data():
     try:
         world_geojson = alt.topo_feature('https://cdn.jsdelivr.net/npm/vega-datasets@v1.29.0/data/world-110m.json', 'countries')
@@ -621,7 +854,7 @@ def fetch_rdap_data(ip):
     return None
 
 # ドメイン専用RDAP取得関数
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=1000)
 def fetch_domain_rdap_data(domain):
     """ ドメイン専用のRDAP情報を取得する関数 (rdap.org リゾルバを利用) """
     try:
@@ -639,7 +872,7 @@ def fetch_domain_rdap_data(domain):
         pass
     return None
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=2000)
 def fetch_classic_whois(target):
     """ OS非依存：Port 43を利用した旧式WHOIS取得 (ドメイン・IP両対応) """
     import socket
@@ -757,8 +990,9 @@ def get_securitytrails_data(domain, api_key, start_date=None, end_date=None):
         # print(f"[Timeout] SecurityTrails API (A): {domain}")
         pass
     except requests.exceptions.HTTPError as e:
-        # 404(Not Found)や401(Unauthorized)などのHTTPエラー
-        # print(f"[HTTP Error] SecurityTrails API (A): {e}")
+        # 月間制限(50回)等のレートリミット到達時、エラーフラグを返す
+        if e.response is not None and e.response.status_code == 429:
+            return {"error": "rate_limit"}
         pass
     except requests.exceptions.RequestException as e:
         # その他のネットワークエラー（DNS解決失敗など）
@@ -784,8 +1018,9 @@ def get_securitytrails_data(domain, api_key, start_date=None, end_date=None):
         # print(f"[Timeout] SecurityTrails API (AAAA): {domain}")
         pass
     except requests.exceptions.HTTPError as e:
-        # 404(Not Found)や401(Unauthorized)などのHTTPエラー
-        # print(f"[HTTP Error] SecurityTrails API (AAAA): {e}")
+        # AAAAレコード側にもレートリミット到達の検知を追加
+        if e.response is not None and e.response.status_code == 429:
+            return {"error": "rate_limit"}
         pass
     except requests.exceptions.RequestException as e:
         # その他のネットワークエラー
@@ -831,7 +1066,8 @@ def get_securitytrails_data(domain, api_key, start_date=None, end_date=None):
     return None
 
 # SecurityTrails API取得関数 (Reverse IP / ドメイン逆検索)
-def get_securitytrails_reverse_ip(ip, api_key):
+# fetch_allフラグを受け取り、ページネーションループを回す
+def get_securitytrails_reverse_ip(ip, api_key, fetch_all=False):
     """ SecurityTrails APIを使用してIPアドレスに紐づくドメイン群を取得する """
     if not api_key or not ip:
         return None
@@ -842,19 +1078,45 @@ def get_securitytrails_reverse_ip(ip, api_key):
         "content-type": "application/json"
     }
     
-    # IPv4かIPv6かでフィルタのキーを分岐
     ip_key = "ipv4" if is_ipv4(ip) else "ipv6"
-    payload = {
-        "filter": {
-            ip_key: ip
-        }
-    }
+    payload = {"filter": {ip_key: ip}}
     
     try:
         url = "https://api.securitytrails.com/v1/domains/list"
         res = session.post(url, headers=headers, json=payload, timeout=10)
         res.raise_for_status()
-        return res.json()
+        data = res.json()
+        
+        # 全件取得オンかつ複数ページある場合、次ページを取得し続ける
+        if fetch_all:
+            total_pages = data.get('meta', {}).get('total_pages', 1)
+            current_page = 1
+            # 念のため暴走防止で最大100ページ（1万件）で頭打ちにする
+            while current_page < total_pages and current_page <= 100:
+                current_page += 1
+                payload['page'] = current_page
+                try:
+                    time.sleep(1) # API制限回避のウェイト
+                    res_next = session.post(url, headers=headers, json=payload, timeout=10)
+                    res_next.raise_for_status()
+                    data_next = res_next.json()
+                    if 'records' in data_next:
+                        data['records'].extend(data_next['records'])
+                except requests.exceptions.HTTPError as e:
+                    if e.response is not None and e.response.status_code == 429:
+                        data['error'] = "rate_limit_during_pagination" # 途中で制限に達した専用フラグ
+                        break
+                    else:
+                        break
+                except Exception:
+                    break
+        return data
+        
+    except requests.exceptions.HTTPError as e:
+        # 初回リクエストでのレートリミット到達検知
+        if e.response is not None and e.response.status_code == 429:
+            return {"error": "rate_limit"}
+        return None
     except Exception:
         return None
 
@@ -911,6 +1173,9 @@ def check_internetdb_risk(ip, max_retries=3):
                     return "[No Match (Other Ports)]"
                 return "[No Match]"
             
+        except requests.exceptions.ConnectionError:
+            # 物理的なネットワーク切断時は上位ループへ例外を投げ、15秒待機のサーキットブレーカーを発動させる
+            raise
         except requests.exceptions.Timeout:
             # 最終試行でもタイムアウトした場合のみエラーを返す
             if attempt == max_retries - 1:
@@ -933,6 +1198,11 @@ def get_vpnapi_data(ip, api_key):
     try:
         url = VPNAPI_URL.format(ip=ip, key=api_key)
         response = session.get(url, timeout=5)
+        
+        # レートリミット到達検知
+        if response.status_code == 429:
+            return {"error": "rate_limit"}
+            
         response.raise_for_status()
         if response.status_code == 200:
             data = response.json()
@@ -961,7 +1231,7 @@ def resolve_ip_nslookup(ip):
         
         # システムの不安定なDNS設定を回避し、信頼できる公開DNS（Google/Cloudflare）を明示的に指定
         resolver = dns.resolver.Resolver(configure=False)
-        resolver.nameservers = ['8.8.8.8', '1.1.1.1', '2001:4860:4860::8888']
+        resolver.nameservers = random.sample(PUBLIC_DNS_SERVERS, 2)
         resolver.timeout = 3 # 高速応答を期待し、タイムアウトを3秒に最適化
         resolver.lifetime = 3
         
@@ -993,8 +1263,7 @@ def resolve_ip_nslookup(ip):
     return hostnames, raw_output
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, use_rdap, use_internetdb, use_rdns, use_st_reverse_ip, api_key=None, vpnapi_key=None, st_api_key=None, st_start_date=None, st_end_date=None):
-
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, cloud_ip_data, use_rdap, use_internetdb, use_rdns, use_st_reverse_ip, api_key=None, vpnapi_key=None, st_api_key=None, st_start_date=None, st_end_date=None, use_st_rev_fetchall=False):
     actual_ip = extract_actual_ip(ip)
     
     result = {
@@ -1074,26 +1343,37 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 result['Status'] = f"エラー: IP情報取得失敗 ({data.get('message', '原因不明')})"
                 return result, None, None
 
-        # --- 匿名通信 高精度判定 (Tor & VPNAPI.io) ---
-        # 1. 初期値の設定 (Tor判定のみ先行)
+        # --- 匿名通信・クラウドインフラ 高精度判定 ---
+        
+        # 1. 公式リスト・Torリストに基づく自前判定
+        cloud_provider = check_cloud_provider(actual_ip, cloud_ip_data)
+        
         if actual_ip in tor_nodes:
-            result['Proxy_Type'] = "Tor Node"
+            result['Proxy_Type'] = "🧅 TorNode"
+        elif cloud_provider:
+            result['Proxy_Type'] = f"☁️ Hosting ({cloud_provider})"
         else:
             result['Proxy_Type'] = ""
 
-        # 2. VPNAPI.io による実地検証
+        # 2. VPNAPI.io による実地検証 (APIキーがある場合のみ上書き・結合)
         if vpnapi_key:
             proxy_data = get_vpnapi_data(actual_ip, vpnapi_key)
             if proxy_data:
                 result['VPNAPI_JSON'] = proxy_data
                 sec = proxy_data.get('security', {})
-                # いずれかの匿名化手法がTrueか判定
                 if any(sec.values()):
                     detected = [k.upper() for k, v in sec.items() if v]
                     p_type = "/".join(detected)
-                    result['Proxy_Type'] = f"[{p_type}] (Confirmed)"
+                    # クラウドとVPNの両方に合致した場合は情報を結合
+                    if cloud_provider:
+                        result['Proxy_Type'] = f"[{p_type}] (Confirmed) on {cloud_provider}"
+                    else:
+                        result['Proxy_Type'] = f"[{p_type}] (Confirmed)"
                 else:
-                    result['Proxy_Type'] = "Standard Connection (API Verified)"
+                    if cloud_provider:
+                        result['Proxy_Type'] = f"☁️ Hosting ({cloud_provider} / API Confirmed)"
+                    else:
+                        result['Proxy_Type'] = "Standard Connection (API Verified)"
         
         # --- RDAP等の補助データ取得 ---
         if use_rdap:
@@ -1106,13 +1386,15 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                 rdap_jp, _ = get_jp_names(raw_rdap_name, result['CountryCode'])
                 result['RDAP_JP'] = rdap_jp
 
-            # IPアドレス用のClassic WHOISも取得して保管する
-            w_text_ip, w_server_ip = fetch_classic_whois(actual_ip)
-            if w_text_ip:
-                result['IP_WHOIS_TEXT'] = w_text_ip
-                result['IP_WHOIS_SERVER'] = w_server_ip
-
             is_composite = (actual_ip != ip and "(" in ip)
+
+            # 複合ターゲット（ドメインから解決されたIP）の場合は、生WHOISの取得をスキップしてIP-BANを防ぐ
+            if not is_composite:
+                w_text_ip, w_server_ip = fetch_classic_whois(actual_ip)
+                if w_text_ip:
+                    result['IP_WHOIS_TEXT'] = w_text_ip
+                    result['IP_WHOIS_SERVER'] = w_server_ip
+
             if is_composite:
                 domain_part = ip.split("(")[0].strip()
                 res_d = fetch_domain_rdap_data(domain_part)
@@ -1121,6 +1403,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                     result['DOMAIN_RDAP_URL'] = res_d['url']
                 
                 # RDAPの成否に関わらず、生のWHOISテキストは証拠として常に取得を試みる
+                # （※ドメインのWHOISは get_domain_details で既にキャッシュされているためBANリスクなし）
                 w_text, w_server = fetch_classic_whois(domain_part)
                 if w_text:
                     result['DOMAIN_WHOIS_TEXT'] = w_text
@@ -1136,7 +1419,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
             if rdns_raw: result['RDNS_DATA'] = {'hosts': rdns_hosts, 'raw': rdns_raw}
 
         if use_st_reverse_ip and st_api_key:
-            st_rev_res = get_securitytrails_reverse_ip(actual_ip, st_api_key)
+            st_rev_res = get_securitytrails_reverse_ip(actual_ip, st_api_key, use_st_rev_fetchall)
             if st_rev_res: result['ST_REVERSE_IP_JSON'] = st_rev_res
 
         if use_internetdb:
@@ -1644,6 +1927,84 @@ def generate_full_report_html(isp_full_df, country_full_df, freq_full_df):
     """
     return html_template
 
+# --- 🛡️ 脅威インテリジェンス (STIX 2.1) 生成関数 ---
+def generate_stix2_bundle(results):
+    """ 調査結果をSTIX 2.1形式のBundle (JSON) に変換する """
+    objects = []
+    # STIXの時刻は UTC の ISO8601 形式が必須
+    now_str = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+    # 1. ツール自身のIdentity（作成者）オブジェクト
+    identity_id = f"identity--{uuid.uuid4()}"
+    objects.append({
+        "type": "identity",
+        "spec_version": "2.1",
+        "id": identity_id,
+        "created": now_str,
+        "modified": now_str,
+        "name": "検索大臣 - IP/Domain OSINT Tool",
+        "identity_class": "system"
+    })
+
+    # 2. 各ターゲットをIndicator（脅威インジケーター）オブジェクトとして変換
+    for res in results:
+        target = res.get("Target_IP", "")
+        if not target or target == "N/A": continue
+        
+        # 集約モード時の表記 (1.1.1.1 - 1.1.1.5) やドメイン複合 (example.com (1.1.1.1)) をクリーンアップ
+        clean_target = str(target).split(' - ')[0].split(' ')[0]
+        if "(" in clean_target:
+            clean_target = clean_target.split("(")[0].strip()
+
+        # STIXのサイバー観測パターンの構築
+        if is_ipv4(clean_target):
+            pattern = f"[ipv4-addr:value = '{clean_target}']"
+        elif is_valid_ip(clean_target): # IPv6
+            pattern = f"[ipv6-addr:value = '{clean_target}']"
+        else:
+            pattern = f"[domain-name:value = '{clean_target}']"
+
+        isp = res.get("ISP_JP", "N/A")
+        country = res.get("Country_JP", "N/A")
+        proxy = res.get("Proxy_Type", "")
+        risk = res.get("IoT_Risk", "")
+
+        # 脅威の説明文を構築
+        desc = f"【OSINT調査結果】\nISP: {isp}\n国: {country}\n匿名化/クラウド: {proxy if proxy else 'なし'}\nIoTリスク: {risk}"
+        
+        # SOC向けのアラート用ラベル
+        labels = ["osint-target"]
+        if proxy and proxy != "未検証" and "Standard" not in proxy: 
+            labels.append("anonymization-proxy-vpn")
+        if risk and risk not in ["[No Match]", "[Not Checked]", ""]: 
+            labels.append("vulnerable-iot")
+
+        indicator_id = f"indicator--{uuid.uuid4()}"
+        objects.append({
+            "type": "indicator",
+            "spec_version": "2.1",
+            "id": indicator_id,
+            "created_by_ref": identity_id,
+            "created": now_str,
+            "modified": now_str,
+            "name": f"OSINT Target: {clean_target}",
+            "description": desc,
+            "indicator_types": ["malicious-activity" if len(labels) > 1 else "anomalous-activity"],
+            "pattern": pattern,
+            "pattern_type": "stix",
+            "valid_from": now_str,
+            "labels": labels
+        })
+
+    # 3. すべてを1つのBundleにパッキング
+    bundle = {
+        "type": "bundle",
+        "id": f"bundle--{uuid.uuid4()}",
+        "objects": objects
+    }
+    
+    return json.dumps(bundle, indent=4, ensure_ascii=False)
+
 # 📈 クロス分析用HTMLレポート生成関数
 def generate_cross_analysis_html(chart_spec, x_col, group_col):
     html_template = f"""
@@ -1684,183 +2045,199 @@ def generate_cross_analysis_html(chart_spec, x_col, group_col):
 
 # --- Excel生成ヘルパー関数 ---
 def convert_df_to_excel(df):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Sheet1')
-    return output.getvalue()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+        tmp_excel_path = tmp.name
+    try:
+        with pd.ExcelWriter(tmp_excel_path, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Sheet1')
+        with open(tmp_excel_path, "rb") as f:
+            data = f.read()
+        return data
+    finally:
+        if os.path.exists(tmp_excel_path):
+            os.remove(tmp_excel_path)
 
 # --- Advanced Excel Generator (Pivot & Chart) ---
 def create_advanced_excel(df, time_col_name=None):
-    output = io.BytesIO()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
+        tmp_excel_path = tmp.name
     
-    # 1. IPアドレスが含まれているかを判定
-    target_col = 'IPアドレス' if 'IPアドレス' in df.columns else ('Target_IP' if 'Target_IP' in df.columns else df.columns[0])
-    has_ip = False
-    if target_col in df.columns:
-        has_ip = any(is_valid_ip(str(val)) for val in df[target_col].dropna())
-    
-    # ==========================================
-    # パターンA: すべてドメイン(非IP)の場合
-    # ==========================================
-    if not has_ip:
+    try:
+        # 1. IPアドレスが含まれているかを判定
+        target_col = 'IPアドレス' if 'IPアドレス' in df.columns else ('Target_IP' if 'Target_IP' in df.columns else df.columns[0])
+        has_ip = False
         if target_col in df.columns:
-            df = df.rename(columns={target_col: 'Target Domain'})
-        # 不要な列を削除（日本語名に対応）
-        cols_to_drop = ['Whois結果（元データ）', 'Whois結果（日本語名称）', '国名（英語）', '国名', 'プロキシ種別', 'ステータス', 'IoTリスク', 'RDAP結果（元データ）', 'RDAP結果（日本語名称）', 'ISP', 'ISP_JP', 'Country', 'Country_JP']
-        df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors='ignore')
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Domain Results')
-        return output.getvalue() # ドメインのみの場合はここで終了
-
-    # ==========================================
-    # パターンB: IPアドレスが含まれる場合 (高度な分析グラフ付き)
-    # ==========================================
-    # 必須カラムの補完 (日本語名を基準にする)
-    required_cols = {
-        'プロキシ種別': '未検証',
-        'Whois結果（日本語名称）': 'N/A',
-        'RDAP結果（日本語名称）': 'N/A', # ⬅️ 復活: RDAPを必須カラムに追加
-        '国名': 'N/A'
-    }
-    for col, default_val in required_cols.items():
-        if col not in df.columns:
-            df[col] = default_val
-
-    # データ前処理：空欄や欠損値を「未検証」に統一
-    df['プロキシ種別'] = df['プロキシ種別'].fillna('未検証').replace('', '未検証')
-    
-    has_time_analysis = False
-    if time_col_name and time_col_name in df.columns:
-        try:
-            df['Hour'] = pd.to_datetime(df[time_col_name], errors='coerce').dt.hour
-            has_time_analysis = True
-        except Exception:
-            pass
-
-    count_col = df.columns[0]
-
-    # 書き込み開始
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Raw Data')
-        wb = writer.book
+            has_ip = any(is_valid_ip(str(val)) for val in df[target_col].dropna())
         
-        def add_chart_sheet(pivot_df, sheet_name, chart_title, x_title, y_title, description, chart_type="col", stacked=False):
-            if pivot_df.empty: return
-            pivot_df.to_excel(writer, sheet_name=sheet_name, startrow=4)
-            ws = wb[sheet_name]
-            ws['A1'] = chart_title
-            ws['A1'].font = Font(size=14, bold=True, color="1E3A8A")
-            ws['A2'] = description
-            ws['A2'].font = Font(size=11, color="555555", italic=True)
-            ws['A2'].alignment = Alignment(wrap_text=True, vertical="top")
-            ws.merge_cells('A2:H3')
-            
-            chart = BarChart()
-            chart.type = chart_type
-            chart.style = 10 
-            chart.title = chart_title
-            chart.height = 15 
-            chart.width = 25  
-            chart.legend.position = 'b'
-            
-            if stacked:
-                chart.grouping = "stacked"
-                chart.overlap = 100
-            else:
-                chart.varyColors = True
-                
-            chart.dataLabels = DataLabelList()
-            chart.dataLabels.showVal = True
-            if not stacked:
-                chart.dataLabels.position = 'outEnd'
-                
-            chart.x_axis.title = x_title
-            chart.y_axis.title = y_title
-            chart.y_axis.majorGridlines = ChartLines() 
-            chart.y_axis.delete = False        
-            chart.y_axis.numFmt = '0'          
-            chart.y_axis.majorTickMark = 'out' 
-            chart.y_axis.tickLblPos = 'nextTo' 
-            chart.layout = Layout(manualLayout=ManualLayout(x=0.03, y=0.05, h=0.75, w=0.85))
-            
-            data_start_row = 5 
-            data_end_row = data_start_row + len(pivot_df)
-            data = Reference(ws, min_col=2, min_row=data_start_row, max_row=data_end_row, max_col=len(pivot_df.columns)+1)
-            cats = Reference(ws, min_col=1, min_row=data_start_row+1, max_row=data_end_row)
-            chart.add_data(data, titles_from_data=True)
-            chart.set_categories(cats)
-            ws.add_chart(chart, "E5")
+        # ==========================================
+        # パターンA: すべてドメイン(非IP)の場合
+        # ==========================================
+        if not has_ip:
+            if target_col in df.columns:
+                df = df.rename(columns={target_col: 'Target Domain'})
+            # 不要な列を削除（日本語名に対応）
+            cols_to_drop = ['Whois結果（元データ）', 'Whois結果（日本語名称）', '国名（英語）', '国名', 'プロキシ種別', 'ステータス', 'IoTリスク', 'RDAP結果（元データ）', 'RDAP結果（日本語名称）', 'ISP', 'ISP_JP', 'Country', 'Country_JP']
+            df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors='ignore')
+            with pd.ExcelWriter(tmp_excel_path, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Domain Results')
+            with open(tmp_excel_path, "rb") as f:
+                data = f.read()
+            return data
 
-        # ---------------------------------------------------------
-        # 1. Report_Whois_Volume: ISP別アクセス数
-        # ---------------------------------------------------------
-        isp_col = 'Whois結果（日本語名称）'
-        if isp_col in df.columns:
-            top_isps = df[isp_col].value_counts().head(20).index
-            df_isp = df[df[isp_col].isin(top_isps)]
-            pivot_isp_vol = df_isp.pivot_table(index=isp_col, values=count_col, aggfunc='count')
-            
-            if not pivot_isp_vol.empty:
-                pivot_isp_vol = pivot_isp_vol.sort_values(count_col, ascending=False)
-                desc_isp_vol = "どの組織・プロバイダからのアクセスが最も多いかを可視化しています。特定のISPからのアクセス集中は、そのサービスの利用者層または特定のキャンペーンの影響を示唆します。"
-                add_chart_sheet(pivot_isp_vol, 'Report_Whois_Volume', 'Whois Access Volume Ranking (Top 20)', 'ISP Name', 'Count', desc_isp_vol)
+        # ==========================================
+        # パターンB: IPアドレスが含まれる場合 (分析グラフ付き)
+        # ==========================================
+        # 必須カラムの補完 (日本語名を基準にする)
+        required_cols = {
+            'プロキシ種別': '未検証',
+            'Whois結果（日本語名称）': 'N/A',
+            'RDAP結果（日本語名称）': 'N/A', 
+            '国名': 'N/A'
+        }
+        for col, default_val in required_cols.items():
+            if col not in df.columns:
+                df[col] = default_val
 
-            # ---------------------------------------------------------
-            # 2. Report_Whois_Risk: ISP別リスク分析
-            # ---------------------------------------------------------
-            pivot_isp_risk = df_isp.pivot_table(index=isp_col, columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0)
-            if not pivot_isp_risk.empty:
-                desc_isp_risk = "そのISPが安全な一般回線か、注意が必要なサーバー/VPN経由かを判定しています。「未検証」はAPIによる検証なし、「Standard Connection (API Verified)」はAPI検証済みの一般回線を示します。"
-                add_chart_sheet(pivot_isp_risk, 'Report_Whois_Risk', 'Risk Analysis by Whois (Top 20)', 'ISP Name', 'Count', desc_isp_risk, stacked=True)
-
-        # ---------------------------------------------------------
-        # 3. Report_RDAP_Volume: RDAP別アクセス数 (⬅️ 復活)
-        # ---------------------------------------------------------
-        rdap_col = 'RDAP結果（日本語名称）'
-        if rdap_col in df.columns:
-            # 空文字もN/Aとして扱うための前処理
-            df[rdap_col] = df[rdap_col].replace('', 'N/A')
-            top_rdaps = df[rdap_col].value_counts().head(20).index
-            df_rdap = df[df[rdap_col].isin(top_rdaps)]
-            pivot_rdap_vol = df_rdap.pivot_table(index=rdap_col, values=count_col, aggfunc='count')
-            
-            if not pivot_rdap_vol.empty:
-                pivot_rdap_vol = pivot_rdap_vol.sort_values(count_col, ascending=False)
-                desc_rdap_vol = "公式レジストリ（RDAP）に登録されている法的な保有組織ごとのアクセス数です。Whois（運用者）とは異なる、IPアドレスブロックの真の所有者傾向を可視化します。"
-                add_chart_sheet(pivot_rdap_vol, 'Report_RDAP_Volume', 'RDAP Access Volume Ranking (Top 20)', 'RDAP Name', 'Count', desc_rdap_vol)
-
-            # ---------------------------------------------------------
-            # 4. Report_RDAP_Risk: RDAP別リスク分析 (⬅️ 復活)
-            # ---------------------------------------------------------
-            pivot_rdap_risk = df_rdap.pivot_table(index=rdap_col, columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0)
-            if not pivot_rdap_risk.empty:
-                desc_rdap_risk = "法的保有組織（RDAP）ごとの接続環境を分析しています。特定の組織が保有するIP帯域が、プロキシやVPNインフラとして集中的に悪用されていないかを確認できます。"
-                add_chart_sheet(pivot_rdap_risk, 'Report_RDAP_Risk', 'Risk Analysis by RDAP (Top 20)', 'RDAP Name', 'Count', desc_rdap_risk, stacked=True)
+        # データ前処理：空欄や欠損値を「未検証」に統一
+        df['プロキシ種別'] = df['プロキシ種別'].fillna('未検証').replace('', '未検証')
         
-        # ---------------------------------------------------------
-        # 5. Report_Country: 国別アクセス数
-        # ---------------------------------------------------------
-        if '国名' in df.columns:
-            pivot_country = df.pivot_table(index='国名', values=count_col, aggfunc='count')
-            if not pivot_country.empty:
-                pivot_country = pivot_country.sort_values(count_col, ascending=False).head(15)
-                desc_country = "国ごとのアクセス数をランキング化しています。サービス提供エリア外からの予期せぬアクセス検知や、海外からの攻撃予兆の発見に役立ちます。"
-                add_chart_sheet(pivot_country, 'Report_Country', 'Country Access Volume (Top 15)', 'Country Name', 'Count', desc_country)
+        has_time_analysis = False
+        if time_col_name and time_col_name in df.columns:
+            try:
+                df['Hour'] = pd.to_datetime(df[time_col_name], errors='coerce').dt.hour
+                has_time_analysis = True
+            except Exception:
+                pass
 
-        # ---------------------------------------------------------
-        # 6. Report_Time: 時間帯分析
-        # ---------------------------------------------------------
-        if has_time_analysis:
-            pivot_time_vol = df.pivot_table(index='Hour', values=count_col, aggfunc='count', fill_value=0).reindex(range(24), fill_value=0)
-            desc_time_vol = "何時にアクセスが集中しているかを可視化しています。一般的なユーザーは活動時間帯に、Botなどは深夜早朝や24時間一定のアクセスを行う傾向があります。"
-            add_chart_sheet(pivot_time_vol, 'Report_Time_Volume', 'Hourly Access Trend', 'Hour (0-23h)', 'Count', desc_time_vol)
+        count_col = df.columns[0]
 
-            if 'プロキシ種別' in df.columns:
-                pivot_time_risk = df.pivot_table(index='Hour', columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0).reindex(range(24), fill_value=0)
-                desc_time_risk = "深夜帯などに怪しいアクセス（Hosting/VPN等）が増えていないかを確認できます。夜間にHosting判定が増加する場合、Botによる自動巡回の可能性があります。"
-                add_chart_sheet(pivot_time_risk, 'Report_Time_Risk', 'Hourly Risk Trend', 'Hour (0-23h)', 'Count', desc_time_risk, stacked=True)
+        # 書き込み開始
+        with pd.ExcelWriter(tmp_excel_path, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Raw Data')
+            wb = writer.book
             
-    return output.getvalue()
+            def add_chart_sheet(pivot_df, sheet_name, chart_title, x_title, y_title, description, chart_type="col", stacked=False):
+                if pivot_df.empty: return
+                pivot_df.to_excel(writer, sheet_name=sheet_name, startrow=4)
+                ws = wb[sheet_name]
+                ws['A1'] = chart_title
+                ws['A1'].font = Font(size=14, bold=True, color="1E3A8A")
+                ws['A2'] = description
+                ws['A2'].font = Font(size=11, color="555555", italic=True)
+                ws['A2'].alignment = Alignment(wrap_text=True, vertical="top")
+                ws.merge_cells('A2:H3')
+                
+                chart = BarChart()
+                chart.type = chart_type
+                chart.style = 10 
+                chart.title = chart_title
+                chart.height = 15 
+                chart.width = 25  
+                chart.legend.position = 'b'
+                
+                if stacked:
+                    chart.grouping = "stacked"
+                    chart.overlap = 100
+                else:
+                    chart.varyColors = True
+                    
+                chart.dataLabels = DataLabelList()
+                chart.dataLabels.showVal = True
+                if not stacked:
+                    chart.dataLabels.position = 'outEnd'
+                    
+                chart.x_axis.title = x_title
+                chart.y_axis.title = y_title
+                chart.y_axis.majorGridlines = ChartLines() 
+                chart.y_axis.delete = False        
+                chart.y_axis.numFmt = '0'          
+                chart.y_axis.majorTickMark = 'out' 
+                chart.y_axis.tickLblPos = 'nextTo' 
+                chart.layout = Layout(manualLayout=ManualLayout(x=0.03, y=0.05, h=0.75, w=0.85))
+                
+                data_start_row = 5 
+                data_end_row = data_start_row + len(pivot_df)
+                data = Reference(ws, min_col=2, min_row=data_start_row, max_row=data_end_row, max_col=len(pivot_df.columns)+1)
+                cats = Reference(ws, min_col=1, min_row=data_start_row+1, max_row=data_end_row)
+                chart.add_data(data, titles_from_data=True)
+                chart.set_categories(cats)
+                ws.add_chart(chart, "E5")
+
+            # ---------------------------------------------------------
+            # 1. Report_Whois_Volume: ISP別アクセス数
+            # ---------------------------------------------------------
+            isp_col = 'Whois結果（日本語名称）'
+            if isp_col in df.columns:
+                top_isps = df[isp_col].value_counts().head(20).index
+                df_isp = df[df[isp_col].isin(top_isps)]
+                pivot_isp_vol = df_isp.pivot_table(index=isp_col, values=count_col, aggfunc='count')
+                
+                if not pivot_isp_vol.empty:
+                    pivot_isp_vol = pivot_isp_vol.sort_values(count_col, ascending=False)
+                    desc_isp_vol = "どの組織・プロバイダからのアクセスが最も多いかを可視化しています。特定のISPからのアクセス集中は、そのサービスの利用者層または特定のキャンペーンの影響を示唆します。"
+                    add_chart_sheet(pivot_isp_vol, 'Report_Whois_Volume', 'Whois Access Volume Ranking (Top 20)', 'ISP Name', 'Count', desc_isp_vol)
+
+                # ---------------------------------------------------------
+                # 2. Report_Whois_Risk: ISP別リスク分析
+                # ---------------------------------------------------------
+                pivot_isp_risk = df_isp.pivot_table(index=isp_col, columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0)
+                if not pivot_isp_risk.empty:
+                    desc_isp_risk = "そのISPが安全な一般回線か、注意が必要なサーバー/VPN経由かを判定しています。「未検証」はAPIによる検証なし、「Standard Connection (API Verified)」はAPI検証済みの一般回線を示します。"
+                    add_chart_sheet(pivot_isp_risk, 'Report_Whois_Risk', 'Risk Analysis by Whois (Top 20)', 'ISP Name', 'Count', desc_isp_risk, stacked=True)
+
+            # ---------------------------------------------------------
+            # 3. Report_RDAP_Volume: RDAP別アクセス数 (⬅️ 復活)
+            # ---------------------------------------------------------
+            rdap_col = 'RDAP結果（日本語名称）'
+            if rdap_col in df.columns:
+                # 空文字もN/Aとして扱うための前処理
+                df[rdap_col] = df[rdap_col].replace('', 'N/A')
+                top_rdaps = df[rdap_col].value_counts().head(20).index
+                df_rdap = df[df[rdap_col].isin(top_rdaps)]
+                pivot_rdap_vol = df_rdap.pivot_table(index=rdap_col, values=count_col, aggfunc='count')
+                
+                if not pivot_rdap_vol.empty:
+                    pivot_rdap_vol = pivot_rdap_vol.sort_values(count_col, ascending=False)
+                    desc_rdap_vol = "公式レジストリ（RDAP）に登録されている法的な保有組織ごとのアクセス数です。Whois（運用者）とは異なる、IPアドレスブロックの真の所有者傾向を可視化します。"
+                    add_chart_sheet(pivot_rdap_vol, 'Report_RDAP_Volume', 'RDAP Access Volume Ranking (Top 20)', 'RDAP Name', 'Count', desc_rdap_vol)
+
+                # ---------------------------------------------------------
+                # 4. Report_RDAP_Risk: RDAP別リスク分析 (⬅️ 復活)
+                # ---------------------------------------------------------
+                pivot_rdap_risk = df_rdap.pivot_table(index=rdap_col, columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0)
+                if not pivot_rdap_risk.empty:
+                    desc_rdap_risk = "法的保有組織（RDAP）ごとの接続環境を分析しています。特定の組織が保有するIP帯域が、プロキシやVPNインフラとして集中的に悪用されていないかを確認できます。"
+                    add_chart_sheet(pivot_rdap_risk, 'Report_RDAP_Risk', 'Risk Analysis by RDAP (Top 20)', 'RDAP Name', 'Count', desc_rdap_risk, stacked=True)
+            
+            # ---------------------------------------------------------
+            # 5. Report_Country: 国別アクセス数
+            # ---------------------------------------------------------
+            if '国名' in df.columns:
+                pivot_country = df.pivot_table(index='国名', values=count_col, aggfunc='count')
+                if not pivot_country.empty:
+                    pivot_country = pivot_country.sort_values(count_col, ascending=False).head(15)
+                    desc_country = "国ごとのアクセス数をランキング化しています。サービス提供エリア外からの予期せぬアクセス検知や、海外からの攻撃予兆の発見に役立ちます。"
+                    add_chart_sheet(pivot_country, 'Report_Country', 'Country Access Volume (Top 15)', 'Country Name', 'Count', desc_country)
+
+            # ---------------------------------------------------------
+            # 6. Report_Time: 時間帯分析
+            # ---------------------------------------------------------
+            if has_time_analysis:
+                pivot_time_vol = df.pivot_table(index='Hour', values=count_col, aggfunc='count', fill_value=0).reindex(range(24), fill_value=0)
+                desc_time_vol = "何時にアクセスが集中しているかを可視化しています。一般的なユーザーは活動時間帯に、Botなどは深夜早朝や24時間一定のアクセスを行う傾向があります。"
+                add_chart_sheet(pivot_time_vol, 'Report_Time_Volume', 'Hourly Access Trend', 'Hour (0-23h)', 'Count', desc_time_vol)
+
+                if 'プロキシ種別' in df.columns:
+                    pivot_time_risk = df.pivot_table(index='Hour', columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0).reindex(range(24), fill_value=0)
+                    desc_time_risk = "深夜帯などに怪しいアクセス（Hosting/VPN等）が増えていないかを確認できます。夜間にHosting判定が増加する場合、Botによる自動巡回の可能性があります。"
+                    add_chart_sheet(pivot_time_risk, 'Report_Time_Risk', 'Hourly Risk Trend', 'Hour (0-23h)', 'Count', desc_time_risk, stacked=True)
+                
+        with open(tmp_excel_path, "rb") as f:
+            data = f.read()
+        return data
+    finally:
+        if os.path.exists(tmp_excel_path):
+            os.remove(tmp_excel_path)
 
 def generate_individual_html_report(res, clean_ip, report_opts=None):
     """ 
@@ -1925,72 +2302,143 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
     contents_html = ""
     first_tab_id = None
     
-    # --- 2. サブネット情報 (IPv4の場合のみ計算) ---
-
+    # --- 2. サブネット・ネットワーク情報 (IPv4 / IPv6 両対応) ---
     try:
         ip_obj = ipaddress.ip_address(clean_ip)
-        if ip_obj.version == 4 and report_opts.get("subnet", True):
+        if report_opts.get("subnet", True):
             tab_id = "tab-subnet"
             if not first_tab_id: first_tab_id = tab_id
             tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">サブネット情報</button>\n'
             
-            # デフォルトは/24
-            target_net = ipaddress.IPv4Network(f"{clean_ip}/24", strict=False)
-            calc_source = "デフォルト推測 (/24 基準)"
-            
-            # RDAPデータがある場合、その割当範囲から正確なCIDRを算出
-            if rdap_json and "startAddress" in rdap_json and "endAddress" in rdap_json:
-                try:
-                    s_ip = ipaddress.IPv4Address(rdap_json["startAddress"])
-                    e_ip = ipaddress.IPv4Address(rdap_json["endAddress"])
-                    # 範囲をCIDRのリストに変換
-                    cidrs = list(ipaddress.summarize_address_range(s_ip, e_ip))
-                    # 対象IPが属するCIDRブロックを特定して適用
-                    for cidr in cidrs:
-                        if ip_obj in cidr:
-                            target_net = cidr
-                            calc_source = "RDAP公式割当範囲"
-                            break
-                except Exception:
-                    pass
-            
-            first_octet = int(str(ip_obj).split('.')[0])
-            
-            if 1 <= first_octet <= 126: ip_class = "クラスA"
-            elif 128 <= first_octet <= 191: ip_class = "クラスB"
-            elif 192 <= first_octet <= 223: ip_class = "クラスC"
-            elif 224 <= first_octet <= 239: ip_class = "クラスD マルチキャスト"
-            elif 240 <= first_octet <= 255: ip_class = "クラスE 実験用"
-            else: ip_class = "不明"
+            # ==========================================
+            # IPv4 の場合の処理
+            # ==========================================
+            if ip_obj.version == 4:
+                target_net = ipaddress.IPv4Network(f"{clean_ip}/24", strict=False)
+                calc_source = "デフォルト推測 (/24 基準)"
+                
+                # RDAPデータに基づく正確なCIDR算出
+                if rdap_json and "startAddress" in rdap_json and "endAddress" in rdap_json:
+                    try:
+                        s_ip = ipaddress.IPv4Address(rdap_json["startAddress"])
+                        e_ip = ipaddress.IPv4Address(rdap_json["endAddress"])
+                        cidrs = list(ipaddress.summarize_address_range(s_ip, e_ip))
+                        for cidr in cidrs:
+                            if ip_obj in cidr:
+                                target_net = cidr
+                                calc_source = "RDAP公式割当範囲"
+                                break
+                    except Exception:
+                        pass
+                
+                first_octet = int(str(ip_obj).split('.')[0])
+                if 1 <= first_octet <= 126: ip_class = "クラスA"
+                elif 128 <= first_octet <= 191: ip_class = "クラスB"
+                elif 192 <= first_octet <= 223: ip_class = "クラスC"
+                elif 224 <= first_octet <= 239: ip_class = "クラスD マルチキャスト"
+                elif 240 <= first_octet <= 255: ip_class = "クラスE 実験用"
+                else: ip_class = "不明"
 
-            host_min = str(target_net[1]) if target_net.num_addresses > 2 else "なし"
-            host_max = str(target_net[-2]) if target_net.num_addresses > 2 else "なし"
-            num_hosts = max(0, target_net.num_addresses - 2)
+                host_min = str(target_net[1]) if target_net.num_addresses > 2 else "なし"
+                host_max = str(target_net[-2]) if target_net.num_addresses > 2 else "なし"
+                num_hosts = max(0, target_net.num_addresses - 2)
 
-            subnet_content = f"""
-            <div id="{tab_id}" class="tab-content">
-                <h1 class="theme-ipinfo" style="color: #00695c; border-color: #00695c;">サブネット・ネットワーク範囲計算</h1>
-                <div class="description" style="background-color: #e0f2f1; border-color: #b2dfdb;">
-                    <strong>論理ネットワーク範囲：</strong><br>
-                    入力されたIPアドレスが属するネットワーク境界を算出する。RDAPから公式のIPアドレス割当範囲が取得できた場合はその範囲に基づく正確なCIDRを適用し、情報がない場合は一般的なCクラス相当（/24）を基準として計算する。
+                subnet_content = f"""
+                <div id="{tab_id}" class="tab-content">
+                    <h1 class="theme-ipinfo" style="color: #00695c; border-color: #00695c;">サブネット・ネットワーク範囲計算 (IPv4)</h1>
+                    <div class="description" style="background-color: #e0f2f1; border-color: #b2dfdb;">
+                        <strong>論理ネットワーク範囲：</strong><br>
+                        入力されたIPアドレスが属するネットワーク境界を算出する。RDAPから公式のIPアドレス割当範囲が取得できた場合はその範囲に基づく正確なCIDRを適用し、情報がない場合は一般的なCクラス相当（/24）を基準として計算する。
+                    </div>
+                    <h2>IPアドレスクラス及び基本情報</h2>
+                    <table>
+                        <tr><th>対象IPアドレス</th><td><strong>{clean_ip}</strong></td></tr>
+                        <tr><th>IPアドレスクラス</th><td><strong>{ip_class}</strong></td></tr>
+                        <tr><th>算出基準</th><td><strong>{calc_source}</strong></td></tr>
+                    </table>
+                    <h2>ネットワーク範囲の計算結果</h2>
+                    <table>
+                        <tr><th>サブネットマスク</th><td><strong>/{target_net.prefixlen} ({target_net.netmask})</strong></td></tr>
+                        <tr><th>ネットワークアドレス<br>(開始IP)</th><td><strong>{target_net.network_address}</strong></td></tr>
+                        <tr><th>ホストアドレス範囲<br>(使用可能IP)</th><td><strong>{host_min} ～ {host_max}</strong></td></tr>
+                        <tr><th>ブロードキャストアドレス<br>(終了IP)</th><td><strong>{target_net.broadcast_address}</strong></td></tr>
+                        <tr><th>アドレス数</th><td><strong>IPアドレス総数: {target_net.num_addresses:,} (ホストアドレス数: {num_hosts:,})</strong></td></tr>
+                    </table>
                 </div>
-                <h2>IPアドレスクラス及び基本情報</h2>
-                <table>
-                    <tr><th>対象IPアドレス</th><td><strong>{clean_ip}</strong></td></tr>
-                    <tr><th>IPアドレスクラス</th><td><strong>{ip_class}</strong></td></tr>
-                    <tr><th>算出基準</th><td><strong>{calc_source}</strong></td></tr>
-                </table>
-                <h2>ネットワーク範囲の計算結果</h2>
-                <table>
-                    <tr><th>サブネットマスク</th><td><strong>/{target_net.prefixlen} ({target_net.netmask})</strong></td></tr>
-                    <tr><th>ネットワークアドレス<br>(開始IP)</th><td><strong>{target_net.network_address}</strong></td></tr>
-                    <tr><th>ホストアドレス範囲<br>(使用可能IP)</th><td><strong>{host_min} ～ {host_max}</strong></td></tr>
-                    <tr><th>ブロードキャストアドレス<br>(終了IP)</th><td><strong>{target_net.broadcast_address}</strong></td></tr>
-                    <tr><th>アドレス数</th><td><strong>IPアドレス総数: {target_net.num_addresses:,} (ホストアドレス数: {num_hosts:,})</strong></td></tr>
-                </table>
-            </div>
-            """
-            contents_html += subnet_content
+                """
+                contents_html += subnet_content
+
+            # ==========================================
+            # IPv6 の場合の処理 (新規追加)
+            # ==========================================
+            elif ip_obj.version == 6:
+                # 一般的なLAN・VLANの境界である /64 をデフォルトとする
+                target_net = ipaddress.IPv6Network(f"{clean_ip}/64", strict=False)
+                calc_source = "デフォルト推測 (/64 標準サブネット基準)"
+                
+                # RDAPデータに基づく正確なCIDR算出
+                if rdap_json and "startAddress" in rdap_json and "endAddress" in rdap_json:
+                    try:
+                        s_ip = ipaddress.IPv6Address(rdap_json["startAddress"])
+                        e_ip = ipaddress.IPv6Address(rdap_json["endAddress"])
+                        cidrs = list(ipaddress.summarize_address_range(s_ip, e_ip))
+                        for cidr in cidrs:
+                            if ip_obj in cidr:
+                                target_net = cidr
+                                calc_source = "RDAP公式割当範囲"
+                                break
+                    except Exception:
+                        pass
+                
+                # IPv6のプレフィックス長に基づく割り当て規模の推定
+                prefix = target_net.prefixlen
+                if prefix <= 32:
+                    scope_desc = "LIR / 大規模ISP割当 (非常に広大なインフラ空間)"
+                elif prefix <= 48:
+                    scope_desc = "企業・大規模拠点割当 (一般的なエンタープライズ境界)"
+                elif prefix <= 56:
+                    scope_desc = "一般家庭・小規模拠点割当 (コンシューマ向けルーター等)"
+                elif prefix == 64:
+                    scope_desc = "単一セグメント (標準的な1つのLAN・VLAN)"
+                else:
+                    scope_desc = "デバイス・ホスト固有割当"
+
+                # IPv6はアドレス数が膨大なため、指数表記を併用して視認性を高める
+                total_ips = target_net.num_addresses
+                if total_ips > 10**6:
+                    ips_display = f"2^{128 - prefix} 個 (約 {total_ips:.2e})"
+                else:
+                    ips_display = f"{total_ips:,} 個"
+
+                # IPv6ではブロードキャストアドレスの概念がないため、すべてのアドレスを表記
+                network_addr = str(target_net.network_address)
+                # target_net.broadcast_address は ipaddressモジュールの仕様上、ネットワークの最終IPを返す
+                last_addr = str(target_net.broadcast_address) 
+
+                subnet_content = f"""
+                <div id="{tab_id}" class="tab-content">
+                    <h1 class="theme-ipinfo" style="color: #4a148c; border-color: #4a148c;">サブネット・ネットワーク範囲計算 (IPv6)</h1>
+                    <div class="description" style="background-color: #f3e5f5; border-color: #e1bee7;">
+                        <strong>IPv6 論理ネットワーク範囲：</strong><br>
+                        IPv6アドレスの階層構造に基づき、属するネットワーク境界を算出する。RDAPから公式のIPアドレス割当範囲が取得できた場合はその範囲に基づく正確なCIDRを適用し、情報がない場合は標準的な単一セグメント（/64）を基準として計算する。
+                    </div>
+                    <h2>IPv6 アドレス属性</h2>
+                    <table>
+                        <tr><th>対象IPアドレス</th><td><strong>{clean_ip}</strong></td></tr>
+                        <tr><th>算出基準</th><td><strong>{calc_source}</strong></td></tr>
+                        <tr><th>ネットワーク規模推定</th><td><strong>{scope_desc}</strong></td></tr>
+                    </table>
+                    <h2>ネットワーク範囲の計算結果</h2>
+                    <table>
+                        <tr><th>プレフィックス長</th><td><strong>/{prefix}</strong></td></tr>
+                        <tr><th>ネットワークアドレス<br>(開始IP)</th><td><strong>{network_addr}</strong></td></tr>
+                        <tr><th>アドレス範囲<br>(割当可能範囲)</th><td><strong>{network_addr} ～<br>{last_addr}</strong></td></tr>
+                        <tr><th>アドレス総数</th><td><strong>{ips_display}</strong></td></tr>
+                    </table>
+                </div>
+                """
+                contents_html += subnet_content
+
     except ValueError:
         pass
 
@@ -2479,32 +2927,37 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         unique_ips_ordered = []
         seen_ips = set()
 
-        for rec in records: 
-            values = rec.get("values", [])
-            ips_in_rec = []
-            for v in values:
-                ip_val = v.get("ip", "")
-                if ip_val:
-                    ips_in_rec.append(html.escape(str(ip_val)))
-                    if ip_val not in seen_ips:
-                        seen_ips.add(ip_val)
-                        unique_ips_ordered.append(ip_val)
+        # ▼ 変更: エラーフラグ時は警告メッセージを強制挿入
+        if st_json.get("error") == "rate_limit":
+            st_html_rows = "<tr><td colspan='4' style='text-align:center; color:#c62828;'><b>🚨 月間の無料APIリクエスト枠（50回）に到達したため、履歴の取得がブロックされました。</b></td></tr>"
+            unique_ips_rows = "<tr><td style='text-align:center;'>-</td></tr>"
+        else:
+            for rec in records: 
+                values = rec.get("values", [])
+                ips_in_rec = []
+                for v in values:
+                    ip_val = v.get("ip", "")
+                    if ip_val:
+                        ips_in_rec.append(html.escape(str(ip_val)))
+                        if ip_val not in seen_ips:
+                            seen_ips.add(ip_val)
+                            unique_ips_ordered.append(ip_val)
 
-            ips = "<br>".join(ips_in_rec)
-            first_seen = html.escape(str(rec.get("first_seen", "情報なし")))
-            last_seen = html.escape(str(rec.get("last_seen", "情報なし")))
-            orgs = rec.get("organizations", [])
-            org = html.escape(str(orgs[0])) if orgs and orgs[0] else "情報なし"
-            st_html_rows += f"<tr><td>{ips}</td><td>{first_seen}</td><td>{last_seen}</td><td>{org}</td></tr>"
-            
-        if not st_html_rows:
-            st_html_rows = "<tr><td colspan='4' style='text-align:center;'>A/AAAAレコードの履歴データが見つかりませんでした。</td></tr>"
-            
-        unique_ips_rows = ""
-        for ip in unique_ips_ordered:
-            unique_ips_rows += f"<tr><td><strong>{html.escape(str(ip))}</strong></td></tr>"
-        if not unique_ips_rows:
-            unique_ips_rows = "<tr><td style='text-align:center;'>取得されたIPアドレスはありません。</td></tr>"
+                ips = "<br>".join(ips_in_rec)
+                first_seen = html.escape(str(rec.get("first_seen", "情報なし")))
+                last_seen = html.escape(str(rec.get("last_seen", "情報なし")))
+                orgs = rec.get("organizations", [])
+                org = html.escape(str(orgs[0])) if orgs and orgs[0] else "情報なし"
+                st_html_rows += f"<tr><td>{ips}</td><td>{first_seen}</td><td>{last_seen}</td><td>{org}</td></tr>"
+                
+            if not st_html_rows:
+                st_html_rows = "<tr><td colspan='4' style='text-align:center;'>A/AAAAレコードの履歴データが見つかりませんでした。</td></tr>"
+                
+            unique_ips_rows = ""
+            for ip in unique_ips_ordered:
+                unique_ips_rows += f"<tr><td><strong>{html.escape(str(ip))}</strong></td></tr>"
+            if not unique_ips_rows:
+                unique_ips_rows = "<tr><td style='text-align:center;'>取得されたIPアドレスはありません。</td></tr>"
 
         raw_json_str_st = json.dumps(st_json, indent=4, ensure_ascii=False)
         escaped_json_st = html.escape(raw_json_str_st)
@@ -2570,15 +3023,37 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         
         records = st_rev_json.get("records", [])
         total_records = st_rev_json.get("meta", {}).get("total_records", len(records))
+        total_pages = st_rev_json.get("meta", {}).get("total_pages", 1)
         
+        # 取得件数表示の動的変更
+        if total_pages > 1:
+            if len(records) >= total_records:
+                display_count_text = f"<strong>{total_records} 件</strong> (全件取得済)"
+            else:
+                display_count_text = f"<strong>{total_records} 件</strong> (※最初の {len(records)} 件のみ表示)"
+        else:
+            display_count_text = f"<strong>{total_records} 件</strong>"
+            
         rev_html_rows = ""
-        for rec in records:
-            hostname = rec.get("hostname", "")
-            if hostname:
-                rev_html_rows += f"<tr><td><strong>{html.escape(str(hostname))}</strong></td></tr>"
-                
-        if not rev_html_rows:
-            rev_html_rows = "<tr><td style='text-align:center;'>紐づくドメインは見つかりませんでした。</td></tr>"
+        
+        if st_rev_json.get("error") == "rate_limit":
+            rev_html_rows = "<tr><td style='text-align:center; color:#c62828;'><b>🚨 月間の無料APIリクエスト枠（50回）に到達したため、取得がブロックされました。</b></td></tr>"
+            display_count_text = "エラー (上限到達)"
+        elif st_rev_json.get("error") == "rate_limit_during_pagination":
+            # ページめくり中に制限に達した場合の特別警告
+            rev_html_rows = f"<tr><td style='text-align:center; background-color:#fff3e0; color:#e65100;'><b>⚠️ 全件取得の途中でAPI上限に到達しました。取得できた {len(records)} 件までを表示します。</b></td></tr>"
+            for rec in records:
+                hostname = rec.get("hostname", "")
+                if hostname:
+                    rev_html_rows += f"<tr><td><strong>{html.escape(str(hostname))}</strong></td></tr>"
+        else:
+            for rec in records:
+                hostname = rec.get("hostname", "")
+                if hostname:
+                    rev_html_rows += f"<tr><td><strong>{html.escape(str(hostname))}</strong></td></tr>"
+                    
+            if not rev_html_rows:
+                rev_html_rows = "<tr><td style='text-align:center;'>紐づくドメインは見つかりませんでした。</td></tr>"
             
         raw_json_str_rev = json.dumps(st_rev_json, indent=4, ensure_ascii=False)
         escaped_json_rev = html.escape(raw_json_str_rev)
@@ -2599,7 +3074,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             <table>
                 <tr><th>対象IPアドレス<br>(Target IP)</th><td><strong>{clean_ip}</strong></td></tr>
                 <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
-                <tr><th>ヒット総数<br>(Total Records)</th><td><strong>{total_records} 件</strong> (※最大100件表示)</td></tr>
+                <tr><th>ヒット総数<br>(Total Records)</th><td>{display_count_text}</td></tr>
             </table>
             <h2>紐づくドメイン一覧</h2>
             <table>
@@ -2866,6 +3341,21 @@ def generate_combined_html_report(target_results, report_opts=None):
 def display_results(results, current_mode_full_text, display_mode, use_rdap_option, pro_api_key, vpnapi_key, st_api_key, use_rdns_option):
     st.markdown("### 📝 検索結果")
 
+    # SecurityTrails API制限到達時のグローバル警告
+    st_limit_hit = False
+    for r in results:
+        st_j = r.get('ST_JSON')
+        st_r = r.get('ST_REVERSE_IP_JSON')
+        if isinstance(st_j, dict) and st_j.get('error') == 'rate_limit':
+            st_limit_hit = True
+            break
+        if isinstance(st_r, dict) and st_r.get('error') == 'rate_limit':
+            st_limit_hit = True
+            break
+            
+    if st_limit_hit:
+        st.error("🚨 **SecurityTrails API 利用制限の警告**: 月間の無料リクエスト枠（50回）に到達しました。一部のターゲットにおいて過去の履歴やReverse IP情報が取得できていません。")
+
     # --- 2. 判定アイコンと表示ルールの解説 ---
     with st.expander("⚠️ 判定アイコンと表示ルールについて"):
         st.info("""
@@ -3045,50 +3535,76 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
             st.markdown("##### 📦 複数レポート一括ダウンロード")
             col_btn1, col_btn2 = st.columns(2)
             
-            # 1. 統合レポート(HTML)の生成
-            combined_html = generate_combined_html_report(target_results, current_report_opts)
-            
-            # 2. ZIPファイルの生成
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-                valid_reports_count = 0
-                for res in target_results:
-                    target_ip = res.get('Target_IP', 'N/A')
-                    clean_ip = get_copy_target(target_ip)
-                    
-                    full_res = {**res}
-                    if clean_ip in st.session_state.get('detailed_data', {}):
-                        full_res.update(st.session_state['detailed_data'][clean_ip])
-                    
-                    html_report = generate_individual_html_report(full_res, clean_ip, current_report_opts)
-                    if html_report:
-                        safe_filename = re.sub(r'[\\/*?:"<>|]', "_", clean_ip)
-                        zip_file.writestr(f"Report_{safe_filename}.html", html_report.encode('utf-8'))
-                        valid_reports_count += 1
-            
-            if valid_reports_count > 0:
-                current_time = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            # 重い処理の前にスピナーを割り込ませ、フリーズではなく「処理中」であることを明示する
+            with st.spinner(f"⏳ {total_selected} 件のレポートデータを構築中... (しばらくお待ちください)"):
+                # 1. 統合レポート(HTML)の生成
+                combined_html = generate_combined_html_report(target_results, current_report_opts)
                 
-                with col_btn1:
-                    st.download_button(
-                        label=f"📜 {valid_reports_count} 件を1つの統合レポート(HTML)で保存",
-                        data=combined_html.encode('utf-8') if combined_html else "",
-                        file_name=f"Combined_Report_{current_time}.html",
-                        mime="text/html",
-                        type="primary",
-                        width="stretch",
-                        help="選択した全件のレポートが1つのWebページに目次付きでまとまります。閲覧や共有に最も便利です。"
-                    )
-                with col_btn2:
-                    st.download_button(
-                        label=f"🗜️ {valid_reports_count} 件の個別レポートをZIPで保存",
-                        data=zip_buffer.getvalue(),
-                        file_name=f"Whois_Reports_Batch_{current_time}.zip",
-                        mime="application/zip",
-                        type="secondary",
-                        width="stretch",
-                        help="各IPごとに独立したHTMLファイルを作成し、ZIPに圧縮してダウンロードします。"
-                    )
+                # 2. ZIPファイルの生成 (tempfileを利用してディスクに書き出し)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+                    tmp_zip_path = tmp.name
+                    
+                try:
+                    with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED, False) as zip_file:
+                        valid_reports_count = 0
+                        for res in target_results:
+                            target_ip = res.get('Target_IP', 'N/A')
+                            clean_ip = get_copy_target(target_ip)
+                            
+                            full_res = {**res}
+                            if clean_ip in st.session_state.get('detailed_data', {}):
+                                full_res.update(st.session_state['detailed_data'][clean_ip])
+                            
+                            html_report = generate_individual_html_report(full_res, clean_ip, current_report_opts)
+                            if html_report:
+                                safe_filename = re.sub(r'[\\/*?:"<>|]', "_", clean_ip)
+                                zip_file.writestr(f"Report_{safe_filename}.html", html_report.encode('utf-8'))
+                                valid_reports_count += 1
+                
+                    if valid_reports_count > 0:
+                        current_time = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                        html_filename = f"Combined_Report_{current_time}.html"
+                        zip_filename = f"Whois_Reports_Batch_{current_time}.zip"
+                        
+                        with col_btn1:
+                            if IS_PUBLIC_MODE:
+                                st.download_button(
+                                    label=f"📜 {valid_reports_count} 件を1つの統合レポート(HTML)で保存",
+                                    data=combined_html.encode('utf-8') if combined_html else "",
+                                    file_name=html_filename,
+                                    mime="text/html",
+                                    type="primary",
+                                    width="stretch",
+                                    help="選択した全件のレポートが1つのWebページに目次付きでまとまります。"
+                                )
+                            else:
+                                render_local_save_ui(
+                                    f"💾 {valid_reports_count} 件の統合レポートをローカル保存", 
+                                    html_filename, combined_html, "batch_html", "primary"
+                                )
+                                    
+                        with col_btn2:
+                            with open(tmp_zip_path, "rb") as f:
+                                zip_data = f.read()
+                            
+                            if IS_PUBLIC_MODE:
+                                st.download_button(
+                                    label=f"🗜️ {valid_reports_count} 件の個別レポートをZIPで保存",
+                                    data=zip_data,
+                                    file_name=zip_filename,
+                                    mime="application/zip",
+                                    type="secondary",
+                                    width="stretch",
+                                    help="各IPごとに独立したHTMLファイルを作成し、ZIPに圧縮してダウンロードします。"
+                                )
+                            else:
+                                render_local_save_ui(
+                                    f"💾 {valid_reports_count} 件のZIPをローカル保存 (無制限)", 
+                                    zip_filename, zip_data, "batch_zip", "secondary"
+                                )
+                finally:
+                    if os.path.exists(tmp_zip_path):
+                        os.remove(tmp_zip_path) # 送信後、またはエラー発生時に確実に削除する
             st.divider()
         
         # Rendering Overload（UI崩壊）を防ぐためのハードリミット設定
@@ -3271,6 +3787,11 @@ def render_merged_analysis(df_merged):
         if not df_merged.empty:
             chart = None
             chart_df = df_merged.fillna("N/A").astype(str)
+            
+            # 5000行以上の場合はサンプリングしてブラウザのクラッシュを防ぐ
+            if len(chart_df) > 5000:
+                st.warning(f"⚠️ **データ量警告**: データが {len(chart_df)} 件あります。ブラウザのクラッシュを防ぐため、ランダムに抽出した 5000 件のデータでグラフを描画しています。")
+                chart_df = chart_df.sample(n=5000, random_state=42)
 
             if chart_type == "バーチャート (集計)":
                 if group_col != '(なし)':
@@ -3312,27 +3833,71 @@ def render_merged_analysis(df_merged):
         # リンク分析関数を呼び出す
         render_spider_web_analysis(df_merged)
 
+# ==========================================
+# 状態管理（Session State）用ヘルパー関数
+# ==========================================
+def init_session_state():
+    """ アプリケーション起動時・リセット時に必要なSession Stateを初期化する """
+    default_states = {
+        'cancel_search': False,
+        'raw_results': [],
+        'targets_cache': [],
+        'is_searching': False,
+        'deferred_ips': {},
+        'finished_ips': set(),
+        'search_start_time': 0.0,
+        'target_freq_map': {},
+        'cidr_cache': {},
+        'debug_summary': {},
+        'detailed_data': {},
+        'learned_proxy_isps': {}
+    }
+    
+    for key, default_value in default_states.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
+
+def reset_search_state():
+    """ 新規検索を開始する際に、前回の巨大なデータを明示的にメモリから解放する """
+    # 巨大なリストや辞書を削除してガベージコレクションを促す
+    if 'detailed_data' in st.session_state:
+        st.session_state['detailed_data'].clear()
+    if 'raw_results' in st.session_state:
+        st.session_state['raw_results'].clear()
+        
+    st.session_state.is_searching = True
+    st.session_state.cancel_search = False
+    st.session_state.deferred_ips = {}
+    st.session_state.finished_ips = set()
+    st.session_state.search_start_time = time.time()
+    clear_recovery_data()
 
 
 # --- メイン処理 ---
 def main():
-    if 'cancel_search' not in st.session_state: st.session_state['cancel_search'] = False
-    if 'raw_results' not in st.session_state: st.session_state['raw_results'] = []
-    if 'targets_cache' not in st.session_state: st.session_state['targets_cache'] = []
-    if 'is_searching' not in st.session_state: st.session_state['is_searching'] = False
-    if 'deferred_ips' not in st.session_state: st.session_state['deferred_ips'] = {} 
-    if 'finished_ips' not in st.session_state: st.session_state['finished_ips'] = set() 
-    if 'search_start_time' not in st.session_state: st.session_state['search_start_time'] = 0.0 
-    if 'target_freq_map' not in st.session_state: st.session_state['target_freq_map'] = {} 
-    if 'cidr_cache' not in st.session_state: st.session_state['cidr_cache'] = {} 
-    if 'debug_summary' not in st.session_state: st.session_state['debug_summary'] = {}
-    if 'detailed_data' not in st.session_state: st.session_state['detailed_data'] = {}
+    # 状態管理の初期化関数を呼び出し
+    init_session_state()
 
-    # --- セッション中のみ有効な学習済みプロキシISPリスト ---
-    if 'learned_proxy_isps' not in st.session_state:
-        st.session_state['learned_proxy_isps'] = {} # {ISP名: ProxyType}
+    # リカバリUI
+    if not IS_PUBLIC_MODE and os.path.exists(BACKUP_FILE) and not st.session_state.is_searching and not st.session_state.raw_results:
+        st.warning("⚠️ 前回中断された検索セッションが残っています。")
+        col_rec1, col_rec2 = st.columns(2)
+        with col_rec1:
+            if st.button("🔄 検索を途中から再開する", type="primary"):
+                if load_recovery_data():
+                    st.rerun()
+        with col_rec2:
+            if st.button("🗑️ バックアップを破棄する"):
+                clear_recovery_data()
+                st.rerun()
 
     tor_nodes = fetch_tor_exit_nodes()
+    disposable_domains = fetch_disposable_domains()
+    cloud_ip_data = fetch_cloud_ip_ranges()
+
+    # 外部データベース取得エラー時の警告表示
+    if not tor_nodes or not disposable_domains:
+        st.warning("⚠️ **外部データベース取得エラー**: ネットワークの切断等により、Torノードリストまたは使い捨てメアドリストの取得に失敗しました。該当する検知機能が一時的に停止しています。")
     
     with st.sidebar:
         st.markdown("### 🛠️ Menu")
@@ -3347,6 +3912,13 @@ def main():
             }
         )
         st.markdown("---")
+        
+        # --- Local Mode専用: 出力先設定 ---
+        if not IS_PUBLIC_MODE:
+            st.markdown("##### 📂 ローカル保存先設定")
+            default_export_dir = os.path.join(os.getcwd(), "exports")
+            st.session_state['local_export_dir'] = st.text_input("保存先フォルダの絶対パス", value=default_export_dir, help="ファイルの直接保存先を指定します。存在しない場合は自動作成されます。")
+            st.markdown("---")
         
         # Proモード設定 (APIキー入力)
         with st.expander("🔑 APIキー設定 (Pro Mode)", expanded=False):
@@ -3391,7 +3963,6 @@ def main():
             st_start_date = None
             st_end_date = None
             if st_api_key:
-                import datetime
                 st.markdown("##### 📅 履歴取得期間 (SecurityTrails)")
                 use_st_date_filter = st.checkbox("期間を指定して全件抽出する", value=False, help="チェックを入れると指定期間の履歴を制限なく抽出します。チェックがない場合は最新20件のみを取得します。")
             
@@ -3405,12 +3976,27 @@ def main():
                         st_start_date = st.date_input("開始日", three_months_ago, help="この日以降に観測された履歴のみを抽出します。期間が長い場合はレポート生成がスキップされる可能性があります。")
                     with col_dt2:
                         st_end_date = st.date_input("終了日", today_date, help="この日以前に観測された履歴のみを抽出します。")
+                
+                # Reverse IPの設定
+                st.markdown("##### ⚙️ Reverse IP 追加設定")
+                use_st_rev_fetchall = st.checkbox("Reverse IP 全件取得 (API消費大)", value=False, help="オンにすると、同一IPに紐づくドメインが100件を超える場合、APIを複数回消費して全件取得を試みます。CDNのIPなどを対象にするとクレジットが枯渇する恐れがあります。")
+            else:
+                use_st_rev_fetchall = False
 
         st.markdown("---")
-        if st.button("🔄 IPキャッシュクリア", help="キャッシュが古くなった場合にクリック"):
-            st.session_state['cidr_cache'] = {} 
+        if st.button("🔄 システム/キャッシュを完全リセット", help="キャッシュが古くなった場合やメモリを解放したい場合にクリック"):
+            # セッションステートを完全に削除してガベージコレクションを促す
+            keys_to_delete = ['cidr_cache', 'detailed_data', 'raw_results', 'resolved_dns_map', 'original_df', 'original_input_list', 'targets_cache']
+            for key in keys_to_delete:
+                if key in st.session_state:
+                    del st.session_state[key]
+            
             st.cache_data.clear()
-            st.info("IP/CIDRキャッシュおよびAPI通信キャッシュを完全にクリアしました。")
+            st.cache_resource.clear()
+            init_session_state() # 必要なキーを再構築
+            
+            st.info("IP/CIDRキャッシュ、検索履歴、およびメモリを完全にクリアしました。")
+            time.sleep(1)
             st.rerun()
 
     if selected_menu == "仕様・解説":
@@ -3673,7 +4259,7 @@ def main():
     with input_tab1:
         manual_input = st.text_area(
             "検索対象を入力 (複数行可: IPアドレス または ドメイン)",
-            height=200, # 高さを少し広げて見やすく
+            height=200, 
             placeholder="8.8.8.8\nexample.com\n2404:6800:...",
             help="1行に1つのターゲットを入力してください。"
         )
@@ -3681,12 +4267,12 @@ def main():
     with input_tab2:
         # --- モードによるアップロード制限の切り替え ---
         if IS_PUBLIC_MODE:
-            # 公開モード (st版の挙動): txtのみ許可、警告あり
+            # 公開モード (StreamlitCloud版の挙動): txtのみ許可、警告あり
             allowed_types = ['txt']
             label_text = "IPリストをアップロード (.txtのみ)"
             help_text = "※ 1行に1つのターゲットを記載"
         else:
-            # ローカルモード (my版の挙動): csv/excel許可
+            # ローカルモード (ローカル版の挙動): csv/excel許可
             allowed_types = ['txt', 'csv', 'xlsx', 'xls']
             label_text = "リストをアップロード (txt/csv/xlsx)"
             help_text = "※ 1行に1つのターゲットを記載、またはCSV/ExcelのIP列を自動検出します"
@@ -3711,7 +4297,7 @@ def main():
         raw_targets.append(single_input.strip())
     
     if uploaded_file:
-        # --- 公開モードの場合の読み込み処理 (st版ロジック) ---
+        # --- 公開モードの場合の読み込み処理 (StreamlitCloud版ロジック) ---
         if IS_PUBLIC_MODE:
              try:
                 # シンプルにテキストとして読み込む
@@ -3773,7 +4359,7 @@ def main():
                             # --- アップロードデータのプレビュー (空枠の作成) ---
                             st.info(f"📄 ファイル読み込み完了: {len(df_orig)} 行 / IP列: `{ip_col}`")
                             with st.expander("👀 アップロードデータ・プレビュー", expanded=False):
-                                preview_container = st.empty() # 後で流し込むための枠
+                                preview_container = st.empty() 
                             # ---------------------------------------------
                         else:
                             st.error("ファイル内にIPアドレスの列が見つかりませんでした。")
@@ -3806,7 +4392,7 @@ def main():
         try:
             # システムのリゾルバに依存せず、Google/CloudflareのパブリックDNSを明示的に使用
             resolver = dns.resolver.Resolver(configure=False)
-            resolver.nameservers = ['8.8.8.8', '1.1.1.1', '2001:4860:4860::8888']
+            resolver.nameservers = random.sample(PUBLIC_DNS_SERVERS, 2) + random.sample(PUBLIC_DNS_V6_SERVERS, 1)
             resolver.timeout = 3
             resolver.lifetime = 3
 
@@ -3846,7 +4432,7 @@ def main():
             try:
                 # MXレコードは捨てアド特定の生命線であるため、専用の長いライフタイムを設定して取得を試みる
                 resolver_mx = dns.resolver.Resolver(configure=False)
-                resolver_mx.nameservers = ['8.8.8.8', '1.1.1.1', '8.8.4.4', '9.9.9.9']
+                resolver_mx.nameservers = random.sample(PUBLIC_DNS_SERVERS, 3)
                 resolver_mx.timeout = 5
                 resolver_mx.lifetime = 10
                 
@@ -3885,15 +4471,8 @@ def main():
         elif is_likely_domain_or_host:
             # ドメイン形式の厳格チェック
             if is_valid_domain(t):
-                # --- nslookupによる複数IP完全取得 ---
-                ip_list, raw_output = resolve_domain_nslookup(t)
+                # DNS解決を入力時から削除し、単にドメインとしてキューに入れる
                 if t not in targets: targets.append(t)
-                if ip_list:
-                    resolved_dns_map[t] = {'ips': ip_list, 'raw': raw_output}
-                    for resolved_ip in ip_list:
-                        combined_t = f"{t} ({resolved_ip})"
-                        # IP紐付きターゲットを追加 (こちらはIP検索エンジンに回る)
-                        if combined_t not in targets: targets.append(combined_t)
             else:
                 invalid_targets_skipped.append(t) # 不正なドメインとして除外
         else:
@@ -3903,14 +4482,7 @@ def main():
             else:
                 # クリーンアップ後もドメイン形式の厳格チェック
                 if is_valid_domain(cleaned_t_final):
-                    ip_list, raw_output = resolve_domain_nslookup(cleaned_t_final)
-                    if ip_list:
-                        resolved_dns_map[cleaned_t_final] = {'ips': ip_list, 'raw': raw_output}
-                        for resolved_ip in ip_list:
-                            combined_t = f"{cleaned_t_final} ({resolved_ip})"
-                            if combined_t not in targets: targets.append(combined_t)
-                    else:
-                        if cleaned_t_final not in targets: targets.append(cleaned_t_final)
+                    if cleaned_t_final not in targets: targets.append(cleaned_t_final)
                 else:
                     invalid_targets_skipped.append(t) # 不正なドメインとして除外
 
@@ -3942,7 +4514,8 @@ def main():
     if has_new_targets or 'target_freq_map' not in st.session_state:
         st.session_state['target_freq_map'] = target_freq_counts
         st.session_state['original_input_list'] = cleaned_raw_targets_list
-        st.session_state['resolved_dns_map'] = resolved_dns_map # nslookupの生出力を保存
+        if has_new_targets:
+            st.session_state['resolved_dns_map'] = {} # 新規入力時はマップをリセットする
 
     # --- エンジン処理用の振り分け（ドメイン(IP)はIPとして処理させる） ---
     ip_targets = [t for t in targets if is_valid_ip(t)]
@@ -4089,22 +4662,41 @@ def main():
     if ('execute_search' in locals() and execute_search and (has_new_targets or len(st.session_state.deferred_ips) > 0)) or is_currently_searching:
         
         if ('execute_search' in locals() and execute_search and has_new_targets and len(targets) > 0):
-            st.session_state.is_searching = True
-            st.session_state.cancel_search = False
-            st.session_state.raw_results = []
-            st.session_state.deferred_ips = {}
-            st.session_state.finished_ips = set()
+            # 新規検索時に古い巨大なデータを明示的に解放し、状態をリセットする
+            reset_search_state()
             st.session_state.targets_cache = targets
-            st.session_state.search_start_time = time.time()
             st.rerun() 
             
         elif is_currently_searching:
             targets = st.session_state.targets_cache
-            ip_targets = [t for t in targets if is_valid_ip(t)]
             domain_targets = [t for t in targets if not is_valid_ip(t)]
 
             st.subheader("⏳ 処理中...")
             
+            # メインスレッドを占有しないよう、検索開始直後に専用スレッドで並列DNS解決を一括実行する
+            unresolved_domains = [d for d in domain_targets if d not in st.session_state.get('resolved_dns_map', {})]
+            if unresolved_domains:
+                with st.spinner(f"⏳ {len(unresolved_domains)}件のドメインを並列で名前解決中... (並列数: {max_workers})"):
+                    def resolve_and_map(domain):
+                        ips, raw = resolve_domain_nslookup(domain)
+                        return domain, ips, raw
+                    
+                    # DNSクエリ(UDP)によるルーターのNAT溢れを防ぐため、ユーザー設定のmax_workersに同期させる
+                    with ThreadPoolExecutor(max_workers=max_workers) as dns_executor:
+                        dns_results = list(dns_executor.map(resolve_and_map, unresolved_domains))
+                        
+                    for domain, ips, raw in dns_results:
+                        st.session_state.resolved_dns_map[domain] = {'ips': ips, 'raw': raw}
+                        for resolved_ip in ips:
+                            combined_t = f"{domain} ({resolved_ip})"
+                            if combined_t not in targets: 
+                                targets.append(combined_t)
+                    
+                    # DNS解決済みのターゲットリストでキャッシュを最新状態に上書き
+                    st.session_state.targets_cache = targets
+
+            # DNS並列解決が完了した後、改めて全体のIPターゲットを抽出してキューに流す
+            ip_targets = [t for t in targets if is_valid_ip(t)]
             total_targets = len(targets)
             total_ip_api_targets = len(ip_targets)
             
@@ -4188,6 +4780,7 @@ def main():
                                 current_delay,
                                 rate_limit_wait_seconds,
                                 tor_nodes,
+                                cloud_ip_data,
                                 use_rdap_option,
                                 use_internetdb_option,
                                 use_rdns_option,
@@ -4196,13 +4789,15 @@ def main():
                                 vpnapi_key,
                                 st_api_key,
                                 st_start_date,
-                                st_end_date
+                                st_end_date,
+                                use_st_rev_fetchall
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
 
                         # UI更新用のタイマー初期化
                         last_ui_update_time = time.time()
+                        last_backup_time = time.time() # バックアップ用タイマー
                         
                         while remaining and not st.session_state.cancel_search:
                             done, remaining = wait(remaining, timeout=0.1, return_when=FIRST_COMPLETED)
@@ -4267,12 +4862,20 @@ def main():
                                     # empty()による全消去を廃止し、直接上書きさせることで点滅を防ぐ
                                     with summary_container.container():
                                         draw_summary_content(isp_df, country_df, freq_df, country_all_df, proxy_df, "📊 リアルタイム分析") 
+                                        
+                                    # 10秒ごとにディスクへセッションをバックアップする
+                                    if current_time_for_ui - last_backup_time > 10.0 or is_last_item:
+                                        save_recovery_data()
+                                        last_backup_time = current_time_for_ui
 
                             if not remaining and not st.session_state.deferred_ips:
                                 break
                             
                             if st.session_state.deferred_ips:
-                                st.rerun()  
+                                # 強制再起動ではなく、未実行のタスクをキャンセルしてループを安全に脱出する
+                                for f in remaining:
+                                    f.cancel()
+                                break  
                             
                             time.sleep(0.5) 
                             
@@ -4286,6 +4889,7 @@ def main():
                         
                 if len(st.session_state.finished_ips) == total_targets and not st.session_state.deferred_ips:
                     st.session_state.is_searching = False
+                    clear_recovery_data() # 正常完了時はバックアップを消去
                     st.info("✅ 全ての検索が完了しました。")
                     st.rerun()
                 
@@ -4408,32 +5012,50 @@ def main():
                     if time_cols:
                         selected_time_col = st.selectbox("時間分析に使用する列:", df_for_analysis.columns, index=df_for_analysis.columns.get_loc(time_cols[0]), key="time_col_selector_final")
                     
-                    excel_advanced = create_advanced_excel(df_for_analysis, selected_time_col)
-                    st.download_button(
-                        label="📥 Excelレポート (全入力順・グラフ付き) を保存",
-                        data=excel_advanced,
-                        file_name="whois_analysis_full_report.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        width="stretch",
-                        type="primary"
-                    )
+                    with st.spinner("⏳ Excelレポートを生成中..."):
+                        excel_advanced = create_advanced_excel(df_for_analysis, selected_time_col)
+                    
+                    excel_filename = "whois_analysis_full_report.xlsx"
+                    if IS_PUBLIC_MODE:
+                        st.download_button(
+                            label="📥 Excelレポート (全入力順・グラフ付き) を保存",
+                            data=excel_advanced,
+                            file_name=excel_filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            width="stretch",
+                            type="primary"
+                        )
+                    else:
+                        render_local_save_ui(
+                            "💾 Excelレポートをローカル保存 (容量無制限)", 
+                            excel_filename, excel_advanced, "master_excel", "primary"
+                        )
                 else:
                     st.button("データなし", disabled=True, width="stretch")
 
             with main_col2:
                 st.success("🌐 **全件グラフ HTMLレポート**\n\nブラウザで閲覧・印刷可能なグラフィカルな分析レポートです。")
-                html_report = generate_full_report_html(isp_full_df, country_full_df, freq_full_df)
-                st.download_button(
-                    label="📥 HTMLレポート (閲覧・印刷用) を表示",
-                    data=html_report,
-                    file_name="whois_analysis_summary.html",
-                    mime="text/html",
-                    width="stretch"
-                )
+                with st.spinner("⏳ HTMLレポートを生成中..."):
+                    html_report = generate_full_report_html(isp_full_df, country_full_df, freq_full_df)
+                
+                html_summary_filename = "whois_analysis_summary.html"
+                if IS_PUBLIC_MODE:
+                    st.download_button(
+                        label="📥 HTMLレポート (閲覧・印刷用) を表示",
+                        data=html_report,
+                        file_name=html_summary_filename,
+                        mime="text/html",
+                        width="stretch"
+                    )
+                else:
+                    render_local_save_ui(
+                        "💾 HTMLレポートをローカル保存", 
+                        html_summary_filename, html_report, "master_html", "secondary"
+                    )
 
-            with st.expander("🛠️ システム連携用・RAWデータ (CSV / 単純Excel)"):
-                st.caption("データベースへの取り込みや、独自の加工を行いたい場合に利用してください。")
-                sub_tab1, sub_tab2 = st.tabs(["📄 検索結果リスト", "📈 統計・カウントデータ"])
+            with st.expander("🛠️ システム連携用・RAWデータ ＆ 脅威インテリジェンス出力"):
+                st.caption("SIEM（セキュリティログ監視）への取り込みや、データベース連携に利用してください。")
+                sub_tab1, sub_tab2, sub_tab3 = st.tabs(["📄 検索結果リスト (CSV/Excel)", "📈 統計・カウントデータ", "🛡️ STIX 2.1 (SOC/MISP連携用)"])
                 
                 with sub_tab1:
                     c1, c2 = st.columns(2)
@@ -4452,26 +5074,46 @@ def main():
                     csv_display = csv_display.rename(columns=rename_map)
                     with c1:
                         st.markdown("**画面表示順 (現在の並び)**")
-                        st.download_button("CSV形式", csv_display.to_csv(index=False).encode('utf-8-sig'), "results_display.csv", "text/csv", width="stretch")
-                        st.download_button("Excel形式", convert_df_to_excel(csv_display), "results_display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
+                        st.download_button("CSV形式", csv_display.to_csv(index=False).encode('utf-8-sig'), "results_display.csv", "text/csv", key="csv_display_btn", width="stretch")
+                        st.download_button("Excel形式", convert_df_to_excel(csv_display), "results_display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="excel_display_btn", width="stretch")
                     
                     full_output_data = [{'Target_IP': t, **result_lookup.get(t, {'ISP': 'N/A', 'Status': 'Error'})} for t in full_input_list]
                     full_output_df = pd.DataFrame(full_output_data).astype(str).rename(columns=rename_map)
                     csv_full = full_output_df.drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link', 'ISP', 'Country'], errors='ignore')
                     with c2:
                         st.markdown("**全データ (入力した順番)**")
-                        st.download_button("CSV形式", csv_full.to_csv(index=False).encode('utf-8-sig'), "results_full.csv", "text/csv", width="stretch")
-                        st.download_button("Excel形式", convert_df_to_excel(csv_full), "results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
+                        st.download_button("CSV形式", csv_full.to_csv(index=False).encode('utf-8-sig'), "results_full.csv", "text/csv", key="csv_full_btn", width="stretch")
+                        st.download_button("Excel形式", convert_df_to_excel(csv_full), "results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="excel_full_btn", width="stretch")
 
                 with sub_tab2:
                     sc1, sc2, sc3 = st.columns(3)
                     with sc1:
-                        st.download_button("🎯 ターゲット別件数 (CSV)", freq_full_df.to_csv(index=False).encode('utf-8-sig'), "freq_all.csv", "text/csv", width="stretch")
+                        st.download_button("🎯 ターゲット別件数 (CSV)", freq_full_df.to_csv(index=False).encode('utf-8-sig'), "freq_all.csv", "text/csv", key="btn_freq_csv", width="stretch")
                     with sc2:
-                        st.download_button("🏢 ISP別件数 (CSV)", isp_full_df.to_csv(index=False).encode('utf-8-sig'), "isp_all.csv", "text/csv", width="stretch")
+                        st.download_button("🏢 ISP別件数 (CSV)", isp_full_df.to_csv(index=False).encode('utf-8-sig'), "isp_all.csv", "text/csv", key="btn_isp_csv", width="stretch")
                     with sc3:
-                        st.download_button("🌍 国別件数 (CSV)", country_full_df.to_csv(index=False).encode('utf-8-sig'), "country_all.csv", "text/csv", width="stretch")
+                        st.download_button("🌍 国別件数 (CSV)", country_full_df.to_csv(index=False).encode('utf-8-sig'), "country_all.csv", "text/csv", key="btn_country_csv", width="stretch")
 
+                with sub_tab3:
+                    st.info("**STIX (Structured Threat Information Expression) 2.1 形式**\n\n調査結果を、世界標準の脅威インテリジェンス・フォーマット (JSON形式) で出力します。SIEMへのIoC（侵害指標）の取り込みや、MISPへのインポートにそのまま使用できます。")
+                    
+                    stix_data = generate_stix2_bundle(display_res)
+                    stix_filename = f"osint_indicators_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.json"
+                    
+                    if IS_PUBLIC_MODE:
+                        st.download_button(
+                            label="STIX 2.1 Bundle (JSON) をダウンロード",
+                            data=stix_data.encode('utf-8'),
+                            file_name=stix_filename,
+                            mime="application/json",
+                            width="stretch",
+                            type="primary"
+                        )
+                    else:
+                        render_local_save_ui(
+                            "STIX 2.1 Bundle をローカル保存", 
+                            stix_filename, stix_data.encode('utf-8'), "stix_json", "primary"
+                        )
+                
 if __name__ == "__main__":
     main()
-            
