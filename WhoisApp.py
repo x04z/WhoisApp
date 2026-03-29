@@ -2142,25 +2142,10 @@ def create_advanced_excel(df, time_col_name=None):
                 else:
                     chart.varyColors = True
                     
-                if not IS_PUBLIC_MODE:
-                    # ローカルモードの場合：データテーブルをグラフ下部に表示する
-                    chart.dataLabels = None
-                    from openpyxl.chart.plotarea import DataTable
-                    dt = DataTable()
-                    dt.showHorzBorder = True
-                    dt.showVertBorder = True
-                    dt.showOutline = True
-                    dt.showKeys = True
-                    try:
-                        chart.plotArea.dTable = dt
-                    except AttributeError:
-                        # 万が一ローカル環境でもplotAreaが未初期化状態の場合はスキップする安全装置
-                        pass
-                else:
-                    # パブリックモード(Streamlit Cloud)の場合：エラー回避のためデータラベルを表示
-                    from openpyxl.chart.label import DataLabelList
-                    chart.dataLabels = DataLabelList()
-                    chart.dataLabels.showVal = True
+                # 環境依存による表示エラーを回避するため、全環境で安定するデータラベル表示に統一
+                from openpyxl.chart.label import DataLabelList
+                chart.dataLabels = DataLabelList()
+                chart.dataLabels.showVal = True
                     
                 chart.x_axis.title = x_title
                 chart.y_axis.title = y_title
@@ -2179,11 +2164,18 @@ def create_advanced_excel(df, time_col_name=None):
                 chart.set_categories(cats)
                 ws.add_chart(chart, "E5")
 
+            # プロキシデータが有効か（全て「未検証」ではないか）を判定するフラグ
+            proxy_col = 'プロキシ種別'
+            has_valid_risk_data = False
+            if proxy_col in df.columns:
+                if not (df[proxy_col] == '未検証').all():
+                    has_valid_risk_data = True
+
             # ---------------------------------------------------------
             # 1. Report_Whois_Volume: ISP別アクセス数
             # ---------------------------------------------------------
             isp_col = 'Whois結果（日本語名称）'
-            if isp_col in df.columns:
+            if isp_col in df.columns and not (df[isp_col] == 'N/A').all():
                 top_isps = df[isp_col].value_counts().head(20).index
                 df_isp = df[df[isp_col].isin(top_isps)]
                 pivot_isp_vol = df_isp.pivot_table(index=isp_col, values=count_col, aggfunc='count')
@@ -2196,39 +2188,44 @@ def create_advanced_excel(df, time_col_name=None):
                 # ---------------------------------------------------------
                 # 2. Report_Whois_Risk: ISP別リスク分析
                 # ---------------------------------------------------------
-                pivot_isp_risk = df_isp.pivot_table(index=isp_col, columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0)
-                if not pivot_isp_risk.empty:
-                    desc_isp_risk = "そのISPが安全な一般回線か、注意が必要なサーバー/VPN経由かを判定しています。「未検証」はAPIによる検証なし、「Standard Connection (API Verified)」はAPI検証済みの一般回線を示します。"
-                    add_chart_sheet(pivot_isp_risk, 'Report_Whois_Risk', 'Risk Analysis by Whois (Top 20)', 'ISP Name', 'Count', desc_isp_risk, stacked=True)
+                if has_valid_risk_data:
+                    pivot_isp_risk = df_isp.pivot_table(index=isp_col, columns=proxy_col, values=count_col, aggfunc='count', fill_value=0)
+                    if not pivot_isp_risk.empty:
+                        desc_isp_risk = "そのISPが安全な一般回線か、注意が必要なサーバー/VPN経由かを判定しています。「未検証」はAPIによる検証なし、「Standard Connection (API Verified)」はAPI検証済みの一般回線を示します。"
+                        add_chart_sheet(pivot_isp_risk, 'Report_Whois_Risk', 'Risk Analysis by Whois (Top 20)', 'ISP Name', 'Count', desc_isp_risk, stacked=True)
 
             # ---------------------------------------------------------
-            # 3. Report_RDAP_Volume: RDAP別アクセス数 (⬅️ 復活)
+            # 3. Report_RDAP_Volume: RDAP別アクセス数
             # ---------------------------------------------------------
             rdap_col = 'RDAP結果（日本語名称）'
             if rdap_col in df.columns:
                 # 空文字もN/Aとして扱うための前処理
                 df[rdap_col] = df[rdap_col].replace('', 'N/A')
-                top_rdaps = df[rdap_col].value_counts().head(20).index
-                df_rdap = df[df[rdap_col].isin(top_rdaps)]
-                pivot_rdap_vol = df_rdap.pivot_table(index=rdap_col, values=count_col, aggfunc='count')
                 
-                if not pivot_rdap_vol.empty:
-                    pivot_rdap_vol = pivot_rdap_vol.sort_values(count_col, ascending=False)
-                    desc_rdap_vol = "公式レジストリ（RDAP）に登録されている法的な保有組織ごとのアクセス数です。Whois（運用者）とは異なる、IPアドレスブロックの真の所有者傾向を可視化します。"
-                    add_chart_sheet(pivot_rdap_vol, 'Report_RDAP_Volume', 'RDAP Access Volume Ranking (Top 20)', 'RDAP Name', 'Count', desc_rdap_vol)
+                # RDAPデータが有効な場合のみ実行
+                if not (df[rdap_col] == 'N/A').all():
+                    top_rdaps = df[rdap_col].value_counts().head(20).index
+                    df_rdap = df[df[rdap_col].isin(top_rdaps)]
+                    pivot_rdap_vol = df_rdap.pivot_table(index=rdap_col, values=count_col, aggfunc='count')
+                    
+                    if not pivot_rdap_vol.empty:
+                        pivot_rdap_vol = pivot_rdap_vol.sort_values(count_col, ascending=False)
+                        desc_rdap_vol = "公式レジストリ（RDAP）に登録されている法的な保有組織ごとのアクセス数です。Whois（運用者）とは異なる、IPアドレスブロックの真の所有者傾向を可視化します。"
+                        add_chart_sheet(pivot_rdap_vol, 'Report_RDAP_Volume', 'RDAP Access Volume Ranking (Top 20)', 'RDAP Name', 'Count', desc_rdap_vol)
 
-                # ---------------------------------------------------------
-                # 4. Report_RDAP_Risk: RDAP別リスク分析 (⬅️ 復活)
-                # ---------------------------------------------------------
-                pivot_rdap_risk = df_rdap.pivot_table(index=rdap_col, columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0)
-                if not pivot_rdap_risk.empty:
-                    desc_rdap_risk = "法的保有組織（RDAP）ごとの接続環境を分析しています。特定の組織が保有するIP帯域が、プロキシやVPNインフラとして集中的に悪用されていないかを確認できます。"
-                    add_chart_sheet(pivot_rdap_risk, 'Report_RDAP_Risk', 'Risk Analysis by RDAP (Top 20)', 'RDAP Name', 'Count', desc_rdap_risk, stacked=True)
+                    # ---------------------------------------------------------
+                    # 4. Report_RDAP_Risk: RDAP別リスク分析
+                    # ---------------------------------------------------------
+                    if has_valid_risk_data:
+                        pivot_rdap_risk = df_rdap.pivot_table(index=rdap_col, columns=proxy_col, values=count_col, aggfunc='count', fill_value=0)
+                        if not pivot_rdap_risk.empty:
+                            desc_rdap_risk = "法的保有組織（RDAP）ごとの接続環境を分析しています。特定の組織が保有するIP帯域が、プロキシやVPNインフラとして集中的に悪用されていないかを確認できます。"
+                            add_chart_sheet(pivot_rdap_risk, 'Report_RDAP_Risk', 'Risk Analysis by RDAP (Top 20)', 'RDAP Name', 'Count', desc_rdap_risk, stacked=True)
             
             # ---------------------------------------------------------
             # 5. Report_Country: 国別アクセス数
             # ---------------------------------------------------------
-            if '国名' in df.columns:
+            if '国名' in df.columns and not (df['国名'] == 'N/A').all():
                 pivot_country = df.pivot_table(index='国名', values=count_col, aggfunc='count')
                 if not pivot_country.empty:
                     pivot_country = pivot_country.sort_values(count_col, ascending=False).head(15)
@@ -2243,8 +2240,8 @@ def create_advanced_excel(df, time_col_name=None):
                 desc_time_vol = "何時にアクセスが集中しているかを可視化しています。一般的なユーザーは活動時間帯に、Botなどは深夜早朝や24時間一定のアクセスを行う傾向があります。"
                 add_chart_sheet(pivot_time_vol, 'Report_Time_Volume', 'Hourly Access Trend', 'Hour (0-23h)', 'Count', desc_time_vol)
 
-                if 'プロキシ種別' in df.columns:
-                    pivot_time_risk = df.pivot_table(index='Hour', columns='プロキシ種別', values=count_col, aggfunc='count', fill_value=0).reindex(range(24), fill_value=0)
+                if has_valid_risk_data:
+                    pivot_time_risk = df.pivot_table(index='Hour', columns=proxy_col, values=count_col, aggfunc='count', fill_value=0).reindex(range(24), fill_value=0)
                     desc_time_risk = "深夜帯などに怪しいアクセス（Hosting/VPN等）が増えていないかを確認できます。夜間にHosting判定が増加する場合、Botによる自動巡回の可能性があります。"
                     add_chart_sheet(pivot_time_risk, 'Report_Time_Risk', 'Hourly Risk Trend', 'Hour (0-23h)', 'Count', desc_time_risk, stacked=True)
                 
