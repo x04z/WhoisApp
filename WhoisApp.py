@@ -2142,17 +2142,25 @@ def create_advanced_excel(df, time_col_name=None):
                 else:
                     chart.varyColors = True
                     
-                # データラベルを非表示にする
-                chart.dataLabels = None
-                
-                # 代わりにデータテーブルをグラフ下部に表示する
-                from openpyxl.chart.plotarea import DataTable
-                dt = DataTable()
-                dt.showHorzBorder = True
-                dt.showVertBorder = True
-                dt.showOutline = True
-                dt.showKeys = True
-                chart.plotArea.dTable = dt
+                if not IS_PUBLIC_MODE:
+                    # ローカルモードの場合：データテーブルをグラフ下部に表示する
+                    chart.dataLabels = None
+                    from openpyxl.chart.plotarea import DataTable
+                    dt = DataTable()
+                    dt.showHorzBorder = True
+                    dt.showVertBorder = True
+                    dt.showOutline = True
+                    dt.showKeys = True
+                    try:
+                        chart.plotArea.dTable = dt
+                    except AttributeError:
+                        # 万が一ローカル環境でもplotAreaが未初期化状態の場合はスキップする安全装置
+                        pass
+                else:
+                    # パブリックモード(Streamlit Cloud)の場合：エラー回避のためデータラベルを表示
+                    from openpyxl.chart.label import DataLabelList
+                    chart.dataLabels = DataLabelList()
+                    chart.dataLabels.showVal = True
                     
                 chart.x_axis.title = x_title
                 chart.y_axis.title = y_title
