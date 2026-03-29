@@ -26,6 +26,16 @@ import os
 import bisect
 import uuid
 
+# ==========================================
+#  [Local User Config] API Key Hardcoding
+# ==========================================
+# ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
+# 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
+HARDCODED_IPINFO_KEY = "" 
+HARDCODED_VPNAPI_KEY = ""
+HARDCODED_SECURITYTRAILS_KEY = ""
+# ==========================================
+
 BACKUP_FILE = "whois_recovery_session.json"
 BACKUP_DETAILS_FILE = "whois_recovery_details.json"
 
@@ -179,16 +189,6 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
-
-# ==========================================
-#  [Local User Config] API Key Hardcoding
-# ==========================================
-# ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
-# 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
-HARDCODED_IPINFO_KEY = "" 
-HARDCODED_VPNAPI_KEY = ""
-HARDCODED_SECURITYTRAILS_KEY = ""
-# ==========================================
 
 # ==========================================
 # 自動モード判定ロジック (st.secrets利用)
