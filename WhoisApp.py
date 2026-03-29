@@ -2133,7 +2133,8 @@ def create_advanced_excel(df, time_col_name=None):
                 chart.title = chart_title
                 chart.height = 15 
                 chart.width = 25  
-                chart.legend.position = 'b'
+                # 凡例を非表示にする
+                chart.legend = None
                 
                 if stacked:
                     chart.grouping = "stacked"
@@ -2141,10 +2142,17 @@ def create_advanced_excel(df, time_col_name=None):
                 else:
                     chart.varyColors = True
                     
-                chart.dataLabels = DataLabelList()
-                chart.dataLabels.showVal = True
-                if not stacked:
-                    chart.dataLabels.position = 'outEnd'
+                # データラベルを非表示にする
+                chart.dataLabels = None
+                
+                # 代わりにデータテーブルをグラフ下部に表示する
+                from openpyxl.chart.plotarea import DataTable
+                dt = DataTable()
+                dt.showHorzBorder = True
+                dt.showVertBorder = True
+                dt.showOutline = True
+                dt.showKeys = True
+                chart.plotArea.dTable = dt
                     
                 chart.x_axis.title = x_title
                 chart.y_axis.title = y_title
@@ -3462,6 +3470,18 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
     
     df = pd.DataFrame(df_list)
 
+    # 💡 UIの一覧ビューからも不要なカラムを動的に消去する
+    ui_cols_to_drop = []
+    if not use_rdap_option:
+        ui_cols_to_drop.extend(["RDAP(元データ)", "RDAP(日本語名)"])
+        
+    # IoTリスクが取得されていない（オフ または 集約モード）場合はカラムごと消す
+    if all(r.get('IoT_Risk', '') in ['[Not Checked]', 'Aggr Mode (Skip)', '', 'N/A'] for r in results):
+        ui_cols_to_drop.append("IoTリスク")
+        
+    if ui_cols_to_drop:
+        df = df.drop(columns=[c for c in ui_cols_to_drop if c in df.columns], errors='ignore')
+
     # --- 2. マスタービュー (on_select有効化) ---
     st.markdown("#### 📊 一覧ビュー (行クリックで選択)")
     
@@ -3471,9 +3491,13 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         "IPアドレス": st.column_config.TextColumn(width="medium"),
         "Whois(元データ)": st.column_config.TextColumn(width="medium"),
         "Whois(日本語名)": st.column_config.TextColumn(width="medium"),
-        "RDAP(元データ)": st.column_config.TextColumn(width="medium"),
-        "RDAP(日本語名)": st.column_config.TextColumn(width="medium"),
     }
+    if "RDAP(元データ)" not in ui_cols_to_drop:
+        col_config["RDAP(元データ)"] = st.column_config.TextColumn(width="medium")
+        col_config["RDAP(日本語名)"] = st.column_config.TextColumn(width="medium")
+    if "IoTリスク" not in ui_cols_to_drop:
+        col_config["IoTリスク"] = st.column_config.TextColumn(width="medium")
+
     # オリジナルカラムも設定に追加
     for col in original_cols:
         col_config[col] = st.column_config.TextColumn(width="medium")
@@ -3983,10 +4007,12 @@ def render_merged_analysis(df_merged):
                 st.altair_chart(chart, width="stretch")
                 chart_json = chart.to_dict()
                 html_content = generate_cross_analysis_html(chart_json, x_col, group_col if group_col != '(なし)' else 'Count')
+                base_fname = st.session_state.get('base_filename', 'WhoisSearchResult')
+                ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
                 st.download_button(
                     label="⬇️ クロス分析レポート(HTML)をダウンロード",
                     data=html_content,
-                    file_name=f"cross_analysis_{x_col}_vs_{group_col}.html",
+                    file_name=f"{base_fname}_CrossAnalysis_{x_col}_vs_{group_col}_{ts}.html",
                     mime="text/html"
                 )
 
@@ -4448,6 +4474,12 @@ def main():
 
     raw_targets = []
     df_orig = None
+
+    # 元のファイル名をセッションに保存（ダウンロード時のプレフィックス用）
+    if uploaded_file:
+        st.session_state['base_filename'] = os.path.splitext(uploaded_file.name)[0]
+    else:
+        st.session_state['base_filename'] = "WhoisSearchResult"
 
     if manual_input:
         raw_targets.extend(manual_input.splitlines())
@@ -5168,6 +5200,17 @@ def main():
                         })
                     df_for_analysis = pd.DataFrame(temp_rows)
 
+            # 💡 マスターデータ（Excel/全件CSV用）から無効オプション列を削除
+            if not df_for_analysis.empty:
+                master_cols_to_drop = []
+                if not use_rdap_option:
+                    master_cols_to_drop.extend(['RDAP結果（元データ）', 'RDAP結果（日本語名称）'])
+                if not use_internetdb_option:
+                    master_cols_to_drop.append('IoTリスク')
+                
+                if master_cols_to_drop:
+                    df_for_analysis = df_for_analysis.drop(columns=[c for c in master_cols_to_drop if c in df_for_analysis.columns], errors='ignore')
+
             # --- クロス分析 (画面表示) ---
             if not df_for_analysis.empty:
                 st.markdown("---")
@@ -5183,6 +5226,10 @@ def main():
             st.markdown("---")
             st.markdown("### 📥 レポート ＆ データ出力")
             
+            base_fname = st.session_state.get('base_filename', 'WhoisSearchResult')
+            ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            file_prefix = f"{base_fname}_{ts}"
+            
             main_col1, main_col2 = st.columns(2)
             with main_col1:
                 st.info("📊 **分析マスター (全入力順)**\n\nアップロードされた全行に基づき、ISP・RDAP・国別などの集計表とグラフを生成します。")
@@ -5195,7 +5242,7 @@ def main():
                     with st.spinner("⏳ Excelレポートを生成中..."):
                         excel_advanced = create_advanced_excel(df_for_analysis, selected_time_col)
                     
-                    excel_filename = "whois_analysis_full_report.xlsx"
+                    excel_filename = f"{file_prefix}_MasterReport.xlsx"
                     if IS_PUBLIC_MODE:
                         st.download_button(
                             label="📥 Excelレポート (全入力順・グラフ付き) を保存",
@@ -5218,7 +5265,7 @@ def main():
                 with st.spinner("⏳ HTMLレポートを生成中..."):
                     html_report = generate_full_report_html(isp_full_df, country_full_df, freq_full_df)
                 
-                html_summary_filename = "whois_analysis_summary.html"
+                html_summary_filename = f"{file_prefix}_Summary.html"
                 if IS_PUBLIC_MODE:
                     st.download_button(
                         label="📥 HTMLレポート (閲覧・印刷用) を表示",
@@ -5252,10 +5299,21 @@ def main():
                         'Status': 'ステータス'
                     }
                     csv_display = csv_display.rename(columns=rename_map)
+                    
+                    # 💡 ダウンロード用(画面表示順)から無効オプション列を削除
+                    display_cols_to_drop = []
+                    if not use_rdap_option:
+                        display_cols_to_drop.extend(['RDAP(元データ)', 'RDAP(日本語名)'])
+                    if not use_internetdb_option:
+                        display_cols_to_drop.append('IoTリスク')
+                        
+                    if display_cols_to_drop:
+                        csv_display = csv_display.drop(columns=[c for c in display_cols_to_drop if c in csv_display.columns], errors='ignore')
+
                     with c1:
                         st.markdown("**画面表示順 (現在の並び)**")
-                        st.download_button("CSV形式", csv_display.to_csv(index=False).encode('utf-8-sig'), "results_display.csv", "text/csv", key="csv_display_btn", width="stretch")
-                        st.download_button("Excel形式", convert_df_to_excel(csv_display), "results_display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="excel_display_btn", width="stretch")
+                        st.download_button("CSV形式", csv_display.to_csv(index=False).encode('utf-8-sig'), f"{file_prefix}_Display.csv", "text/csv", key="csv_display_btn", width="stretch")
+                        st.download_button("Excel形式", convert_df_to_excel(csv_display), f"{file_prefix}_Display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="excel_display_btn", width="stretch")
                     
                     # 元のアップロードデータ(時間や他カラムを含む)を完全に維持している df_for_analysis をそのまま出力に使用する
                     if not df_for_analysis.empty:
@@ -5265,23 +5323,23 @@ def main():
                         
                     with c2:
                         st.markdown("**全データ (入力した順番)**")
-                        st.download_button("CSV形式", csv_full.to_csv(index=False).encode('utf-8-sig'), "results_full.csv", "text/csv", key="csv_full_btn", width="stretch")
-                        st.download_button("Excel形式", convert_df_to_excel(csv_full), "results_full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="excel_full_btn", width="stretch")
+                        st.download_button("CSV形式", csv_full.to_csv(index=False).encode('utf-8-sig'), f"{file_prefix}_Full.csv", "text/csv", key="csv_full_btn", width="stretch")
+                        st.download_button("Excel形式", convert_df_to_excel(csv_full), f"{file_prefix}_Full.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="excel_full_btn", width="stretch")
 
                 with sub_tab2:
                     sc1, sc2, sc3 = st.columns(3)
                     with sc1:
-                        st.download_button("🎯 ターゲット別件数 (CSV)", freq_full_df.to_csv(index=False).encode('utf-8-sig'), "freq_all.csv", "text/csv", key="btn_freq_csv", width="stretch")
+                        st.download_button("🎯 ターゲット別件数 (CSV)", freq_full_df.to_csv(index=False).encode('utf-8-sig'), f"{file_prefix}_Freq.csv", "text/csv", key="btn_freq_csv", width="stretch")
                     with sc2:
-                        st.download_button("🏢 ISP別件数 (CSV)", isp_full_df.to_csv(index=False).encode('utf-8-sig'), "isp_all.csv", "text/csv", key="btn_isp_csv", width="stretch")
+                        st.download_button("🏢 ISP別件数 (CSV)", isp_full_df.to_csv(index=False).encode('utf-8-sig'), f"{file_prefix}_ISP.csv", "text/csv", key="btn_isp_csv", width="stretch")
                     with sc3:
-                        st.download_button("🌍 国別件数 (CSV)", country_full_df.to_csv(index=False).encode('utf-8-sig'), "country_all.csv", "text/csv", key="btn_country_csv", width="stretch")
+                        st.download_button("🌍 国別件数 (CSV)", country_full_df.to_csv(index=False).encode('utf-8-sig'), f"{file_prefix}_Country.csv", "text/csv", key="btn_country_csv", width="stretch")
 
                 with sub_tab3:
                     st.info("**STIX (Structured Threat Information Expression) 2.1 形式**\n\n調査結果を、世界標準の脅威インテリジェンス・フォーマット (JSON形式) で出力します。SIEMへのIoC（侵害指標）の取り込みや、MISPへのインポートにそのまま使用できます。")
                     
                     stix_data = generate_stix2_bundle(display_res)
-                    stix_filename = f"osint_indicators_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.json"
+                    stix_filename = f"{file_prefix}_STIX.json"
                     
                     if IS_PUBLIC_MODE:
                         st.download_button(
