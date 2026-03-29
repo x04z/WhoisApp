@@ -1263,7 +1263,7 @@ def resolve_ip_nslookup(ip):
     return hostnames, raw_output
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, cloud_ip_data, use_rdap, use_internetdb, use_rdns, use_st_reverse_ip, api_key=None, vpnapi_key=None, st_api_key=None, st_start_date=None, st_end_date=None, use_st_rev_fetchall=False):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, cloud_ip_data, use_rdap, use_internetdb, use_rdns, use_st_reverse_ip, api_key=None, vpnapi_key=None, st_api_key=None, st_start_date=None, st_end_date=None, use_st_rev_fetchall=False, is_single_target=False):
     actual_ip = extract_actual_ip(ip)
     
     result = {
@@ -1389,7 +1389,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
             is_composite = (actual_ip != ip and "(" in ip)
 
             # 複合ターゲット（ドメインから解決されたIP）の場合は、生WHOISの取得をスキップしてIP-BANを防ぐ
-            if not is_composite:
+            if not is_composite and is_single_target:
                 w_text_ip, w_server_ip = fetch_classic_whois(actual_ip)
                 if w_text_ip:
                     result['IP_WHOIS_TEXT'] = w_text_ip
@@ -1403,11 +1403,11 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                     result['DOMAIN_RDAP_URL'] = res_d['url']
                 
                 # RDAPの成否に関わらず、生のWHOISテキストは証拠として常に取得を試みる
-                # （※ドメインのWHOISは get_domain_details で既にキャッシュされているためBANリスクなし）
-                w_text, w_server = fetch_classic_whois(domain_part)
-                if w_text:
-                    result['DOMAIN_WHOIS_TEXT'] = w_text
-                    result['DOMAIN_WHOIS_SERVER'] = w_server
+                if is_single_target:
+                    w_text, w_server = fetch_classic_whois(domain_part)
+                    if w_text:
+                        result['DOMAIN_WHOIS_TEXT'] = w_text
+                        result['DOMAIN_WHOIS_SERVER'] = w_server
 
         is_composite = (actual_ip != ip and "(" in ip)
         if is_composite and st_api_key:
@@ -1461,8 +1461,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
 
     return result, new_cache_entry, new_learned_isp
 
-def get_domain_details(domain, nslookup_raw="", st_api_key=None, st_start_date=None, st_end_date=None):
-
+def get_domain_details(domain, nslookup_raw="", st_api_key=None, st_start_date=None, st_end_date=None, is_single_target=False):
     # 捨てアド検知を実行
     detected_disposables = check_disposable_domain(domain, nslookup_raw)
     proxy_type_val = f"⚠️ 捨てアド ({' / '.join(detected_disposables)})" if detected_disposables else "N/A (Domain)"
@@ -1510,7 +1509,8 @@ def get_domain_details(domain, nslookup_raw="", st_api_key=None, st_start_date=N
                 if rdap_name_raw: break
         
         # 生のWHOISテキストは常に裏で取得しておく（個別レポート用）
-        domain_whois_text, domain_whois_server = fetch_classic_whois(domain)
+        if is_single_target:
+            domain_whois_text, domain_whois_server = fetch_classic_whois(domain)
             
     except Exception:
         pass
@@ -3401,17 +3401,54 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         st.info("検索結果がここに表示されます。")
         return
 
-    # --- 1. データフレーム構築 (4列構成) ---
+    # --- 1. データフレーム構築 ---
     df_list = []
+    orig_data_map = {}
+    original_cols = []
+    
+    # オリジナルデータが存在する場合、IPアドレスをキーとして元データをマップする
+    if st.session_state.get('original_df') is not None and st.session_state.get('ip_column_name'):
+        orig_df = st.session_state['original_df']
+        ip_col = st.session_state['ip_column_name']
+        original_cols = [c for c in orig_df.columns if c != ip_col]
+        
+        for _, row in orig_df.iterrows():
+            raw_val = str(row[ip_col]).strip()
+            ip_val = clean_ocr_error_chars(raw_val)
+            extracted_ip = extract_actual_ip(ip_val)
+            # 同じIPが複数ある場合はリストとしてすべての行データを保持する
+            if extracted_ip:
+                if extracted_ip not in orig_data_map:
+                    orig_data_map[extracted_ip] = []
+                orig_data_map[extracted_ip].append(row.to_dict())
+
     for idx, res in enumerate(results):
-        # 国名の整形
         c_code = res.get('CountryCode', 'N/A')
         c_jp = res.get('Country_JP', 'N/A')
         country_display = f"{c_jp} ({c_code})"
+        target_ip = res.get('Target_IP', 'N/A')
+        actual_ip = extract_actual_ip(target_ip)
         
-        df_list.append({
-            "No.": idx + 1,
-            "IPアドレス": res.get('Target_IP', 'N/A'),
+        row_data = {"No.": idx + 1}
+        
+        # ユーザー要望: 元データの列を一覧ビューの左側に反映
+        if original_cols:
+            if actual_ip in orig_data_map:
+                rows_list = orig_data_map[actual_ip]
+                for col in original_cols:
+                    # 複数の値がある場合は重複を排除して「 / 」で結合し一覧表示する
+                    vals = []
+                    for r in rows_list:
+                        val = str(r.get(col, '')).strip()
+                        if val and val not in vals:
+                            vals.append(val)
+                    row_data[col] = " / ".join(vals) if vals else ""
+            else:
+                for col in original_cols:
+                    row_data[col] = ''
+        
+        row_data.update({
+            "IPアドレス": target_ip,
             "国名": country_display,
             "Whois(元データ)": res.get('ISP_API_Raw', 'N/A'),
             "Whois(日本語名)": res.get('ISP_JP', 'N/A'),
@@ -3421,13 +3458,26 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
             "IoTリスク": res.get('IoT_Risk', ''),
             "ステータス": res.get('Status', 'N/A')
         })
+        df_list.append(row_data)
     
     df = pd.DataFrame(df_list)
 
     # --- 2. マスタービュー (on_select有効化) ---
     st.markdown("#### 📊 一覧ビュー (行クリックで選択)")
     
-    # 選択モードを有効化 (複数選択可能)
+    # カラム設定を動的に生成
+    col_config = {
+        "No.": st.column_config.NumberColumn(width="small"),
+        "IPアドレス": st.column_config.TextColumn(width="medium"),
+        "Whois(元データ)": st.column_config.TextColumn(width="medium"),
+        "Whois(日本語名)": st.column_config.TextColumn(width="medium"),
+        "RDAP(元データ)": st.column_config.TextColumn(width="medium"),
+        "RDAP(日本語名)": st.column_config.TextColumn(width="medium"),
+    }
+    # オリジナルカラムも設定に追加
+    for col in original_cols:
+        col_config[col] = st.column_config.TextColumn(width="medium")
+
     selection_state = st.dataframe(
         df,
         hide_index=True,
@@ -3435,14 +3485,7 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         height=450,
         on_select="rerun", 
         selection_mode="multi-row",
-        column_config={
-            "No.": st.column_config.NumberColumn(width="small"),
-            "IPアドレス": st.column_config.TextColumn(width="medium"),
-            "Whois(元データ)": st.column_config.TextColumn(width="medium"),
-            "Whois(日本語名)": st.column_config.TextColumn(width="medium"),
-            "RDAP(元データ)": st.column_config.TextColumn(width="medium"),
-            "RDAP(日本語名)": st.column_config.TextColumn(width="medium"),
-        }
+        column_config=col_config
     )
 
     st.markdown("---")
@@ -3456,38 +3499,135 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
     
     # 選択されたターゲットのリストを作成
     selected_indices = selection_state.selection.rows
-    target_results = []
+    target_results_dict = {} # 重複排除のため辞書を使用 (Key: Target_IP)
 
-    # A. 行が選択されている場合 -> その行を対象にする
+    # A. 行が選択されている場合 (手動選択の取得)
     if selected_indices:
-        st.success(f"✅ 一覧から **{len(selected_indices)}** 件が選択されています。")
         for idx in selected_indices:
             if idx < len(results):
-                target_results.append(results[idx])
-    
-    # B. 行が選択されていない場合 -> フィルタリングUIを表示
-    else:
-        st.info("👆 一覧の行をクリックすると、そのターゲットが自動選択されます。または、以下の条件で一括指定も可能です。")
-        
-        # フィルタリングUI
-        with st.expander("🔎 条件でターゲットを一括指定する", expanded=True):
-            col_f1, col_f2 = st.columns(2)
-            with col_f1:
-                # 国でフィルタ
-                all_countries = sorted(list(set([r.get('Country_JP', 'N/A') for r in results])))
-                sel_countries = st.multiselect("国名で選択:", all_countries)
-            with col_f2:
-                # ISP(名寄せ)でフィルタ
-                all_isps = sorted(list(set([r.get('ISP_JP', 'N/A') for r in results])))
-                sel_isps = st.multiselect("Whois(日本語名)で選択:", all_isps)
+                res = results[idx]
+                target_results_dict[res.get('Target_IP')] = res
+
+    # B. フィルタリングUIを常に表示し、条件指定の取得を行う
+    st.info("👆 一覧の行クリック選択と、以下の条件指定は同時に併用可能です。")
+    with st.expander("🔎 条件でターゲットを一括指定する", expanded=True):
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            all_countries = sorted(list(set([r.get('Country_JP', 'N/A') for r in results])))
+            sel_countries = st.multiselect("国名で選択:", all_countries)
+        with col_f2:
+            all_isps = sorted(list(set([r.get('ISP_JP', 'N/A') for r in results])))
+            sel_isps = st.multiselect("Whois(日本語名)で選択:", all_isps)
             
-            if sel_countries or sel_isps:
-                for res in results:
-                    c_match = res.get('Country_JP', 'N/A') in sel_countries if sel_countries else True
-                    i_match = res.get('ISP_JP', 'N/A') in sel_isps if sel_isps else True
-                    if c_match and i_match:
-                        target_results.append(res)
-                st.success(f"条件ヒット: **{len(target_results)}** 件")
+        # --- 元データの属性フィルタUI ---
+        orig_filters = {}
+        if original_cols and not df.empty:
+            st.markdown("---")
+            st.markdown("**📁 元データ (アップロードファイル) の属性で絞り込む**")
+            
+            filter_cols = st.columns(min(len(original_cols), 3) or 1)
+            col_idx = 0
+            
+            for col_name in original_cols:
+                with filter_cols[col_idx % 3]:
+                    # UIフィルターは、結合された表示用dfではなく、元の生データから正確な選択肢を生成する
+                    raw_series = st.session_state['original_df'][col_name] if st.session_state.get('original_df') is not None else df[col_name]
+                    
+                    # 列が日時として解釈できるか判定
+                    is_datetime = False
+                    if any(k in col_name.lower() for k in ['date', 'time', '日時', '時間', '時刻']):
+                        try:
+                            parsed_dates = pd.to_datetime(raw_series, errors='coerce').dropna()
+                            if not parsed_dates.empty:
+                                is_datetime = True
+                                min_date = parsed_dates.min().date()
+                                max_date = parsed_dates.max().date()
+                        except:
+                            pass
+                    
+                    if is_datetime:
+                        date_range = st.date_input(f"📅 {col_name} (範囲)", value=[min_date, max_date], key=f"filter_{col_name}")
+                        orig_filters[col_name] = {'type': 'date', 'value': date_range}
+                    else:
+                        # 結合文字列ではなく、個別のユニークな値を抽出
+                        unique_vals = [str(v) for v in raw_series.dropna().unique() if str(v).strip() != '']
+                        if 0 < len(unique_vals) <= 50:
+                            selected_vals = st.multiselect(f"🏷️ {col_name}", sorted(unique_vals), key=f"filter_{col_name}")
+                            orig_filters[col_name] = {'type': 'multiselect', 'value': selected_vals}
+                        else:
+                            text_search = st.text_input(f"🔍 {col_name} (部分一致)", key=f"filter_{col_name}")
+                            orig_filters[col_name] = {'type': 'text', 'value': text_search}
+                col_idx += 1
+        
+        # --- フィルタリング実行 ---
+        # 何らかのフィルタ指定が存在するかチェック
+        has_filter_input = bool(sel_countries or sel_isps)
+        for f in orig_filters.values():
+            if f['type'] == 'date' and len(f['value']) == 2:
+                has_filter_input = True
+            elif f['type'] in ('multiselect', 'text') and f['value']:
+                has_filter_input = True
+
+        if has_filter_input:
+            for res in results:
+                target_ip = res.get('Target_IP')
+                actual_ip = extract_actual_ip(target_ip)
+                
+                c_match = res.get('Country_JP', 'N/A') in sel_countries if sel_countries else True
+                i_match = res.get('ISP_JP', 'N/A') in sel_isps if sel_isps else True
+                
+                orig_match = True
+                if orig_filters:
+                    rows_list = orig_data_map.get(actual_ip, [])
+                    if rows_list:
+                        any_row_match = False
+                        # IPに紐づく複数の履歴(行)のうち、いずれか1行でも全てのフィルタ条件を満たせば抽出対象とする
+                        for row_data in rows_list:
+                            row_match = True
+                            for col_name, filter_info in orig_filters.items():
+                                val = str(row_data.get(col_name, ''))
+                                f_type = filter_info['type']
+                                f_val = filter_info['value']
+                                
+                                if f_type == 'date' and len(f_val) == 2:
+                                    if val:
+                                        try:
+                                            row_date = pd.to_datetime(val).date()
+                                            if not (f_val[0] <= row_date <= f_val[1]):
+                                                row_match = False
+                                                break
+                                        except:
+                                            row_match = False
+                                            break
+                                    else:
+                                        row_match = False
+                                        break
+                                elif f_type == 'multiselect' and f_val:
+                                    if val not in f_val:
+                                        row_match = False
+                                        break
+                                elif f_type == 'text' and f_val:
+                                    if f_val.lower() not in val.lower():
+                                        row_match = False
+                                        break
+                            
+                            if row_match:
+                                any_row_match = True
+                                break
+                                
+                        if not any_row_match:
+                            orig_match = False
+                    else:
+                        orig_match = False # 元データが存在しないIPはフィルタ除外
+                
+                if c_match and i_match and orig_match:
+                    target_results_dict[target_ip] = res
+
+    # 辞書から最終的なリストを生成 (重複は自動的に上書き・排除される)
+    target_results = list(target_results_dict.values())
+    
+    if target_results:
+        st.success(f"✅ 合計 **{len(target_results)}** 件が選択されています（手動選択: {len(selected_indices)}件 / フィルタ条件と結合済）。")
 
     # --- 4. 選択された全ターゲットに対してレポートを表示 ---
     if target_results:
@@ -3500,6 +3640,15 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         has_domain_in_selection = any(not is_valid_ip(r.get('Target_IP', '')) or "(" in r.get('Target_IP', '') for r in target_results)
         has_ip_in_selection = any(is_valid_ip(extract_actual_ip(r.get('Target_IP', ''))) for r in target_results)
 
+        # WHOISデータが実際に取得されているかを判定（複数入力時はIP-BAN回避のためスキップされている）
+        has_whois_in_selection = False
+        for r in target_results:
+            target_ip = r.get('Target_IP', 'N/A')
+            detailed = st.session_state.get('detailed_data', {}).get(target_ip, {})
+            if detailed.get('IP_WHOIS_TEXT') or detailed.get('DOMAIN_WHOIS_TEXT'):
+                has_whois_in_selection = True
+                break
+
         col_opt1, col_opt2, col_opt3, col_opt4, col_opt5, col_opt6, col_opt7, col_opt8, col_opt9 = st.columns(9)
         # ドメイン関連項目は、選択肢にドメイン（または複合型）が含まれない場合はグレーアウト
         with col_opt1: opt_tld = st.checkbox("ドメイン情報", value=has_domain_in_selection, disabled=not has_domain_in_selection)
@@ -3510,7 +3659,9 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         
         # RDAPとWHOISを独立して選択可能にする
         with col_opt4: opt_rdap = st.checkbox("RDAP", value=use_rdap_option, disabled=not use_rdap_option)
-        with col_opt5: opt_whois = st.checkbox("WHOIS", value=True) # 常にオンで操作可能にする
+        
+        # WHOISデータが存在する場合のみオン・操作可能にする
+        with col_opt5: opt_whois = st.checkbox("WHOIS", value=has_whois_in_selection, disabled=not has_whois_in_selection)
         
         # 既存の制限にもターゲット属性の条件を追加
         with col_opt6: opt_ipinfo = st.checkbox("IPinfo", value=bool(pro_api_key) and has_ip_in_selection, disabled=not bool(pro_api_key) or not has_ip_in_selection)
@@ -3537,8 +3688,18 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
             
             # 重い処理の前にスピナーを割り込ませ、フリーズではなく「処理中」であることを明示する
             with st.spinner(f"⏳ {total_selected} 件のレポートデータを構築中... (しばらくお待ちください)"):
-                # 1. 統合レポート(HTML)の生成
-                combined_html = generate_combined_html_report(target_results, current_report_opts)
+                
+                # ✅ 修正: メモリ節約のため分離されていた詳細データ(detailed_data)を統合した完全なリストを構築
+                full_target_results = []
+                for res in target_results:
+                    clean_ip = get_copy_target(res.get('Target_IP', 'N/A'))
+                    full_res = {**res}
+                    if clean_ip in st.session_state.get('detailed_data', {}):
+                        full_res.update(st.session_state['detailed_data'][clean_ip])
+                    full_target_results.append(full_res)
+
+                # 1. 統合レポート(HTML)の生成 (完全なデータリストを渡す)
+                combined_html = generate_combined_html_report(full_target_results, current_report_opts)
                 
                 # 2. ZIPファイルの生成 (tempfileを利用してディスクに書き出し)
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
@@ -3547,13 +3708,10 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                 try:
                     with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED, False) as zip_file:
                         valid_reports_count = 0
-                        for res in target_results:
-                            target_ip = res.get('Target_IP', 'N/A')
+                        # 構築済みの full_target_results をループ処理する
+                        for full_res in full_target_results:
+                            target_ip = full_res.get('Target_IP', 'N/A')
                             clean_ip = get_copy_target(target_ip)
-                            
-                            full_res = {**res}
-                            if clean_ip in st.session_state.get('detailed_data', {}):
-                                full_res.update(st.session_state['detailed_data'][clean_ip])
                             
                             html_report = generate_individual_html_report(full_res, clean_ip, current_report_opts)
                             if html_report:
@@ -3567,21 +3725,24 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                         zip_filename = f"Whois_Reports_Batch_{current_time}.zip"
                         
                         with col_btn1:
-                            if IS_PUBLIC_MODE:
-                                st.download_button(
-                                    label=f"📜 {valid_reports_count} 件を1つの統合レポート(HTML)で保存",
-                                    data=combined_html.encode('utf-8') if combined_html else "",
-                                    file_name=html_filename,
-                                    mime="text/html",
-                                    type="primary",
-                                    width="stretch",
-                                    help="選択した全件のレポートが1つのWebページに目次付きでまとまります。"
-                                )
+                            if combined_html: # ✅ None書き込みエラーを防ぐフェイルセーフ
+                                if IS_PUBLIC_MODE:
+                                    st.download_button(
+                                        label=f"📜 {valid_reports_count} 件を1つの統合レポート(HTML)で保存",
+                                        data=combined_html.encode('utf-8'),
+                                        file_name=html_filename,
+                                        mime="text/html",
+                                        type="primary",
+                                        width="stretch",
+                                        help="選択した全件のレポートが1つのWebページに目次付きでまとまります。"
+                                    )
+                                else:
+                                    render_local_save_ui(
+                                        f"💾 {valid_reports_count} 件の統合レポートをローカル保存", 
+                                        html_filename, combined_html, "batch_html", "primary"
+                                    )
                             else:
-                                render_local_save_ui(
-                                    f"💾 {valid_reports_count} 件の統合レポートをローカル保存", 
-                                    html_filename, combined_html, "batch_html", "primary"
-                                )
+                                st.error("統合レポートのデータ生成に失敗しました。")
                                     
                         with col_btn2:
                             with open(tmp_zip_path, "rb") as f:
@@ -3610,7 +3771,7 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         # Rendering Overload（UI崩壊）を防ぐためのハードリミット設定
         DISPLAY_LIMIT = 50 
         if total_selected > DISPLAY_LIMIT:
-            st.warning(f"⚠️ **ブラウザ保護制限**: 選択された件数（{total_selected}件）が上限を超えています。UIのフリーズを防ぐため、画面上での個別プレビューは最初の {DISPLAY_LIMIT} 件のみ表示しています。\n全件分のレポートが必要な場合は、上部の「複数レポート一括ダウンロード」から取得してください。")
+            st.warning(f"⚠️ **ブラウザ保護制限**: 選択された件数（{total_selected}件）が上限を超えています。UIのフリーズを防ぐため、画面上での個別プレビューは最初の {DISPLAY_LIMIT} 件のみ表示しています。")
             display_targets = target_results[:DISPLAY_LIMIT]
         else:
             display_targets = target_results
@@ -4123,9 +4284,9 @@ def main():
             - **IP Geolocation / ISP 情報**: 
                 - 通常版: `ip-api.com` (毎分45リクエスト制限)
                 - 高精度版: `ipinfo.io` (APIキーに基づく制限)
-            - **匿名通信判定 (Proxy/VPN)**: `IP2Location.io` (不審なIPのみ実行)
+            - **匿名通信判定 (Proxy/VPN)**: `VPNAPI.io` 
             - **過去のDNS履歴 (Historical DNS)**: `SecurityTrails` (ドメイン入力時のみ実行)
-            - **DNS解析 (Forward/Reverse)**: OS標準 `nslookup` (正引き) / `dnspython` ライブラリ (逆引き)
+            - **DNS解析 (Forward/Reverse)**: OS標準 `dnspython` (正引き) / `dnspython` ライブラリ (逆引き)
             - **Whois (RDAP)**: APNIC等の各地域レジストリ公式サーバー
             - **IoT Risk Intelligence**: Shodan InternetDB (ポートスキャン履歴/キャッシュ)
             - **Tor出口ノード**: Tor Project公式サイト
@@ -4241,16 +4402,14 @@ def main():
     st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🌸アップデート情報 (令和８年３月１９日) - 各不具合の修正 🌸", expanded=False):
+    with st.expander("🌸アップデート情報 (令和８年３月２９日) - 大量ログ解析時の安定化 🌸", expanded=False):
         st.markdown("""
         **Update:**\n
-        **大規模IP一括処理のパフォーマンス改善**:
-        * 内部アーキテクチャを刷新し、数百〜数千件規模の解析でもフリーズしない構造へ改修しました。\n
-        **ネットワーク瞬断・切断対応 (サーキットブレーカーの導入)**:
-        * 処理中の予期せぬWi-Fi切断等に対して、エラー終了せずに15秒間の待機状態（保留キュー）へ自動隔離する安全装置を搭載しました。\n
-        **キャッシュ処理の論理バグ修正**:
-        * 同一ネットワーク帯（CIDR）のIPが連続した際、処理件数のカウントが重複により停止する不具合を解決しました。大量実行時でもプログレスバーが正確に進捗を刻みます。\n
-        *不具合の報告ありがとうございました！🙇‍♂️* 
+       **⚡ 処理速度の最適化**:
+        * 大量処理時のスピードを最優先するため、時間のかかる「RDAP (公式台帳情報)」の取得をデフォルトで【オフ】に変更しました。\n
+        **🛠️ UIの最適化とクラッシュ対策**:
+        * 取得されていないデータ（複数検索時にスキップされるWHOIS等）の出力チェックボックスが自動的に無効化されるよう改善しました。
+        * 巨大な一括ダウンロード生成時にシステムがクラッシュする不具合を修正しました。\n
         """)
     # ------------------------------------------------
     # タブを使って入力モードを切り替え、画面を広く使う
@@ -4545,9 +4704,9 @@ def main():
         with col_set2:
             st.markdown("**解析モード:** (追加の解析オプションを選択)")
             # InternetDBオプション
-            use_internetdb_option = st.checkbox("IoTリスク検知 (InternetDBを利用)", value=True, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。不要な場合はオフにすることで処理を最適化できます。")
+            use_internetdb_option = st.checkbox("IoTリスク検知 (InternetDBを利用)", value=False, help="Shodan InternetDBを利用して、対象IPの開放ポートや踏み台リスクを検知します。")
             # RDAPオプション
-            use_rdap_option = st.checkbox("公式レジストリ情報 (RDAP公式台帳の併用 - 5秒待機)", value=True, help="RDAP(公式台帳)から最新のネットワーク名を取得します。アクセス制限を避けるため処理速度が固定されます。")
+            use_rdap_option = st.checkbox("公式レジストリ情報 (RDAP公式台帳の併用 - 5秒待機)", value=False, help="RDAP(公式台帳)から最新のネットワーク名を取得します。アクセス制限を避けるため処理速度が強制的に低下します。")
             # 逆引き(rDNS)オプション
             use_rdns_option = st.checkbox("IP逆引き (Reverse DNS - dnspython)", value=False, help="対象IPアドレスに対してdnspythonを実行し、ホスト名(PTRレコード)を取得して詳細レポートに追加します。")
             # SecurityTrails Reverse IPオプション
@@ -4721,6 +4880,7 @@ def main():
             immediate_ip_queue = immediate_ip_queue_unique
             immediate_ip_queue.extend(ready_to_retry_ips)
             
+            is_single_input = (len(cleaned_raw_targets_list) == 1)
             if "簡易" in current_mode_full_text:
                 if not st.session_state.raw_results:
                     results_list = []
@@ -4736,7 +4896,7 @@ def main():
                     for d in domain_targets:
                         dns_data = st.session_state.get('resolved_dns_map', {}).get(d, {})
                         ns_raw = dns_data.get('raw', '') if isinstance(dns_data, dict) else str(dns_data)
-                        res_domain = get_domain_details(d, ns_raw, st_api_key, st_start_date, st_end_date)
+                        res_domain = get_domain_details(d, ns_raw, st_api_key, st_start_date, st_end_date, is_single_target=is_single_input)
                         
                         heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT']
                         ip_val = res_domain['Target_IP']
@@ -4790,7 +4950,8 @@ def main():
                                 st_api_key,
                                 st_start_date,
                                 st_end_date,
-                                use_st_rev_fetchall
+                                use_st_rev_fetchall,
+                                is_single_input
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
@@ -4955,26 +5116,45 @@ def main():
 
             # --- 全入力順・全件ベースのデータフレーム構築 ---
             df_for_analysis = pd.DataFrame()
-            result_lookup = {r['Target_IP']: r for r in st.session_state.raw_results}
+            
+            # マッチング精度を高めるための多重キー辞書の構築
+            result_lookup = {}
+            for r in st.session_state.raw_results:
+                target = r.get('Target_IP', '')
+                actual = extract_actual_ip(target)
+                result_lookup[target] = r
+                if actual and actual != target:
+                    result_lookup[actual] = r
+
+            def get_result_info(raw_ip_str):
+                if pd.isna(raw_ip_str): return {}
+                val = str(raw_ip_str).strip()
+                cleaned = clean_ocr_error_chars(val)
+                actual = extract_actual_ip(cleaned)
+                # 実IP、クリーンIP、生文字列の順で一致する結果を探す
+                return result_lookup.get(actual) or result_lookup.get(cleaned) or result_lookup.get(val) or {}
+
             full_input_list = st.session_state.get('original_input_list', [])
 
             if full_input_list:
                 if st.session_state.get('original_df') is not None:
+                    # 元のアップロードデータ(CSV/Excel)が存在する場合、その行構造(時間など)を完全維持する
                     df_for_analysis = st.session_state['original_df'].copy()
                     ip_col = st.session_state['ip_column_name']
                     
-                    df_for_analysis['国名'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('Country_JP', 'N/A'))
-                    df_for_analysis['Whois結果（元データ）'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('ISP', 'N/A'))
-                    df_for_analysis['Whois結果（日本語名称）'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('ISP_JP', 'N/A'))
-                    df_for_analysis['RDAP結果（元データ）'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('RDAP_Name_Raw', 'N/A'))
-                    df_for_analysis['RDAP結果（日本語名称）'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('RDAP_JP', 'N/A'))
-                    df_for_analysis['プロキシ種別'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('Proxy_Type', ''))
-                    df_for_analysis['IoTリスク'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('IoT_Risk', 'N/A'))
-                    df_for_analysis['ステータス'] = df_for_analysis[ip_col].map(lambda x: result_lookup.get(str(x).strip(), {}).get('Status', 'N/A'))
+                    df_for_analysis['国名'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('Country_JP', 'N/A'))
+                    df_for_analysis['Whois結果（元データ）'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('ISP', 'N/A'))
+                    df_for_analysis['Whois結果（日本語名称）'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('ISP_JP', 'N/A'))
+                    df_for_analysis['RDAP結果（元データ）'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('RDAP_Name_Raw', 'N/A'))
+                    df_for_analysis['RDAP結果（日本語名称）'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('RDAP_JP', 'N/A'))
+                    df_for_analysis['プロキシ種別'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('Proxy_Type', ''))
+                    df_for_analysis['IoTリスク'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('IoT_Risk', 'N/A'))
+                    df_for_analysis['ステータス'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('Status', 'N/A'))
                 else:
+                    # テキスト貼り付けの場合
                     temp_rows = []
                     for t in full_input_list:
-                        info = result_lookup.get(t, {})
+                        info = get_result_info(t)
                         temp_rows.append({
                             '対象IP/Domain': t,
                             '国名': info.get('Country_JP', 'N/A'),
@@ -5077,9 +5257,12 @@ def main():
                         st.download_button("CSV形式", csv_display.to_csv(index=False).encode('utf-8-sig'), "results_display.csv", "text/csv", key="csv_display_btn", width="stretch")
                         st.download_button("Excel形式", convert_df_to_excel(csv_display), "results_display.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="excel_display_btn", width="stretch")
                     
-                    full_output_data = [{'Target_IP': t, **result_lookup.get(t, {'ISP': 'N/A', 'Status': 'Error'})} for t in full_input_list]
-                    full_output_df = pd.DataFrame(full_output_data).astype(str).rename(columns=rename_map)
-                    csv_full = full_output_df.drop(columns=['CountryCode', 'Secondary_Security_Links', 'RIR_Link', 'ISP', 'Country'], errors='ignore')
+                    # 元のアップロードデータ(時間や他カラムを含む)を完全に維持している df_for_analysis をそのまま出力に使用する
+                    if not df_for_analysis.empty:
+                        csv_full = df_for_analysis.astype(str)
+                    else:
+                        csv_full = pd.DataFrame() # 空の場合のフォールバック
+                        
                     with c2:
                         st.markdown("**全データ (入力した順番)**")
                         st.download_button("CSV形式", csv_full.to_csv(index=False).encode('utf-8-sig'), "results_full.csv", "text/csv", key="csv_full_btn", width="stretch")
