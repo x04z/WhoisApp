@@ -1673,10 +1673,11 @@ def summarize_in_realtime(raw_results):
         country_name = r.get('Country_JP', r.get('Country', 'N/A'))
         cc = r.get('CountryCode', 'N/A')
         
-        # NEW: プロキシ判定の取得
+        # プロキシ判定の取得
         proxy_val = r.get('Proxy_Type', '')
         if not proxy_val: 
-            proxy_val = "未検証" # 空欄の場合は未検証・一般回線として集計
+            # API不使用時かつローカル検知(Tor/Cloud)に引っかからなかった場合の客観的な表現
+            proxy_val = "非Tor / API未検証"
             
         if isp_name and isp_name not in ['N/A', 'N/A (簡易モード)']:
             isp_counts[isp_name] = isp_counts.get(isp_name, 0) + frequency
@@ -2089,17 +2090,16 @@ def create_advanced_excel(df, time_col_name=None):
         # ==========================================
         # 必須カラムの補完 (日本語名を基準にする)
         required_cols = {
-            'プロキシ種別': '未検証',
+            'プロキシ種別': '',
             'Whois結果（日本語名称）': 'N/A',
-            'RDAP結果（日本語名称）': 'N/A', 
             '国名': 'N/A'
         }
         for col, default_val in required_cols.items():
             if col not in df.columns:
                 df[col] = default_val
 
-        # データ前処理：空欄や欠損値を「未検証」に統一
-        df['プロキシ種別'] = df['プロキシ種別'].fillna('未検証').replace('', '未検証')
+        # データ前処理：空欄や欠損値を空文字（何もなし）に統一
+        df['プロキシ種別'] = df['プロキシ種別'].fillna('')
         
         has_time_analysis = False
         if time_col_name and time_col_name in df.columns:
@@ -2164,11 +2164,11 @@ def create_advanced_excel(df, time_col_name=None):
                 chart.set_categories(cats)
                 ws.add_chart(chart, "E5")
 
-            # プロキシデータが有効か（全て「未検証」ではないか）を判定するフラグ
+            # プロキシデータが有効か（全て空文字ではないか）を判定するフラグ
             proxy_col = 'プロキシ種別'
             has_valid_risk_data = False
             if proxy_col in df.columns:
-                if not (df[proxy_col] == '未検証').all():
+                if not (df[proxy_col] == '').all():
                     has_valid_risk_data = True
 
             # ---------------------------------------------------------
@@ -5219,13 +5219,14 @@ def main():
             # --- クロス分析 (画面表示) ---
             if not df_for_analysis.empty:
                 st.markdown("---")
-                # リンク分析用にTarget_IP列を補完
-                if st.session_state.get('ip_column_name') and st.session_state['ip_column_name'] in df_for_analysis.columns:
-                    df_for_analysis['Target_IP'] = df_for_analysis[st.session_state['ip_column_name']].astype(str)
-                elif '対象IP/Domain' in df_for_analysis.columns:
-                    df_for_analysis['Target_IP'] = df_for_analysis['対象IP/Domain'].astype(str)
+                # 出力用マスターデータを汚染しないよう、一時的なコピーを作成
+                df_for_render = df_for_analysis.copy()
+                if st.session_state.get('ip_column_name') and st.session_state['ip_column_name'] in df_for_render.columns:
+                    df_for_render['Target_IP'] = df_for_render[st.session_state['ip_column_name']].astype(str)
+                elif '対象IP/Domain' in df_for_render.columns:
+                    df_for_render['Target_IP'] = df_for_render['対象IP/Domain'].astype(str)
                 
-                render_merged_analysis(df_for_analysis)
+                render_merged_analysis(df_for_render)
 
             # --- UI改善：ダウンロードセンター ---
             st.markdown("---")
