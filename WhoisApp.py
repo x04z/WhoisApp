@@ -26,16 +26,6 @@ import os
 import bisect
 import uuid
 
-# ==========================================
-#  [Local User Config] API Key Hardcoding
-# ==========================================
-# ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
-# 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
-HARDCODED_IPINFO_KEY = "" 
-HARDCODED_VPNAPI_KEY = ""
-HARDCODED_SECURITYTRAILS_KEY = ""
-# ==========================================
-
 BACKUP_FILE = "whois_recovery_session.json"
 BACKUP_DETAILS_FILE = "whois_recovery_details.json"
 
@@ -189,6 +179,16 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
+
+# ==========================================
+#  [Local User Config] API Key Hardcoding
+# ==========================================
+# ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
+# 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
+HARDCODED_IPINFO_KEY = "" 
+HARDCODED_VPNAPI_KEY = ""
+HARDCODED_SECURITYTRAILS_KEY = ""
+# ==========================================
 
 # ==========================================
 # 自動モード判定ロジック (st.secrets利用)
@@ -1262,8 +1262,41 @@ def resolve_ip_nslookup(ip):
     
     return hostnames, raw_output
 
+def fetch_ipinfo_bulk(ip_list, api_key):
+    """ IPinfoの/batchエンドポイントを使用して最大1000件を一括取得する """
+    if not ip_list or not api_key:
+        return {}
+    
+    results = {}
+    chunk_size = 1000
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    
+    # 1000件を超える入力に対応するためチャンク分割して処理
+    for i in range(0, len(ip_list), chunk_size):
+        chunk = ip_list[i:i + chunk_size]
+        try:
+            # URLパラメータにもトークンを明示的に付与してPro権限を確実に認識させる
+            url = f"https://ipinfo.io/batch?token={api_key}"
+            response = session.post(url, headers=headers, json=chunk, timeout=15)
+            if response.status_code == 200:
+                batch_res = response.json()
+                # エラー応答を除外し、正常な辞書データのみを抽出する安全処理
+                if isinstance(batch_res, dict):
+                    valid_res = {k: v for k, v in batch_res.items() if isinstance(v, dict) and not v.get('error')}
+                    results.update(valid_res)
+        except Exception as e:
+            import logging
+            logging.warning(f"IPinfo Bulk API Error: {e}")
+            pass
+            
+    return results
+
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, cloud_ip_data, use_rdap, use_internetdb, use_rdns, use_st_reverse_ip, api_key=None, vpnapi_key=None, st_api_key=None, st_start_date=None, st_end_date=None, use_st_rev_fetchall=False, is_single_target=False):
+def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, cloud_ip_data, use_rdap, use_internetdb, use_rdns, use_st_reverse_ip, api_key=None, vpnapi_key=None, st_api_key=None, st_start_date=None, st_end_date=None, use_st_rev_fetchall=False, is_single_target=False, bulk_ipinfo_cache=None):
     actual_ip = extract_actual_ip(ip)
     
     result = {
@@ -1277,7 +1310,9 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
         'Proxy_Type': '', 'ST_REVERSE_IP_JSON': None,
         'DOMAIN_WHOIS_TEXT': None, 'DOMAIN_WHOIS_SERVER': None,
-        'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None
+        'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None,
+        'RDNS_Hosts': '',
+        'ST_Reverse_Hosts': ''
     }
     new_cache_entry = None
     new_learned_isp = None
@@ -1294,30 +1329,73 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
             return result, None, None
 
     try:
-        time.sleep(delay_between_requests) 
+        # --- 動的スリープ判定（バルク処理のボトルネック解消） ---
+        has_bulk_cache = bool(api_key and bulk_ipinfo_cache and actual_ip in bulk_ipinfo_cache and isinstance(bulk_ipinfo_cache[actual_ip], dict))
+        needs_other_apis = any([
+            vpnapi_key, 
+            use_rdap, 
+            use_internetdb, 
+            use_st_reverse_ip,
+            use_rdns,
+            is_single_target
+        ])
+
+        if has_bulk_cache and not needs_other_apis:
+            pass # キャッシュ完備かつ他APIへの通信がない場合は待機ゼロで爆速処理
+        else:
+            time.sleep(delay_between_requests)
         
         # --- API通信セクション ---
         if api_key:
-            url = IPINFO_API_URL.format(ip=actual_ip) 
-            headers = {"Authorization": f"Bearer {api_key}"}
-            response = session.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 429:
-                result['Status'] = 'エラー: API利用制限 (待機後に自動再試行します)'
-                result['Defer_Until'] = time.time() + rate_limit_wait_seconds
-                return result, None, None
+            # バルクキャッシュが存在する場合はそれを優先使用して通信をスキップ
+            if bulk_ipinfo_cache and actual_ip in bulk_ipinfo_cache and isinstance(bulk_ipinfo_cache[actual_ip], dict):
+                data = bulk_ipinfo_cache[actual_ip]
+                result['IPINFO_JSON'] = data 
+                    
+                # None(null)による正規表現クラッシュを回避
+                org_raw = data.get('org') or ''
+                raw_isp = re.sub(r'^AS\d+\s+', '', str(org_raw)) if org_raw else 'N/A'
                 
-            response.raise_for_status()
-            data = response.json()
-            result['IPINFO_JSON'] = data 
-            
-            org_raw = data.get('org', '')
-            raw_isp = re.sub(r'^AS\d+\s+', '', org_raw) if org_raw else 'N/A'
-            result['ISP_API_Raw'] = raw_isp
-            result['CountryCode'] = data.get('country', 'N/A')
-            result['Country'] = result['CountryCode']
-            
-            status_api = 'Success (Pro)'
+                # orgが空の場合、asnフィールドからのフォールバックを試みる
+                if raw_isp == 'N/A' and data.get('asn') and isinstance(data['asn'], dict):
+                    raw_isp = data['asn'].get('name', 'N/A')
+                    
+                result['ISP_API_Raw'] = raw_isp
+                
+                country_code = data.get('country') or 'N/A'
+                result['CountryCode'] = str(country_code).upper() if country_code != 'N/A' else 'N/A'
+                result['Country'] = result['CountryCode']
+                    
+                status_api = 'Success (Pro Bulk)'
+            else:
+                # キャッシュミス時のみ個別にリクエスト
+                url = IPINFO_API_URL.format(ip=actual_ip) 
+                headers = {"Authorization": f"Bearer {api_key}"}
+                response = session.get(url, headers=headers, timeout=10)
+                    
+                if response.status_code == 429:
+                    result['Status'] = 'エラー: API利用制限 (待機後に自動再試行します)'
+                    result['Defer_Until'] = time.time() + rate_limit_wait_seconds
+                    return result, None, None
+                        
+                response.raise_for_status()
+                data = response.json()
+                result['IPINFO_JSON'] = data 
+                    
+                # 個別リクエスト側も同様に安全処理とフォールバックを適用
+                org_raw = data.get('org') or ''
+                raw_isp = re.sub(r'^AS\d+\s+', '', str(org_raw)) if org_raw else 'N/A'
+                
+                if raw_isp == 'N/A' and data.get('asn') and isinstance(data['asn'], dict):
+                    raw_isp = data['asn'].get('name', 'N/A')
+                    
+                result['ISP_API_Raw'] = raw_isp
+                
+                country_code = data.get('country') or 'N/A'
+                result['CountryCode'] = str(country_code).upper() if country_code != 'N/A' else 'N/A'
+                result['Country'] = result['CountryCode']
+                    
+                status_api = 'Success (Pro)'
 
         else:
             url = IP_API_URL.format(ip=actual_ip)
@@ -1349,9 +1427,9 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         cloud_provider = check_cloud_provider(actual_ip, cloud_ip_data)
         
         if actual_ip in tor_nodes:
-            result['Proxy_Type'] = "🧅 TorNode"
+            result['Proxy_Type'] = "TorNode"
         elif cloud_provider:
-            result['Proxy_Type'] = f"☁️ Hosting ({cloud_provider})"
+            result['Proxy_Type'] = f"Hosting ({cloud_provider})"
         else:
             result['Proxy_Type'] = ""
 
@@ -1371,7 +1449,7 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
                         result['Proxy_Type'] = f"[{p_type}] (Confirmed)"
                 else:
                     if cloud_provider:
-                        result['Proxy_Type'] = f"☁️ Hosting ({cloud_provider} / API Confirmed)"
+                        result['Proxy_Type'] = f"Hosting ({cloud_provider} / API Confirmed)"
                     else:
                         result['Proxy_Type'] = "Standard Connection (API Verified)"
         
@@ -1417,10 +1495,28 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
         if use_rdns:
             rdns_hosts, rdns_raw = resolve_ip_nslookup(actual_ip)
             if rdns_raw: result['RDNS_DATA'] = {'hosts': rdns_hosts, 'raw': rdns_raw}
+            if rdns_hosts: result['RDNS_Hosts'] = " / ".join(rdns_hosts)
 
         if use_st_reverse_ip and st_api_key:
             st_rev_res = get_securitytrails_reverse_ip(actual_ip, st_api_key, use_st_rev_fetchall)
-            if st_rev_res: result['ST_REVERSE_IP_JSON'] = st_rev_res
+            if st_rev_res: 
+                result['ST_REVERSE_IP_JSON'] = st_rev_res
+                records = st_rev_res.get('records', [])
+                
+                # 順序を保持したまま重複を排除してホスト名を抽出
+                hosts = []
+                for r in records:
+                    h = r.get('hostname')
+                    if h and h not in hosts:
+                        hosts.append(h)
+                
+                if hosts:
+                    # 一覧表・Excelでの視認性崩壊を防ぐため、表示上限を3件に設定
+                    display_limit = 3
+                    if len(hosts) > display_limit:
+                        result['ST_Reverse_Hosts'] = " / ".join(hosts[:display_limit]) + f" (他 {len(hosts) - display_limit}件)"
+                    else:
+                        result['ST_Reverse_Hosts'] = " / ".join(hosts)
 
         if use_internetdb:
             result['IoT_Risk'] = check_internetdb_risk(actual_ip)
@@ -1539,6 +1635,8 @@ def get_domain_details(domain, nslookup_raw="", st_api_key=None, st_start_date=N
         'DOMAIN_WHOIS_SERVER': domain_whois_server,
         'ST_JSON': st_json, 
         'RDNS_DATA': None,
+        'RDNS_Hosts': '',
+        'ST_Reverse_Hosts': '',
         'ST_REVERSE_IP_JSON': None,
         'IP_WHOIS_TEXT': None,
         'IP_WHOIS_SERVER': None
@@ -1565,7 +1663,7 @@ def get_simple_mode_details(target):
         'Secondary_Security_Links': create_secondary_links(target),
         'Status': 'Success (簡易モード)',
         'RDAP': '', 'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
-        'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
+        'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None, 'RDNS_Hosts': '', 'ST_Reverse_Hosts': '',
         'DISPOSABLE_SERVICES': [],
         'DOMAIN_WHOIS_TEXT': None, 'DOMAIN_WHOIS_SERVER': None,
         'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None
@@ -1711,8 +1809,13 @@ def summarize_in_realtime(raw_results):
             num = COUNTRY_CODE_TO_NUMERIC_ISO.get(cc)
             if num is not None:
                 map_data.append({'NumericCode': int(num), 'Count': int(cnt), 'Country': COUNTRY_JP_NAME.get(cc, cc)})
-        country_all_df_raw = pd.DataFrame(map_data).astype({'NumericCode': 'int64', 'Count': 'int64'})
         
+        # DataFrame構築時のKeyErrorを完全に防ぐフェイルセーフ
+        if map_data:
+            country_all_df_raw = pd.DataFrame(map_data).astype({'NumericCode': 'int64', 'Count': 'int64'})
+        else:
+            country_all_df_raw = pd.DataFrame(columns=['NumericCode', 'Count', 'Country'])
+            
     st.session_state['debug_summary']['country_code_counts'] = country_code_counts
     st.session_state['debug_summary']['country_all_df'] = country_all_df_raw.to_dict('records')
 
@@ -1804,7 +1907,7 @@ def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df
         else:
             st.info("データなし")
 
-# 💡 HTMLレポート生成関数
+# HTMLレポート生成関数
 def generate_full_report_html(isp_full_df, country_full_df, freq_full_df):
     
     def create_chunked_chart_specs(df, x_col, y_col, title_base, chunk_size=50):
@@ -1819,7 +1922,7 @@ def generate_full_report_html(isp_full_df, country_full_df, freq_full_df):
             chart_title = f"{title_base} ({i+1}/{len(chunks)})" if len(chunks) > 1 else title_base
             
             # 数値ラベル付きチャート
-            # 💡 x軸のスケールを全体最大値で固定する
+            # x軸のスケールを全体最大値で固定する
             base = alt.Chart(chunk).encode(
                 x=alt.X(x_col, title='Count', scale=alt.Scale(domain=[0, global_max])),
                 y=alt.Y(y_col, sort='-x', title=y_col),
@@ -3351,7 +3454,7 @@ def generate_combined_html_report(target_results, report_opts=None):
     """
     return full_combined_html
 
-def display_results(results, current_mode_full_text, display_mode, use_rdap_option, pro_api_key, vpnapi_key, st_api_key, use_rdns_option):
+def display_results(results, current_mode_full_text, display_mode, use_rdap_option, pro_api_key, vpnapi_key, st_api_key, use_rdns_option, use_st_reverse_ip):
     st.markdown("### 📝 検索結果")
 
     # SecurityTrails API制限到達時のグローバル警告
@@ -3469,13 +3572,15 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
             "RDAP(日本語名)": res.get('RDAP_JP', ''),
             "Proxy種別": res.get('Proxy_Type', ''),
             "IoTリスク": res.get('IoT_Risk', ''),
+            "逆引き結果": res.get('RDNS_Hosts', ''),
+            "Reverse IP": res.get('ST_Reverse_Hosts', ''),
             "ステータス": res.get('Status', 'N/A')
         })
         df_list.append(row_data)
     
     df = pd.DataFrame(df_list)
 
-    # 💡 UIの一覧ビューからも不要なカラムを動的に消去する
+    # UIの一覧ビューからも不要なカラムを動的に消去する
     ui_cols_to_drop = []
     if not use_rdap_option:
         ui_cols_to_drop.extend(["RDAP(元データ)", "RDAP(日本語名)"])
@@ -3483,6 +3588,12 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
     # IoTリスクが取得されていない（オフ または 集約モード）場合はカラムごと消す
     if all(r.get('IoT_Risk', '') in ['[Not Checked]', 'Aggr Mode (Skip)', '', 'N/A'] for r in results):
         ui_cols_to_drop.append("IoTリスク")
+        
+    if not use_rdns_option:
+        ui_cols_to_drop.append("逆引き結果")
+        
+    if not (st_api_key and use_st_reverse_ip):
+        ui_cols_to_drop.append("Reverse IP")
         
     if ui_cols_to_drop:
         df = df.drop(columns=[c for c in ui_cols_to_drop if c in df.columns], errors='ignore')
@@ -3502,6 +3613,10 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         col_config["RDAP(日本語名)"] = st.column_config.TextColumn(width="medium")
     if "IoTリスク" not in ui_cols_to_drop:
         col_config["IoTリスク"] = st.column_config.TextColumn(width="medium")
+    if "逆引き結果" not in ui_cols_to_drop:
+        col_config["逆引き結果"] = st.column_config.TextColumn(width="medium")
+    if "Reverse IP" not in ui_cols_to_drop:
+        col_config["Reverse IP"] = st.column_config.TextColumn(width="medium")
 
     # オリジナルカラムも設定に追加
     for col in original_cols:
@@ -3964,15 +4079,20 @@ def render_merged_analysis(df_merged):
         original_cols = [c for c in df_merged.columns if c not in exclude_cols]
         
         # 分析に使用するWhois系カラムを日本語名に変更
-        whois_cols = ['国名', 'Whois結果（日本語名称）', 'プロキシ種別', 'IoTリスク', 'ステータス']
+        base_whois_cols = ['国名', 'Whois結果（日本語名称）', 'プロキシ種別', 'IoTリスク', 'ステータス']
+        
+        whois_cols = [c for c in base_whois_cols if c in df_merged.columns]
         
         col_x, col_grp, col_chart_type = st.columns(3)
         with col_x:
-            x_col = st.selectbox("X軸 (カテゴリ/元の列)", original_cols + whois_cols, index=0)
+            x_col = st.selectbox("X軸 (カテゴリ/元の列)", original_cols + whois_cols, index=0, key="merged_x_col")
         with col_grp:
-            group_col = st.selectbox("積み上げ/色分け (Whois情報など)", ['(なし)'] + whois_cols + original_cols, index=1)
+            # バグ修正: group_colのデフォルト選択位置(index)が、削除された列の影響でズレないように調整
+            grp_options = ['(なし)'] + whois_cols + original_cols
+            default_grp_idx = 1 if len(grp_options) > 1 else 0
+            group_col = st.selectbox("積み上げ/色分け (Whois情報など)", grp_options, index=default_grp_idx, key="merged_group_col")
         with col_chart_type:
-            chart_type = st.radio("グラフタイプ", ["バーチャート (集計)", "ヒートマップ"], horizontal=True)
+            chart_type = st.radio("グラフタイプ", ["バーチャート (集計)", "ヒートマップ"], horizontal=True, key="merged_chart_type")
 
         if not df_merged.empty:
             chart = None
@@ -4433,12 +4553,15 @@ def main():
     st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🌸アップデート情報 (令和８年３月２９日) - 大量ログ解析時の安定化 🌸", expanded=False):
+    with st.expander("🎏アップデート情報 (令和８年４月２０日) - バルク処理の実装と分析強化 🎏", expanded=False):
         st.markdown("""
         **Update:**\n
-       **⚡ 処理速度の最適化**:
-        * 大量処理時のスピードを最優先するため、時間のかかる「RDAP (公式台帳情報)」の取得をデフォルトで【オフ】に変更しました。\n
+        **⚡ 高速バルク処理の実装 (Pro Mode)**:
+        * IPinfo API使用時（RADP,rDNS,SHODAN等のチェックボックスがすべてオフの場合）、最大1000件のIP情報を1回のリクエストで一括取得する「バルク処理」を実装しました。APIの利用枠を大幅に節約しつつ、数千件のリストを一瞬で処理することが可能になりました。\n
+        **🔍 調査機能の強化**:
+        * 「IP逆引き (Reverse DNS)」を選択した場合、一覧ビューで結果が表示されるようになりました。\n
         **🛠️ UIの最適化とクラッシュ対策**:
+        * 大量処理時のスピードを最優先するため、時間のかかる「RDAP (公式台帳情報)」の取得をデフォルトで【オフ】に変更しました。
         * 取得されていないデータ（複数検索時にスキップされるWHOIS等）の出力チェックボックスが自動的に無効化されるよう改善しました。
         * 巨大な一括ダウンロード生成時にシステムがクラッシュする不具合を修正しました。\n
         """)
@@ -4950,6 +5073,15 @@ def main():
                     cidr_cache_snapshot = st.session_state.cidr_cache.copy() 
                     learned_isps_snapshot = st.session_state.learned_proxy_isps.copy()
                     
+                    # --- IPinfo バルク一括取得の実行 ---
+                    bulk_ipinfo_cache_snapshot = {}
+                    if pro_api_key:
+                        # 有効な実IPのみを抽出して重複排除
+                        actual_ips_to_fetch = list(set([extract_actual_ip(ip) for ip in immediate_ip_queue if is_valid_ip(extract_actual_ip(ip))]))
+                        if actual_ips_to_fetch:
+                            with st.spinner(f"⏳ IPinfo Bulk APIで {len(actual_ips_to_fetch)} 件の基本情報を一括取得中..."):
+                                bulk_ipinfo_cache_snapshot = fetch_ipinfo_bulk(actual_ips_to_fetch, pro_api_key)
+                                
                     # --- 各種オプション有効時の動的負荷調整 (安全装置) ---
                     current_max_workers = max_workers
                     current_delay = delay_between_requests
@@ -4988,7 +5120,8 @@ def main():
                                 st_start_date,
                                 st_end_date,
                                 use_st_rev_fetchall,
-                                is_single_input
+                                is_single_input,
+                                bulk_ipinfo_cache_snapshot
                             ): ip for ip in immediate_ip_queue
                         }
                         remaining = set(future_to_ip.keys())
@@ -5144,7 +5277,7 @@ def main():
             target_order = {ip: i for i, ip in enumerate(targets)}
             display_res.sort(key=lambda x: target_order.get(get_copy_target(x['Target_IP']), float('inf')))
 
-        display_results(display_res, current_mode_full_text, display_mode, use_rdap_option, pro_api_key, vpnapi_key, st_api_key, use_rdns_option)
+        display_results(display_res, current_mode_full_text, display_mode, use_rdap_option, pro_api_key, vpnapi_key, st_api_key, use_rdns_option, use_st_reverse_ip)
         
         if not st.session_state.is_searching or st.session_state.cancel_search:
             isp_df, country_df, freq_df, country_all_df, isp_full_df, country_full_df, freq_full_df, proxy_df = summarize_in_realtime(st.session_state.raw_results)
@@ -5186,6 +5319,8 @@ def main():
                     df_for_analysis['RDAP結果（日本語名称）'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('RDAP_JP', 'N/A'))
                     df_for_analysis['プロキシ種別'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('Proxy_Type', ''))
                     df_for_analysis['IoTリスク'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('IoT_Risk', 'N/A'))
+                    df_for_analysis['逆引き結果'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('RDNS_Hosts', ''))
+                    df_for_analysis['Reverse IP'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('ST_Reverse_Hosts', ''))
                     df_for_analysis['ステータス'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('Status', 'N/A'))
                 else:
                     # テキスト貼り付けの場合
@@ -5201,17 +5336,23 @@ def main():
                             'RDAP結果（日本語名称）': info.get('RDAP_JP', 'N/A'),
                             'プロキシ種別': info.get('Proxy_Type', ''),
                             'IoTリスク': info.get('IoT_Risk', 'N/A'),
+                            '逆引き結果': info.get('RDNS_Hosts', ''),
+                            'Reverse IP': info.get('ST_Reverse_Hosts', ''),
                             'ステータス': info.get('Status', 'N/A')
                         })
                     df_for_analysis = pd.DataFrame(temp_rows)
 
-            # 💡 マスターデータ（Excel/全件CSV用）から無効オプション列を削除
+            # マスターデータ（Excel/全件CSV用）から無効オプション列を削除
             if not df_for_analysis.empty:
                 master_cols_to_drop = []
                 if not use_rdap_option:
                     master_cols_to_drop.extend(['RDAP結果（元データ）', 'RDAP結果（日本語名称）'])
                 if not use_internetdb_option:
                     master_cols_to_drop.append('IoTリスク')
+                if not use_rdns_option:
+                    master_cols_to_drop.append('逆引き結果')
+                if not (st_api_key and use_st_reverse_ip):
+                    master_cols_to_drop.append('Reverse IP')
                 
                 if master_cols_to_drop:
                     df_for_analysis = df_for_analysis.drop(columns=[c for c in master_cols_to_drop if c in df_for_analysis.columns], errors='ignore')
@@ -5302,16 +5443,20 @@ def main():
                         'RDAP_JP': 'RDAP(日本語名)',
                         'Proxy_Type': 'Proxy種別',
                         'IoT_Risk': 'IoTリスク',
+                        'RDNS_Hosts': '逆引き結果',
                         'Status': 'ステータス'
                     }
                     csv_display = csv_display.rename(columns=rename_map)
                     
-                    # 💡 ダウンロード用(画面表示順)から無効オプション列を削除
                     display_cols_to_drop = []
                     if not use_rdap_option:
                         display_cols_to_drop.extend(['RDAP(元データ)', 'RDAP(日本語名)'])
                     if not use_internetdb_option:
                         display_cols_to_drop.append('IoTリスク')
+                    if not use_rdns_option:
+                        display_cols_to_drop.append('逆引き結果')
+                    if not (st_api_key and use_st_reverse_ip):
+                        display_cols_to_drop.append('Reverse IP')
                         
                     if display_cols_to_drop:
                         csv_display = csv_display.drop(columns=[c for c in display_cols_to_drop if c in csv_display.columns], errors='ignore')
