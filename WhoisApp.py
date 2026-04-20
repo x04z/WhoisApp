@@ -26,6 +26,16 @@ import os
 import bisect
 import uuid
 
+# ==========================================
+#  [Local User Config] API Key Hardcoding
+# ==========================================
+# ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
+# 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
+HARDCODED_IPINFO_KEY = "" 
+HARDCODED_VPNAPI_KEY = ""
+HARDCODED_SECURITYTRAILS_KEY = ""
+# ==========================================
+
 BACKUP_FILE = "whois_recovery_session.json"
 BACKUP_DETAILS_FILE = "whois_recovery_details.json"
 
@@ -179,16 +189,6 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
-
-# ==========================================
-#  [Local User Config] API Key Hardcoding
-# ==========================================
-# ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
-# 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
-HARDCODED_IPINFO_KEY = "" 
-HARDCODED_VPNAPI_KEY = ""
-HARDCODED_SECURITYTRAILS_KEY = ""
-# ==========================================
 
 # ==========================================
 # 自動モード判定ロジック (st.secrets利用)
@@ -2972,7 +2972,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         if not first_tab_id: first_tab_id = tab_id
         tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">VPNAPI.io</button>\n'
         
-        sec = vpnapi_json.get('security', {})
+        sec = vpnapi_json.get('security') or {}
         if any(sec.values()):
             proxy_status_text = "該当あり (匿名通信検知)"
             status_color = "red"
@@ -2983,10 +2983,10 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             status_color = "green"
             p_type_val = "情報なし"
 
-        net = vpnapi_json.get('network', {})
+        net = vpnapi_json.get('network') or {}
         org_val = net.get('autonomous_system_organization', '情報なし')
 
-        loc = vpnapi_json.get('location', {})
+        loc = vpnapi_json.get('location') or {}
         c_name_val = loc.get('country', '情報なし')
 
         raw_json_str = json.dumps(vpnapi_json, indent=4, ensure_ascii=False)
