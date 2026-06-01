@@ -1775,7 +1775,7 @@ def summarize_in_realtime(raw_results):
         proxy_val = r.get('Proxy_Type', '')
         if not proxy_val: 
             # API不使用時かつローカル検知(Tor/Cloud)に引っかからなかった場合の客観的な表現
-            proxy_val = "非Tor / API未検証"
+            proxy_val = "API未検証"
             
         if isp_name and isp_name not in ['N/A', 'N/A (簡易モード)']:
             isp_counts[isp_name] = isp_counts.get(isp_name, 0) + frequency
@@ -1829,83 +1829,228 @@ def summarize_in_realtime(raw_results):
     # 戻り値に proxy_df を追加
     return isp_df, country_df, freq_df, country_all_df_raw, isp_full_df, country_full_df, freq_full_df, proxy_df
 
-# --- 集計結果描画ヘルパー関数 (2x2ダッシュボード) ---
+# --- 集計結果描画ヘルパー関数 (2x2ダッシュボード & 1枚絵出力対応) ---
 def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df, country_all_df, proxy_df, title):
     st.markdown(f"**{title}**")
     
-    # 2x2のグリッドを作成
-    row1_col1, row1_col2 = st.columns(2)
-    row2_col1, row2_col2 = st.columns(2)
-    
-    # 【左上】 世界マップ (コンパクト版・南極カットアウト)
-    with row1_col1:
-        st.markdown("📍 **国別 ヒートマップ**")
-        if WORLD_MAP_GEOJSON and not country_all_df.empty:
-            base = alt.Chart(WORLD_MAP_GEOJSON).mark_geoshape(
-                stroke='black', strokeWidth=0.1, fill="#f0f0f052"
-            ).project(
-                type='mercator',
-                scale=65,             # 大陸を拡大表示
-                translate=[220, 150]  # 南極をフレームアウトさせつつ中央に配置
-            ) 
-            
-            heatmap = alt.Chart(WORLD_MAP_GEOJSON).mark_geoshape(
-                stroke='black', strokeWidth=0.1
-            ).encode(
-                color=alt.Color('Count:Q', scale=alt.Scale(type='log', scheme='yelloworangered'), legend=None),
-                tooltip=[alt.Tooltip('Country:N', title='国名'), alt.Tooltip('Count:Q', title='件数', format=',')]
-            ).transform_lookup(
-                lookup='id', from_=alt.LookupData(country_all_df, key='NumericCode', fields=['Count', 'Country'])
-            ).project(
-                type='mercator',
-                scale=65,             
-                translate=[220, 150]  
+    # データがない場合のエラー回避用プレースホルダー作成関数
+    def get_empty_chart():
+        return alt.Chart(pd.DataFrame({'x': [1]})).mark_text(size=14, color='gray').encode(
+            text=alt.value('データなし')
+        )
+
+    # グラフの右側に配置するテキストテーブル生成関数 (2段表示・文字潰れ回避版)
+    def get_table_chart(df, name_col, count_col, use_color=False, color_scheme=None, domain_list=None):
+        if df.empty:
+            return alt.Chart(pd.DataFrame({'x': [1]})).mark_text().encode(text=alt.value(''))
+        
+        # 上位10件に絞る
+        top_df = df.copy().sort_values(count_col, ascending=False).head(10)
+        
+        limit_len = 22 
+        top_df['Display_Name'] = top_df[name_col].astype(str).apply(lambda x: x if len(x) <= limit_len else x[:limit_len-1] + '…')
+        top_df['Display_Count'] = top_df[count_col].astype(str) + " 件"
+        
+        # 行を縦に並べるためのベース
+        base_table = alt.Chart(top_df).encode(
+            y=alt.Y(f'{name_col}:N', sort=alt.EncodingSortField(field=count_col, op='sum', order='descending'), axis=None)
+        )
+        
+        if use_color:
+            # 色付き四角形（ブロック）
+            color_encoding = alt.Color(
+                f'{name_col}:N',
+                scale=alt.Scale(domain=domain_list, scheme=color_scheme),
+                legend=None
+            )
+            color_mark = base_table.mark_square(size=200, opacity=1).encode(
+                color=color_encoding,
+                x=alt.value(10) # ブロックのX座標
             )
             
-            # 高さを250pxに固定してコンパクトに
-            chart = alt.layer(base, heatmap).resolve_scale(color='independent').properties(height=250)
-            st.altair_chart(chart, width="stretch")
+            # 名称 (1行目: 上寄せ)
+            name_text = base_table.mark_text(align='left', baseline='bottom', fontSize=12, color='black', fontWeight='bold', dy=-2).encode(
+                text='Display_Name:N',
+                x=alt.value(35) # ブロックの右側に配置
+            )
+            # 件数 (2行目: 下寄せ・少しグレーにして視認性アップ)
+            count_text = base_table.mark_text(align='left', baseline='top', fontSize=11, color='#555555', dy=2).encode(
+                text='Display_Count:N',
+                x=alt.value(35)
+            )
+            
+            table = alt.layer(color_mark, name_text, count_text).properties(width=220, height=280) # 高さを少し広げて余裕を持たせる
+            
         else:
-            st.info("データなし")
+            # 色なしの場合 (ISPなど)
+            name_text = base_table.mark_text(align='left', baseline='bottom', fontSize=12, color='black', fontWeight='bold', dy=-2).encode(
+                text='Display_Name:N',
+                x=alt.value(10)
+            )
+            count_text = base_table.mark_text(align='left', baseline='top', fontSize=11, color='#555555', dy=2).encode(
+                text='Display_Count:N',
+                x=alt.value(10)
+            )
+            table = alt.layer(name_text, count_text).properties(width=220, height=280)
+            
+        return table
 
-    # 【右上】 ISP横棒グラフ
-    with row1_col2:
-        st.markdown("🏢 **ISP別 件数 (Top 10)**")
-        if not isp_summary_df.empty:
-            chart = alt.Chart(isp_summary_df).mark_bar().encode(
-                x=alt.X('Count:Q', title='件数'),
-                y=alt.Y('ISP:N', sort='-x', title=''),
-                tooltip=['ISP', 'Count']
-            ).properties(height=250)
-            st.altair_chart(chart, width="stretch")
+    # ----------------------------------------------------
+    # データの前処理 (色順固定用ドメイン抽出 ＆ ラベル置換)
+    # ----------------------------------------------------
+    if not proxy_df.empty:
+        # プロキシのラベルを置換
+        proxy_df['Proxy_Type'] = proxy_df['Proxy_Type'].replace('非Tor / API未検証', 'API未検証')
+        proxy_order = proxy_df.sort_values('Count', ascending=False)['Proxy_Type'].tolist()
+    else:
+        proxy_order = []
+
+    if not country_summary_df.empty:
+        country_order = country_summary_df.sort_values('Count', ascending=False)['Country'].tolist()
+    else:
+        country_order = []
+
+    # ==========================================
+    # ブラウザ表示用 (Tab1) のベースチャート生成
+    # ==========================================
+    
+    # 1. 国別ヒートマップ
+    if WORLD_MAP_GEOJSON and not country_all_df.empty:
+        base = alt.Chart(WORLD_MAP_GEOJSON).mark_geoshape(
+            stroke='black', strokeWidth=0.1, fill="#f0f0f052"
+        ).project(type='mercator', scale=65, translate=[220, 150]) 
+        
+        heatmap = alt.Chart(WORLD_MAP_GEOJSON).mark_geoshape(
+            stroke='black', strokeWidth=0.1
+        ).encode(
+            color=alt.Color('Count:Q', scale=alt.Scale(type='log', scheme='yelloworangered'), legend=None),
+            tooltip=[alt.Tooltip('Country:N', title='国名'), alt.Tooltip('Count:Q', title='件数', format=',')]
+        ).transform_lookup(
+            lookup='id', from_=alt.LookupData(country_all_df, key='NumericCode', fields=['Count', 'Country'])
+        ).project(type='mercator', scale=65, translate=[220, 150])
+        
+        chart_map_base = alt.layer(base, heatmap).resolve_scale(color='independent')
+    else:
+        chart_map_base = get_empty_chart()
+
+    # 2. ISP横棒グラフの構築
+    if not isp_summary_df.empty:
+        chart_isp_base = alt.Chart(isp_summary_df).mark_bar(color="#1e3a8a").encode(
+            x=alt.X('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
+            y=alt.Y('ISP:N', sort='-x', title='')
+        )
+    else:
+        chart_isp_base = get_empty_chart()
+
+    # 3. 国別パイチャート
+    if not country_summary_df.empty:
+        chart_pie_base = alt.Chart(country_summary_df).mark_arc().encode(
+            theta=alt.Theta(field="Count", type="quantitative"),
+            color=alt.Color(
+                field="Country", 
+                type="nominal", 
+                scale=alt.Scale(domain=country_order, scheme="spectral"), 
+                legend=alt.Legend(title="国名", orient="right")
+            ),
+            tooltip=["Country", "Count"]
+        )
+    else:
+        chart_pie_base = get_empty_chart()
+
+    # 4. プロキシドーナツチャート
+    if not proxy_df.empty:
+        chart_proxy_base = alt.Chart(proxy_df).mark_arc(innerRadius=50).encode(
+            theta=alt.Theta(field="Count", type="quantitative"),
+            color=alt.Color(
+                field="Proxy_Type", 
+                type="nominal", 
+                scale=alt.Scale(domain=proxy_order, scheme="category10"),
+                legend=alt.Legend(title="判定", orient="right")
+            ),
+            tooltip=["Proxy_Type", "Count"]
+        )
+    else:
+        chart_proxy_base = get_empty_chart()
+
+    # ----------------------------------------------------
+    # タブによる表示切り替え
+    # ----------------------------------------------------
+    tab1, tab2 = st.tabs(["🖥️ 分割ダッシュボード (ブラウザ閲覧用)", "🖼️ IP分析画像"])
+    
+    with tab1:
+        row1_col1, row1_col2 = st.columns(2)
+        row2_col1, row2_col2 = st.columns(2)
+        
+        with row1_col1:
+            st.markdown("📍 **国別 ヒートマップ**")
+            st.altair_chart(chart_map_base.properties(height=250), width="stretch")
+        with row1_col2:
+            st.markdown("🏢 **ISP別 件数 (Top 10)**")
+            st.altair_chart(chart_isp_base.properties(height=250), width="stretch")
+        with row2_col1:
+            st.markdown("🌍 **国別 割合 (Pie Chart)**")
+            st.altair_chart(chart_pie_base.properties(height=250), width="stretch")
+        with row2_col2:
+            st.markdown("🕵️ **プロキシ・VPN 割合 (Donut)**")
+            st.altair_chart(chart_proxy_base.properties(height=250), width="stretch")
+        
+    with tab2:
+        st.info("💡 **Tips:** 下のチャートの右上にある `...` ボタンから **「Save as PNG」** を選択すると画像が保存できます。")
+        
+        # 1. 画像用 世界マップ ＆ 表
+        if WORLD_MAP_GEOJSON and not country_all_df.empty:
+            map_chart = chart_map_base.properties(title="国別 ヒートマップ", height=280, width=400)
+            map_table = get_table_chart(country_all_df, 'Country', 'Count', use_color=False)
+            c_map_img = alt.hconcat(map_chart, map_table).resolve_scale(y='independent')
         else:
-            st.info("データなし")
+            c_map_img = alt.Chart(pd.DataFrame({'x': [1]})).mark_text(text='データなし').properties(title="国別 ヒートマップ", height=280, width=620)
 
-    # 【左下】 国別 円グラフ
-    with row2_col1:
-        st.markdown("🌍 **国別 割合 (Pie Chart)**")
+        # 2. 画像用 国別円グラフ ＆ 表
         if not country_summary_df.empty:
-            chart = alt.Chart(country_summary_df).mark_arc().encode(
+            pie_chart = alt.Chart(country_summary_df).mark_arc().encode(
                 theta=alt.Theta(field="Count", type="quantitative"),
-                color=alt.Color(field="Country", type="nominal", legend=alt.Legend(title="国名", orient="right")),
-                tooltip=["Country", "Count"]
-            ).properties(height=250)
-            st.altair_chart(chart, width="stretch")
+                color=alt.Color(field="Country", type="nominal", scale=alt.Scale(domain=country_order, scheme="spectral"), legend=None)
+            ).properties(title="国別 割合 (Pie Chart)", height=280, width=400)
+            pie_table = get_table_chart(country_summary_df, 'Country', 'Count', use_color=True, color_scheme='spectral', domain_list=country_order) 
+            c_pie_img = alt.hconcat(pie_chart, pie_table).resolve_scale(y='independent')
         else:
-            st.info("データなし")
+            c_pie_img = alt.Chart(pd.DataFrame({'x': [1]})).mark_text(text='データなし').properties(title="国別 割合 (Pie Chart)", height=280, width=620)
 
-    # 【右下】 プロキシ・リスク ドーナツチャート
-    with row2_col2:
-        st.markdown("🕵️ **プロキシ・VPN 割合 (Donut)**")
+        # 3. 画像用 ISP横棒 ＆ 表 (順番変更 ＆ Y軸ラベル消去)
+        if not isp_summary_df.empty:
+            isp_chart = alt.Chart(isp_summary_df).mark_bar(color="#1e3a8a").encode(
+                x=alt.X('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
+                y=alt.Y('ISP:N', sort='-x', axis=None) 
+            ).properties(title="ISP別 件数 (Top 10)", height=280, width=400)
+            isp_table = get_table_chart(isp_summary_df, 'ISP', 'Count', use_color=False)
+            c_isp_img = alt.hconcat(isp_chart, isp_table).resolve_scale(y='independent')
+
+        # 4. 画像用 プロキシドーナツ ＆ 表
         if not proxy_df.empty:
-            chart = alt.Chart(proxy_df).mark_arc(innerRadius=50).encode(
+            proxy_chart = alt.Chart(proxy_df).mark_arc(innerRadius=50).encode(
                 theta=alt.Theta(field="Count", type="quantitative"),
-                color=alt.Color(field="Proxy_Type", type="nominal", legend=alt.Legend(title="判定", orient="right")),
-                tooltip=["Proxy_Type", "Count"]
-            ).properties(height=250)
-            st.altair_chart(chart, width="stretch")
+                color=alt.Color(field="Proxy_Type", type="nominal", scale=alt.Scale(domain=proxy_order, scheme="category10"), legend=None) 
+            ).properties(title="プロキシ・VPN 割合 (Donut)", height=280, width=400)
+            proxy_table = get_table_chart(proxy_df, 'Proxy_Type', 'Count', use_color=True, color_scheme='category10', domain_list=proxy_order) 
+            c_proxy_img = alt.hconcat(proxy_chart, proxy_table).resolve_scale(y='independent')
         else:
-            st.info("データなし")
+            c_proxy_img = alt.Chart(pd.DataFrame({'x': [1]})).mark_text(text='データなし').properties(title="プロキシ・VPN 割合 (Donut)", height=280, width=620)
+
+        # 結合処理 ＆ 左側に80pxの余白を追加
+        combined_chart = alt.vconcat(
+            c_map_img, c_pie_img, c_isp_img, c_proxy_img
+        ).configure(
+            background='white',
+            padding={'left': 80, 'top': 20, 'right': 20, 'bottom': 20} 
+        ).configure_view(
+            strokeWidth=0
+        ).configure_title(
+            fontSize=16, anchor='middle', offset=15, color="black", fontWeight="bold"
+        ).configure_axis(
+            labelColor='black', titleColor='black', gridColor='#e5e5e5', domainColor='black'
+        )
+        
+        st.altair_chart(combined_chart, use_container_width=False)
 
 # HTMLレポート生成関数
 def generate_full_report_html(isp_full_df, country_full_df, freq_full_df):
@@ -2167,11 +2312,15 @@ def create_advanced_excel(df, time_col_name=None):
         tmp_excel_path = tmp.name
     
     try:
-        # 1. IPアドレスが含まれているかを判定
+        # 1. IPアドレスが含まれているかを判定 (すべての列を検査してIP列を正確に特定する)
         target_col = 'IPアドレス' if 'IPアドレス' in df.columns else ('Target_IP' if 'Target_IP' in df.columns else df.columns[0])
         has_ip = False
-        if target_col in df.columns:
-            has_ip = any(is_valid_ip(str(val)) for val in df[target_col].dropna())
+        for col in df.columns:
+            # 最初の数行をチェックしてIPアドレスを含む列を探す
+            if any(is_valid_ip(str(val)) for val in df[col].dropna().head(20)):
+                has_ip = True
+                target_col = col
+                break
         
         # ==========================================
         # パターンA: すべてドメイン(非IP)の場合
@@ -2485,7 +2634,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
                 contents_html += subnet_content
 
             # ==========================================
-            # IPv6 の場合の処理 (新規追加)
+            # IPv6 の場合の処理
             # ==========================================
             elif ip_obj.version == 6:
                 # 一般的なLAN・VLANの境界である /64 をデフォルトとする
@@ -3618,7 +3767,6 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
     if "Reverse IP" not in ui_cols_to_drop:
         col_config["Reverse IP"] = st.column_config.TextColumn(width="medium")
 
-    # オリジナルカラムも設定に追加
     for col in original_cols:
         col_config[col] = st.column_config.TextColumn(width="medium")
 
@@ -4070,24 +4218,20 @@ def render_spider_web_analysis(df):
 def render_merged_analysis(df_merged):
     st.markdown("### 📈 分析センター")
     
-    tab_cross, tab_spider = st.tabs(["📊 クロス分析 (マクロ視点)", "🕸️ リンク分析 (ミクロ視点)"])
+    tab_cross, tab_time, tab_spider = st.tabs(["📊 クロス分析 (マクロ視点)", "🕒 時間分析 (時系列)", "🕸️ リンク分析 (ミクロ視点)"])
     
+    # --- 共通の列整理処理 ---
+    exclude_cols = ['Whois結果（元データ）', 'Whois結果（日本語名称）', '国名（英語）', '国名', 'プロキシ種別', 'ステータス', 'IoTリスク', 'RDAP結果（元データ）', 'RDAP結果（日本語名称）', 'ISP', 'ISP_JP', 'Country', 'Country_JP']
+    original_cols = [c for c in df_merged.columns if c not in exclude_cols]
+    base_whois_cols = ['国名', 'Whois結果（日本語名称）', 'プロキシ種別', 'IoTリスク', 'ステータス']
+    whois_cols = [c for c in base_whois_cols if c in df_merged.columns]
+
     with tab_cross:
         st.info("アップロードされたファイルの元の列と、検索で得られたWhois情報を組み合わせて可視化します。")
-        # 除外するカラムを日本語名に変更
-        exclude_cols = ['Whois結果（元データ）', 'Whois結果（日本語名称）', '国名（英語）', '国名', 'プロキシ種別', 'ステータス', 'IoTリスク', 'RDAP結果（元データ）', 'RDAP結果（日本語名称）', 'ISP', 'ISP_JP', 'Country', 'Country_JP']
-        original_cols = [c for c in df_merged.columns if c not in exclude_cols]
-        
-        # 分析に使用するWhois系カラムを日本語名に変更
-        base_whois_cols = ['国名', 'Whois結果（日本語名称）', 'プロキシ種別', 'IoTリスク', 'ステータス']
-        
-        whois_cols = [c for c in base_whois_cols if c in df_merged.columns]
-        
         col_x, col_grp, col_chart_type = st.columns(3)
         with col_x:
             x_col = st.selectbox("X軸 (カテゴリ/元の列)", original_cols + whois_cols, index=0, key="merged_x_col")
         with col_grp:
-            # バグ修正: group_colのデフォルト選択位置(index)が、削除された列の影響でズレないように調整
             grp_options = ['(なし)'] + whois_cols + original_cols
             default_grp_idx = 1 if len(grp_options) > 1 else 0
             group_col = st.selectbox("積み上げ/色分け (Whois情報など)", grp_options, index=default_grp_idx, key="merged_group_col")
@@ -4098,7 +4242,6 @@ def render_merged_analysis(df_merged):
             chart = None
             chart_df = df_merged.fillna("N/A").astype(str)
             
-            # 5000行以上の場合はサンプリングしてブラウザのクラッシュを防ぐ
             if len(chart_df) > 5000:
                 st.warning(f"⚠️ **データ量警告**: データが {len(chart_df)} 件あります。ブラウザのクラッシュを防ぐため、ランダムに抽出した 5000 件のデータでグラフを描画しています。")
                 chart_df = chart_df.sample(n=5000, random_state=42)
@@ -4107,14 +4250,14 @@ def render_merged_analysis(df_merged):
                 if group_col != '(なし)':
                     chart = alt.Chart(chart_df).mark_bar().encode(
                         x=alt.X(x_col, title=x_col),
-                        y=alt.Y('count()', title='件数'),
+                        y=alt.Y('count()', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
                         color=alt.Color(group_col, title=group_col),
                         tooltip=[x_col, group_col, 'count()']
                     ).properties(height=400)
                 else:
                     chart = alt.Chart(chart_df).mark_bar().encode(
                         x=alt.X(x_col, title=x_col),
-                        y=alt.Y('count()', title='件数'),
+                        y=alt.Y('count()', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
                         tooltip=[x_col, 'count()']
                     ).properties(height=400)
             elif chart_type == "ヒートマップ":
@@ -4141,8 +4284,165 @@ def render_merged_analysis(df_merged):
                     mime="text/html"
                 )
 
+    # --- 時間分析タブ ---
+    with tab_time:
+        st.info("アップロードされたデータに含まれる「日時」列を利用して、時系列でのアクセス傾向を分析します。")
+        
+        time_cols = []
+        for col in original_cols:
+            if any(k in col.lower() for k in ['date', 'time', '日時', '時間', '時刻', 'jst']):
+                time_cols.append(col)
+        
+        all_cols_for_time = time_cols + [c for c in original_cols if c not in time_cols]
+        
+        if not all_cols_for_time:
+            st.warning("時間分析に利用できるデータ列がありません。")
+        else:
+            selected_time_col = st.selectbox("分析に使用する日時列を選択してください:", all_cols_for_time, key="time_col_selector_merged")
+            
+            if selected_time_col:
+                df_time = df_merged.copy()
+                try:
+                    df_time['JST_Datetime'] = pd.to_datetime(df_time[selected_time_col], errors='coerce')
+                    df_time = df_time.dropna(subset=['JST_Datetime'])
+                    
+                    if df_time.empty:
+                        st.error("選択された列から有効な日時データを抽出できませんでした。")
+                    else:
+                        # 1. 日次
+                        daily_df = df_time['JST_Datetime'].dt.date.value_counts().sort_index().reset_index()
+                        daily_df.columns = ['Date', 'Count']
+                        daily_df['Date'] = pd.to_datetime(daily_df['Date'])
+                        
+                        # 2. 月次
+                        monthly_df = df_time['JST_Datetime'].dt.to_period('M').value_counts().sort_index().reset_index()
+                        monthly_df.columns = ['Month', 'Count']
+                        monthly_df['Month'] = monthly_df['Month'].astype(str)
+                        
+                        # 3. 曜日
+                        weekday_order = ['月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日', '日曜日']
+                        df_time['Weekday'] = df_time['JST_Datetime'].dt.dayofweek.map(
+                            {0: '月曜日', 1: '火曜日', 2: '水曜日', 3: '木曜日', 4: '金曜日', 5: '土曜日', 6: '日曜日'}
+                        )
+                        weekday_df = df_time['Weekday'].value_counts().reindex(weekday_order, fill_value=0).reset_index()
+                        weekday_df.columns = ['Weekday', 'Count']
+                        
+                        # 4. 時間帯
+                        hour_df = df_time['JST_Datetime'].dt.hour.value_counts().sort_index().reset_index()
+                        hour_df.columns = ['Hour', 'Count']
+                        hour_full_df = pd.DataFrame({'Hour': range(24)}).merge(hour_df, on='Hour', how='left').fillna(0)
+                        
+                        # 5. ヒートマップ
+                        # groupbyの前に、元のデータフレームに対して 'Hour' 列を生成する
+                        df_time['Hour'] = df_time['JST_Datetime'].dt.hour 
+                        heatmap_df = df_time.groupby(['Hour', 'Weekday']).size().reset_index(name='Count')
+                        
+                        # --- Altair描画 ---
+                        st.markdown("#### 📅 時系列アクセス傾向")
+                        
+                        # 1. 日次推移
+                        chart_daily = alt.Chart(daily_df).mark_line(point=True, color='#1e3a8a').encode(
+                            x=alt.X('Date:T', title='日付'),
+                            y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
+                            tooltip=['Date:T', 'Count:Q']
+                        ).properties(title='日次推移')
+                        
+                        # 2. 月次傾向
+                        chart_monthly = alt.Chart(monthly_df).mark_bar(color='#2e7d32').encode(
+                            x=alt.X('Month:N', title='月'),
+                            y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
+                            tooltip=['Month:N', 'Count:Q']
+                        ).properties(title='月次傾向')
+                            
+                        # 3. 曜日別傾向
+                        chart_weekday = alt.Chart(weekday_df).mark_bar(color='#f57c00').encode(
+                            x=alt.X('Weekday:N', sort=weekday_order, title='曜日'),
+                            y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
+                            tooltip=['Weekday:N', 'Count:Q']
+                        ).properties(title='曜日別傾向')
+                            
+                        # 4. 時間帯別傾向
+                        chart_hour = alt.Chart(hour_full_df).mark_bar(color='#6a1b9a').encode(
+                            x=alt.X('Hour:O', title='時刻 (時)'),
+                            y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
+                            tooltip=['Hour:O', 'Count:Q']
+                        ).properties(title='時間帯別傾向')
+                        
+                        # 5. ヒートマップ
+                        chart_heatmap_base = alt.Chart(heatmap_df).mark_rect().encode(
+                            x=alt.X('Hour:O', title='時刻 (時)'),
+                            y=alt.Y('Weekday:N', sort=weekday_order, title='曜日'),
+                            color=alt.Color('Count:Q', scale=alt.Scale(scheme='yelloworangered'), title='件数'),
+                            tooltip=['Weekday:N', 'Hour:O', 'Count:Q']
+                        ).properties(title='曜日 × 時間帯 ヒートマップ')
+                        
+                        # ヒートマップの数値テキスト
+                        text_heatmap = chart_heatmap_base.mark_text(baseline='middle').encode(
+                            text='Count:Q',
+                            color=alt.condition(
+                                alt.datum.Count > heatmap_df['Count'].max() / 2,
+                                alt.value('white'),
+                                alt.value('black')
+                            )
+                        )
+                        chart_heatmap = chart_heatmap_base + text_heatmap
+
+                        # ----------------------------------------------------
+                        # タブによる表示切り替え (ブラウザ閲覧用 vs 画像出力用)
+                        # ----------------------------------------------------
+                        tab_t1, tab_t2 = st.tabs(["🖥️ ブラウザ閲覧用", "🖼️ 画像出力用"])
+                        
+                        with tab_t1:
+                            st.altair_chart(chart_daily.properties(height=250), use_container_width=True)
+                            
+                            c_time1, c_time2 = st.columns(2)
+                            with c_time1:
+                                st.altair_chart(chart_monthly.properties(height=250), use_container_width=True)
+                            with c_time2:
+                                st.altair_chart(chart_weekday.properties(height=250), use_container_width=True)
+                                
+                            st.altair_chart(chart_hour.properties(height=250), use_container_width=True)
+                            st.altair_chart(chart_heatmap.properties(height=300), use_container_width=True)
+                            
+                        with tab_t2:
+                            st.info("💡 **Tips:** 下のチャートの右上にある `...` ボタンから **「Save as PNG」** を選択すると、A4縦向きに最適化された白背景の画像が保存できます。")
+                            
+                            # 画像出力用は各グラフのサイズをピクセルで固定化する
+                            c_daily_img = chart_daily.properties(width=800, height=250)
+                            c_monthly_img = chart_monthly.properties(width=365, height=250)
+                            c_weekday_img = chart_weekday.properties(width=365, height=250)
+                            c_hour_img = chart_hour.properties(width=800, height=250)
+                            c_heatmap_img = chart_heatmap.properties(width=800, height=300)
+                            
+                            # すべてのチャートを結合し、明示的にライトモード（白背景・黒文字）へ固定
+                            combined_time_chart = alt.vconcat(
+                                c_daily_img,
+                                alt.hconcat(c_monthly_img, c_weekday_img), # 月次と曜日を横並びに
+                                c_hour_img,
+                                c_heatmap_img
+                            ).resolve_legend(
+                                color='independent'
+                            ).configure(
+                                background='white',
+                                padding={'left': 30, 'top': 20, 'right': 30, 'bottom': 20} # 印刷用の余白を確保
+                            ).configure_view(
+                                strokeWidth=0
+                            ).configure_title(
+                                fontSize=16, anchor='middle', offset=15, color="black", fontWeight="bold"
+                            ).configure_axis(
+                                labelColor='black', titleColor='black', gridColor='#e5e5e5', domainColor='black'
+                            ).configure_legend(
+                                labelColor='black', titleColor='black'
+                            ).properties(
+                                title=""
+                            )
+                            
+                            st.altair_chart(combined_time_chart, use_container_width=False)
+                        
+                except Exception as e:
+                    st.error(f"日時の解析中にエラーが発生しました: {e}")
+                    
     with tab_spider:
-        # リンク分析関数を呼び出す
         render_spider_web_analysis(df_merged)
 
 # ==========================================
@@ -4553,17 +4853,11 @@ def main():
     st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🎏アップデート情報 (令和８年４月２０日) - バルク処理の実装と分析強化 🎏", expanded=False):
+    with st.expander("👰‍♀️アップデート情報 (令和８年６月１日) - ダッシュボード強化 👰‍♀️", expanded=False):
         st.markdown("""
         **Update:**\n
-        **⚡ 高速バルク処理の実装 (Pro Mode)**:
-        * IPinfo API使用時（RADP,rDNS,SHODAN等のチェックボックスがすべてオフの場合）、最大1000件のIP情報を1回のリクエストで一括取得する「バルク処理」を実装しました。APIの利用枠を大幅に節約しつつ、数千件のリストを一瞬で処理することが可能になりました。\n
-        **🔍 調査機能の強化**:
-        * 「IP逆引き (Reverse DNS)」を選択した場合、一覧ビューで結果が表示されるようになりました。\n
-        **🛠️ UIの最適化とクラッシュ対策**:
-        * 大量処理時のスピードを最優先するため、時間のかかる「RDAP (公式台帳情報)」の取得をデフォルトで【オフ】に変更しました。
-        * 取得されていないデータ（複数検索時にスキップされるWHOIS等）の出力チェックボックスが自動的に無効化されるよう改善しました。
-        * 巨大な一括ダウンロード生成時にシステムがクラッシュする不具合を修正しました。\n
+        **🖼️ ダッシュボードの1枚画像出力（報告書向け）**:
+        * 集計結果および時間分析のダッシュボードにおいて、すべてのグラフを綺麗に整列させた「1枚の画像（PNG/SVG）」として一括保存する機能を追加しました。A4サイズの報告書等にそのまま添付可能です。\n
         """)
     # ------------------------------------------------
     # タブを使って入力モードを切り替え、画面を広く使う
