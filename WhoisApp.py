@@ -1768,6 +1768,11 @@ def summarize_in_realtime(raw_results):
         frequency = target_frequency.get(ip, 1) 
 
         isp_name = r.get('ISP_JP', r.get('ISP', 'N/A'))
+        
+        # 画像やダッシュボードの可視化向上のため「株式会社」等の法人格表記を削除
+        if isp_name and isp_name not in ['N/A', 'N/A (簡易モード)']:
+            isp_name = re.sub(r'(株式会社|有限会社|合同会社|一般社団法人|財団法人|\(株\)|（株）|Inc\.|Co\.,\s*Ltd\.|Corp\.|Corporation)', '', isp_name, flags=re.IGNORECASE).strip()
+            
         country_name = r.get('Country_JP', r.get('Country', 'N/A'))
         cc = r.get('CountryCode', 'N/A')
         
@@ -4218,6 +4223,20 @@ def render_spider_web_analysis(df):
 def render_merged_analysis(df_merged):
     st.markdown("### 📈 分析センター")
     
+    # グループ化した際のカラーパレット（配色テーマ）を選べるように拡張
+    with st.expander("🎨 グラフのカスタムカラー設定", expanded=False):
+        st.markdown("クロス分析や時間分析において、グラフの色を変更できます。")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            base_color = st.color_picker("単一グラフ用ベースカラー:", "#1e3a8a", help="グループ化を使用しない場合の単一色を指定します。")
+        with col_c2:
+            color_scheme = st.selectbox(
+                "グループ化用カラーパレット:", 
+                ["tableau10", "category10", "category20", "set1", "set2", "dark2", "accent", "paired", "pastel1", "pastel2"],
+                index=0, 
+                help="グループ化/色分けを使用した際に、各カテゴリに割り当てられる配色のテーマを選択します。"
+            )
+
     # 🕒 時間分析用の第3タブを追加
     tab_cross, tab_time, tab_spider = st.tabs(["📊 クロス分析 (マクロ視点)", "🕒 時間分析 (時系列・グループ化対応)", "🕸️ リンク分析 (ミクロ視点)"])
     
@@ -4249,14 +4268,15 @@ def render_merged_analysis(df_merged):
 
             if chart_type == "バーチャート (集計)":
                 if group_col != '(なし)':
+                    # 選択した color_scheme (パレット) を積み上げグラフに適用
                     chart = alt.Chart(chart_df).mark_bar().encode(
                         x=alt.X(x_col, title=x_col),
                         y=alt.Y('count()', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
-                        color=alt.Color(group_col, title=group_col),
+                        color=alt.Color(group_col, title=group_col, scale=alt.Scale(scheme=color_scheme)),
                         tooltip=[x_col, group_col, 'count()']
                     ).properties(height=400)
                 else:
-                    chart = alt.Chart(chart_df).mark_bar().encode(
+                    chart = alt.Chart(chart_df).mark_bar(color=base_color).encode(
                         x=alt.X(x_col, title=x_col),
                         y=alt.Y('count()', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
                         tooltip=[x_col, 'count()']
@@ -4299,12 +4319,18 @@ def render_merged_analysis(df_merged):
         if not all_cols_for_time:
             st.warning("時間分析に利用できるデータ列がありません。")
         else:
-            col_t1, col_t2 = st.columns(2)
+            col_t1, col_t2, col_t3 = st.columns(3)
             with col_t1:
                 selected_time_col = st.selectbox("分析に使用する日時列:", all_cols_for_time, key="time_col_selector_merged")
             with col_t2:
-                # ★追加：色分け（グループ化）用のプルダウン
-                time_group_col = st.selectbox("グループ化 / 色分け (ISP, 国など):", ['(なし)'] + whois_cols, key="time_group_col_merged")
+                time_group_col = st.selectbox("グループ化 / 色分け:", ['(なし)'] + whois_cols, key="time_group_col_merged")
+            with col_t3:
+                display_group_col = time_group_col
+                if time_group_col != '(なし)':
+                    default_label = time_group_col.replace('（日本語名称）', '').replace('（元データ）', '')
+                    display_group_col = st.text_input("📝 画像の表示名 (任意に変更可):", value=default_label, key="custom_group_name_input")
+                    if not display_group_col.strip():
+                        display_group_col = time_group_col
             
             if selected_time_col:
                 df_time = df_merged.copy()
@@ -4337,26 +4363,25 @@ def render_merged_analysis(df_merged):
                             
                             heatmap_df = df_time.groupby(['Hour', 'Weekday']).size().reset_index(name='Count')
 
-                            # Altair Charts (色分けなし)
-                            chart_daily = alt.Chart(daily_df).mark_line(point=True, color='#1e3a8a').encode(
+                            chart_daily = alt.Chart(daily_df).mark_line(point=True, color=base_color).encode(
                                 x=alt.X('Date:T', title='日付'),
                                 y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
                                 tooltip=['Date:T', 'Count:Q']
                             ).properties(title='日次推移')
                             
-                            chart_monthly = alt.Chart(monthly_df).mark_bar(color='#2e7d32').encode(
+                            chart_monthly = alt.Chart(monthly_df).mark_bar(color=base_color).encode(
                                 x=alt.X('Month:N', title='月'),
                                 y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
                                 tooltip=['Month:N', 'Count:Q']
                             ).properties(title='月次傾向')
                                 
-                            chart_weekday = alt.Chart(weekday_df).mark_bar(color='#f57c00').encode(
+                            chart_weekday = alt.Chart(weekday_df).mark_bar(color=base_color).encode(
                                 x=alt.X('Weekday:N', sort=weekday_order, title='曜日'),
                                 y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
                                 tooltip=['Weekday:N', 'Count:Q']
                             ).properties(title='曜日別傾向')
                                 
-                            chart_hour = alt.Chart(hour_full_df).mark_bar(color='#6a1b9a').encode(
+                            chart_hour = alt.Chart(hour_full_df).mark_bar(color=base_color).encode(
                                 x=alt.X('Hour:O', title='時刻 (時)'),
                                 y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
                                 tooltip=['Hour:O', 'Count:Q']
@@ -4373,51 +4398,64 @@ def render_merged_analysis(df_merged):
                         else:
                             df_time[time_group_col] = df_time[time_group_col].fillna('N/A').astype(str)
                             
-                            daily_df = df_time.groupby(['Date', time_group_col]).size().reset_index(name='Count')
+                            # 正式名称から「株式会社」等を削除して可視化を向上
+                            df_time[time_group_col] = df_time[time_group_col].apply(
+                                lambda x: re.sub(r'(株式会社|有限会社|合同会社|一般社団法人|財団法人|\(株\)|（株）|Inc\.|Co\.,\s*Ltd\.|Corp\.|Corporation)', '', x, flags=re.IGNORECASE).strip()
+                            )
+                            
+                            # ブラウザクラッシュ回避のため、上位10件に絞り残りを「その他」にまとめる
+                            top_categories = df_time[time_group_col].value_counts().nlargest(10).index
+                            df_time[time_group_col] = df_time[time_group_col].where(df_time[time_group_col].isin(top_categories), 'その他')
+                            
+                            # 利用者が任意に変更したグループ名を反映するため、列名をリネーム
+                            if time_group_col != display_group_col:
+                                df_time = df_time.rename(columns={time_group_col: display_group_col})
+                            
+                            daily_df = df_time.groupby(['Date', display_group_col]).size().reset_index(name='Count')
                             daily_df['Date'] = pd.to_datetime(daily_df['Date'])
                             
-                            monthly_df = df_time.groupby(['Month', time_group_col]).size().reset_index(name='Count')
-                            weekday_df = df_time.groupby(['Weekday', time_group_col]).size().reset_index(name='Count')
-                            hour_full_df = df_time.groupby(['Hour', time_group_col]).size().reset_index(name='Count')
+                            monthly_df = df_time.groupby(['Month', display_group_col]).size().reset_index(name='Count')
+                            weekday_df = df_time.groupby(['Weekday', display_group_col]).size().reset_index(name='Count')
+                            hour_full_df = df_time.groupby(['Hour', display_group_col]).size().reset_index(name='Count')
                             
-                            # ★色分け時、ヒートマップのY軸を「曜日」ではなく「選択したカテゴリ」に変更！
-                            heatmap_df = df_time.groupby(['Hour', time_group_col]).size().reset_index(name='Count')
+                            # ヒートマップのY軸を「曜日」ではなく「選択したカテゴリ」に変更
+                            heatmap_df = df_time.groupby(['Hour', display_group_col]).size().reset_index(name='Count')
 
-                            # Altair Charts (色分けあり - 凡例付与)
+                            # 時間分析の各チャートにも color_scheme (選択したパレット) を適用
                             chart_daily = alt.Chart(daily_df).mark_line(point=True).encode(
                                 x=alt.X('Date:T', title='日付'),
                                 y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
-                                color=alt.Color(f'{time_group_col}:N', title=time_group_col, legend=alt.Legend(orient='right')),
-                                tooltip=['Date:T', f'{time_group_col}:N', 'Count:Q']
-                            ).properties(title=f'日次推移 ({time_group_col}別)')
+                                color=alt.Color(f'{display_group_col}:N', title=display_group_col, scale=alt.Scale(scheme=color_scheme), legend=alt.Legend(orient='right')),
+                                tooltip=['Date:T', f'{display_group_col}:N', 'Count:Q']
+                            ).properties(title=f'日次推移 ({display_group_col}別)')
                             
                             chart_monthly = alt.Chart(monthly_df).mark_bar().encode(
                                 x=alt.X('Month:N', title='月'),
                                 y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
-                                color=alt.Color(f'{time_group_col}:N', title=time_group_col, legend=alt.Legend(orient='right')),
-                                tooltip=['Month:N', f'{time_group_col}:N', 'Count:Q']
-                            ).properties(title=f'月次傾向 ({time_group_col}別)')
+                                color=alt.Color(f'{display_group_col}:N', title=display_group_col, scale=alt.Scale(scheme=color_scheme), legend=alt.Legend(orient='right')),
+                                tooltip=['Month:N', f'{display_group_col}:N', 'Count:Q']
+                            ).properties(title=f'月次傾向 ({display_group_col}別)')
                                 
                             chart_weekday = alt.Chart(weekday_df).mark_bar().encode(
                                 x=alt.X('Weekday:N', sort=weekday_order, title='曜日'),
                                 y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
-                                color=alt.Color(f'{time_group_col}:N', title=time_group_col, legend=alt.Legend(orient='right')),
-                                tooltip=['Weekday:N', f'{time_group_col}:N', 'Count:Q']
-                            ).properties(title=f'曜日別傾向 ({time_group_col}別)')
+                                color=alt.Color(f'{display_group_col}:N', title=display_group_col, scale=alt.Scale(scheme=color_scheme), legend=alt.Legend(orient='right')),
+                                tooltip=['Weekday:N', f'{display_group_col}:N', 'Count:Q']
+                            ).properties(title=f'曜日別傾向 ({display_group_col}別)')
                                 
                             chart_hour = alt.Chart(hour_full_df).mark_bar().encode(
                                 x=alt.X('Hour:O', title='時刻 (時)'),
                                 y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
-                                color=alt.Color(f'{time_group_col}:N', title=time_group_col, legend=alt.Legend(orient='right')),
-                                tooltip=['Hour:O', f'{time_group_col}:N', 'Count:Q']
-                            ).properties(title=f'時間帯別傾向 ({time_group_col}別)')
+                                color=alt.Color(f'{display_group_col}:N', title=display_group_col, scale=alt.Scale(scheme=color_scheme), legend=alt.Legend(orient='right')),
+                                tooltip=['Hour:O', f'{display_group_col}:N', 'Count:Q']
+                            ).properties(title=f'時間帯別傾向 ({display_group_col}別)')
                             
                             chart_heatmap_base = alt.Chart(heatmap_df).mark_rect().encode(
                                 x=alt.X('Hour:O', title='時刻 (時)'),
-                                y=alt.Y(f'{time_group_col}:N', title=time_group_col), # Y軸をISPなどに変更
+                                y=alt.Y(f'{display_group_col}:N', title=display_group_col),
                                 color=alt.Color('Count:Q', scale=alt.Scale(scheme='yelloworangered'), title='件数'),
-                                tooltip=[f'{time_group_col}:N', 'Hour:O', 'Count:Q']
-                            ).properties(title=f'時間帯 × {time_group_col} ヒートマップ')
+                                tooltip=[f'{display_group_col}:N', 'Hour:O', 'Count:Q']
+                            ).properties(title=f'時間帯 × {display_group_col} ヒートマップ')
 
                         # ヒートマップ数値テキスト (共通)
                         text_heatmap = chart_heatmap_base.mark_text(baseline='middle').encode(
@@ -4433,7 +4471,9 @@ def render_merged_analysis(df_merged):
                         # ----------------------------------------------------
                         # タブによる表示切り替え (ブラウザ閲覧用 vs 画像出力用)
                         # ----------------------------------------------------
-                        tab_t1, tab_t2 = st.tabs(["🖥️ ブラウザ閲覧用", "🖼️ 画像出力用"])
+                        tab_t1, tab_t2 = st.tabs(["🖥️ ブラウザ閲覧用", "🖼️ 1枚画像出力用 (報告書向け)"])
+                        
+                        dynamic_group_col = time_group_col if time_group_col == '(なし)' else display_group_col
                         
                         with tab_t1:
                             st.altair_chart(chart_daily.properties(height=250), use_container_width=True)
@@ -4445,8 +4485,9 @@ def render_merged_analysis(df_merged):
                                 st.altair_chart(chart_weekday.properties(height=250), use_container_width=True)
                                 
                             st.altair_chart(chart_hour.properties(height=250), use_container_width=True)
+                            
                             # ヒートマップはY軸のカテゴリが多い場合に潰れないよう、高さを動的に拡張
-                            dynamic_height = 300 if time_group_col == '(なし)' else max(300, len(heatmap_df[time_group_col].unique()) * 20)
+                            dynamic_height = 300 if time_group_col == '(なし)' else max(300, len(heatmap_df[dynamic_group_col].unique()) * 20)
                             st.altair_chart(chart_heatmap.properties(height=dynamic_height), use_container_width=True)
                             
                         with tab_t2:
@@ -4458,7 +4499,12 @@ def render_merged_analysis(df_merged):
                             c_weekday_img = chart_weekday.properties(width=365, height=250)
                             c_hour_img = chart_hour.properties(width=800, height=250)
                             
-                            dynamic_height_img = 300 if time_group_col == '(なし)' else max(300, len(heatmap_df[time_group_col].unique()) * 20)
+                            # ブラウザの描画クラッシュを防ぐため、ヒートマップの高さに上限(1500px)を設ける
+                            MAX_HEATMAP_HEIGHT = 1500
+                            unique_items_count = len(heatmap_df[dynamic_group_col].unique()) if time_group_col != '(なし)' else 0
+                            calculated_height = max(300, unique_items_count * 20)
+                            dynamic_height_img = 300 if time_group_col == '(なし)' else min(calculated_height, MAX_HEATMAP_HEIGHT)
+                            
                             c_heatmap_img = chart_heatmap.properties(width=800, height=dynamic_height_img)
                             
                             # すべてのチャートを結合し、明示的にライトモード（白背景・黒文字）へ固定
@@ -4481,7 +4527,7 @@ def render_merged_analysis(df_merged):
                             ).configure_legend(
                                 labelColor='black', titleColor='black'
                             ).properties(
-                                title=""
+                                title="OSINT Time Analysis Dashboard"
                             )
                             
                             st.altair_chart(combined_time_chart, use_container_width=False)
@@ -4491,7 +4537,7 @@ def render_merged_analysis(df_merged):
                     
     with tab_spider:
         render_spider_web_analysis(df_merged)
-        
+
 # ==========================================
 # 状態管理（Session State）用ヘルパー関数
 # ==========================================
