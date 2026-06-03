@@ -4170,14 +4170,13 @@ def render_spider_web_analysis(df):
     plot_df = df.head(50).fillna("N/A")
 
     for _, row in plot_df.iterrows():
-        # カラム名の取得を日本語版に変更
-        ip = row.get('IPアドレス', row.get('Target_IP', 'Unknown'))
+        # 文字列化し、ダブルクォーテーションを除去してGraphvizの構文崩壊を完全に防ぐ安全処理
+        ip = str(row.get('IPアドレス', row.get('Target_IP', 'Unknown'))).replace('"', '')
         
-        # 優先度: 日本語カラム > 英語カラム > N/A
-        isp = row.get('Whois結果（日本語名称）', row.get('ISP_JP', row.get('ISP', 'N/A')))
-        country = row.get('国名', row.get('Country_JP', row.get('Country', 'N/A')))
-        risk = row.get('IoTリスク', row.get('IoT_Risk', ''))
-        proxy = row.get('プロキシ種別', row.get('Proxy Type', ''))
+        isp = str(row.get('Whois結果（日本語名称）', row.get('ISP_JP', row.get('ISP', 'N/A')))).replace('"', '')
+        country = str(row.get('国名', row.get('Country_JP', row.get('Country', 'N/A')))).replace('"', '')
+        risk = str(row.get('IoTリスク', row.get('IoT_Risk', ''))).replace('"', '')
+        proxy = str(row.get('プロキシ種別', row.get('Proxy Type', ''))).replace('"', '')
 
         # 1. IPノード (水色の丸)
         nodes.add(f'"{ip}" [shape=circle, style=filled, fillcolor="#E0F2F1", width=0.8];')
@@ -4185,7 +4184,8 @@ def render_spider_web_analysis(df):
         # 2. ISPノード (オレンジの四角) - IPと線を結ぶ
         if isp != "N/A":
             nodes.add(f'"{isp}" [shape=box, style=filled, fillcolor="#FFF3E0", color="#FF9800", penwidth=2];')
-            edges.add(f'"{ip}" -- "{isp}" [color="#FF9800", alpha=0.5];')
+            # 不正な属性 alpha=0.5 を廃止し、カラーコードの末尾に「80」（透過度50%の16進数）を付与する国際標準仕様に修正
+            edges.add(f'"{ip}" -- "{isp}" [color="#FF980080"];')
 
         # 3. 国ノード (緑の楕円)
         if country != "N/A":
