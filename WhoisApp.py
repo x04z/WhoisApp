@@ -4368,7 +4368,8 @@ def render_merged_analysis(df_merged):
                                 heatmap_df = df_time.groupby(['Hour', 'Weekday']).size().reset_index(name='Count')
 
                                 chart_daily = alt.Chart(daily_df).mark_line(point=True, color=base_color).encode(
-                                    x=alt.X('Date:T', title='日付', axis=alt.Axis(format='%m/%d')),
+                                    # X軸に tickCount='day' と labelAngle=-45 等を追加
+                                    x=alt.X('Date:T', title='日付', axis=alt.Axis(format='%m/%d', tickCount='day', labelAngle=-45, labelOverlap=True)),
                                     y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
                                     tooltip=[alt.Tooltip('Date:T', title='日付', format='%Y/%m/%d'), 'Count:Q']
                                 ).properties(title='日次推移')
@@ -4427,7 +4428,8 @@ def render_merged_analysis(df_merged):
 
                                 # 時間分析の各チャートにも color_scheme (選択したパレット) を適用
                                 chart_daily = alt.Chart(daily_df).mark_line(point=True).encode(
-                                    x=alt.X('Date:T', title='日付', axis=alt.Axis(format='%m/%d')),
+                                    # X軸に tickCount='day' と labelAngle=-45 等を追加
+                                    x=alt.X('Date:T', title='日付', axis=alt.Axis(format='%m/%d', tickCount='day', labelAngle=-45, labelOverlap=True)),
                                     y=alt.Y('Count:Q', title='件数', axis=alt.Axis(tickMinStep=1, format='d')),
                                     color=alt.Color(f'{display_group_col}:N', title=display_group_col, scale=alt.Scale(scheme=color_scheme), legend=alt.Legend(orient='right')),
                                     tooltip=[alt.Tooltip('Date:T', title='日付', format='%Y/%m/%d'), f'{display_group_col}:N', 'Count:Q']
@@ -4558,8 +4560,8 @@ def render_merged_analysis(df_merged):
                     except Exception as e:
                         st.error(f"日時の解析中にエラーが発生しました: {e}")
                         
-        with tab_spider:
-            render_spider_web_analysis(df_merged)
+    with tab_spider:
+        render_spider_web_analysis(df_merged)
 
 # ==========================================
 # 状態管理（Session State）用ヘルパー関数
