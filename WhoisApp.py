@@ -29,13 +29,19 @@ import duckdb
 import aiohttp
 
 # ==========================================
-#  [Local User Config] API Key Hardcoding
+#  [Local User Config] API Key Loading
 # ==========================================
-# ローカルで利用する場合、ここにAPIキーを記述するとGUIでの入力を省略できます。
-# 記述例: HARDCODED_IPINFO_KEY = "your_token_here"
-HARDCODED_IPINFO_KEY = "" 
-HARDCODED_VPNAPI_KEY = ""
-HARDCODED_SECURITYTRAILS_KEY = ""
+# .streamlit/secrets.toml から優先して読み込み、設定がない場合は空文字を返す
+try:
+    HARDCODED_IPINFO_KEY = st.secrets.get("IPINFO_KEY", "")
+    HARDCODED_VPNAPI_KEY = st.secrets.get("VPNAPI_KEY", "")
+    HARDCODED_SECURITYTRAILS_KEY = st.secrets.get("SECURITYTRAILS_KEY", "")
+    HARDCODED_OTX_KEY = st.secrets.get("OTX_KEY", "")
+except FileNotFoundError:
+    HARDCODED_IPINFO_KEY = ""
+    HARDCODED_VPNAPI_KEY = ""
+    HARDCODED_SECURITYTRAILS_KEY = ""
+    HARDCODED_OTX_KEY = ""
 # ==========================================
 
 BACKUP_FILE = "whois_recovery_session.json"
@@ -3289,9 +3295,20 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
     </div>
     """
 
-    tabs_html = ""
-    contents_html = ""
-    first_tab_id = None
+    # 判定根拠を「最初のタブ」として新設
+    tab_id_overview = "tab-overview"
+    first_tab_id = tab_id_overview
+    tabs_html = f'<button class="tab-button" onclick="openTab(event, \'{tab_id_overview}\')" id="btn-{tab_id_overview}">概要・判定根拠</button>\n'
+    
+    contents_html = f"""
+    <div id="{tab_id_overview}" class="tab-content">
+        <h1 style="color: #d84315; border-bottom: 2px solid #d84315;">調査対象: {clean_ip}</h1>
+        <div class="description" style="background-color: #fff9c4; border-color: #fbc02d;">
+            このタブでは、対象に対する各種検知ロジックの総合判定結果（サマリー）を表示しています。
+        </div>
+        {attribution_section}
+    </div>
+    """
     
     # --- 2. サブネット・ネットワーク情報 (IPv4 / IPv6 両対応) ---
     try:
@@ -3836,55 +3853,46 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
         """
         contents_html += ipinfo_content
 
-    # --- 7. VPNAPI.io ---
-    if vpnapi_json and report_opts.get("vpnapi", True):
+    # --- 7. 匿名通信判定 (統合版: Local DB & VPNAPI.io) ---
+    has_proxy_alert = proxy_info and proxy_info not in ["Standard Connection", "N/A (Domain)", "N/A"]
+    # VPNAPIのデータがあるか、または何らかのプロキシ検知(ローカルDB等)がある場合にタブを生成
+    if (vpnapi_json or has_proxy_alert) and report_opts.get("vpnapi", True):
         tab_id = "tab-vpnapi"
         if not first_tab_id: first_tab_id = tab_id
-        tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">VPNAPI.io</button>\n'
+        tabs_html += f'<button class="tab-button" onclick="openTab(event, \'{tab_id}\')" id="btn-{tab_id}">匿名通信判定</button>\n'
         
-        sec = vpnapi_json.get('security') or {}
-        if any(sec.values()):
-            proxy_status_text = "該当あり (匿名通信検知)"
-            status_color = "red"
-            detected_types = [k.upper() for k, v in sec.items() if v]
-            p_type_val = " / ".join(detected_types)
-        else:
-            proxy_status_text = "該当なし"
-            status_color = "green"
-            p_type_val = "情報なし"
+        if vpnapi_json:
+            sec = vpnapi_json.get('security') or {}
+            if any(sec.values()):
+                proxy_status_text = "該当あり (匿名通信検知)"
+                status_color = "red"
+                detected_types = [k.upper() for k, v in sec.items() if v]
+                p_type_val = " / ".join(detected_types)
+            else:
+                proxy_status_text = "該当なし"
+                status_color = "green"
+                p_type_val = "情報なし"
 
-        net = vpnapi_json.get('network') or {}
-        org_val = net.get('autonomous_system_organization', '情報なし')
+            net = vpnapi_json.get('network') or {}
+            org_val = net.get('autonomous_system_organization', '情報なし')
 
-        loc = vpnapi_json.get('location') or {}
-        c_name_val = loc.get('country', '情報なし')
+            loc = vpnapi_json.get('location') or {}
+            c_name_val = loc.get('country', '情報なし')
 
-        raw_json_str = json.dumps(vpnapi_json, indent=4, ensure_ascii=False)
-        escaped_json = html.escape(raw_json_str)
+            raw_json_str = json.dumps(vpnapi_json, indent=4, ensure_ascii=False)
+            escaped_json = html.escape(raw_json_str)
 
-        # " 対応
-        highlight_keys_vpn = ['vpn', 'proxy', 'tor', 'relay', 'country', 'ip', 'autonomous_system_organization']
-        for hk in highlight_keys_vpn:
-            simple_pattern = r'("' + hk + r'":\s*.*?,?\n)'
-            escaped_json = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json)
+            # " 対応
+            highlight_keys_vpn = ['vpn', 'proxy', 'tor', 'relay', 'country', 'ip', 'autonomous_system_organization']
+            for hk in highlight_keys_vpn:
+                simple_pattern = r'("' + hk + r'":\s*.*?,?\n)'
+                escaped_json = re.sub(simple_pattern, r'<span class="json-hl">\1</span>', escaped_json)
 
-        vpn_req_ip = vpnapi_json.get('ip', clean_ip)
-        req_vpnapi_url = f"https://vpnapi.io/api/{vpn_req_ip}?key=********"
-
-        vpnapi_content = f"""
-        <div id="{tab_id}" class="tab-content">
-            <h1 class="theme-ip2proxy">匿名通信判定結果 (VPNAPI.io)</h1>
-            <div class="description" style="background-color: #f3e5f5; border-color: #ce93d8;">
-                <strong>VPNAPI.io:</strong><br>
-                VPNAPI.ioは、対象IPアドレスがVPN、プロキシ、Torノード、またはリレーネットワークとして利用されているかを検知するための高精度データベースである。
-            </div>
-            <h2>基本情報</h2>
-            <table>
-                <tr><th>対象IPアドレス<br>(Key: ip)</th><td><strong>{vpn_req_ip}</strong></td></tr>
-                <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
-                <tr><th>リクエストURL<br>(Request URL)</th><td><a href="{req_vpnapi_url}" target="_blank" style="color: #6a1b9a; word-break: break-all;">{req_vpnapi_url}</a></td></tr>
-            </table>
-            <h2>VPNAPI.io 取得結果</h2>
+            vpn_req_ip = vpnapi_json.get('ip', clean_ip)
+            req_vpnapi_url = f"https://vpnapi.io/api/{vpn_req_ip}?key=********"
+            
+            vpnapi_detail_html = f"""
+            <h2>VPNAPI.io 取得結果 (外部動的API詳細)</h2>
             <table>
                 <tr><th>プロキシ判定<br>(Security)</th><td><strong style="color:{status_color};">{proxy_status_text}</strong></td></tr>
                 <tr><th>検知種別<br>(Detected Types)</th><td><strong>{p_type_val}</strong></td></tr>
@@ -3893,6 +3901,43 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             </table>
             <h2>解析用生データ (JSON形式)</h2>
             <div class="raw-data">{escaped_json}</div>
+            """
+            url_html = f'<tr><th>リクエストURL<br>(Request URL)</th><td><a href="{req_vpnapi_url}" target="_blank" style="color: #6a1b9a; word-break: break-all;">{req_vpnapi_url}</a></td></tr>'
+        else:
+            vpn_req_ip = clean_ip
+            url_html = ""
+            vpnapi_detail_html = """
+            <h2>VPNAPI.io 取得結果 (外部動的API詳細)</h2>
+            <p style="color: #666; font-size: 14px; padding: 10px; background-color: #f9f9f9; border: 1px solid #ddd; border-radius: 4px;">※ VPNAPI.ioのAPIキーが未設定、または動的検証がスキップされたため、APIの詳細データはありません。</p>
+            """
+
+        # 総合判定結果のステータス設定
+        if has_proxy_alert:
+            comp_status_color = "#c62828"
+            comp_status_text = "検知あり (不審・匿名化インフラ等)"
+        else:
+            comp_status_color = "#2e7d32"
+            comp_status_text = "検知なし (Standard Connection)"
+
+        vpnapi_content = f"""
+        <div id="{tab_id}" class="tab-content">
+            <h1 class="theme-ip2proxy" style="color: #6a1b9a; border-color: #6a1b9a;">匿名通信・中継サーバー判定結果</h1>
+            <div class="description" style="background-color: #f3e5f5; border-color: #ce93d8;">
+                <strong>匿名通信総合判定：</strong><br>
+                ローカルDB（IP2Location LITE / FireHOL / Tor公式リスト等）および外部API（VPNAPI.io）の評価を統合し、対象IPアドレスがVPN、プロキシ、Torノード、またはホスティングサーバーとして利用されているかを判定した結果を示す。
+            </div>
+            <h2>基本情報</h2>
+            <table>
+                <tr><th>対象IPアドレス<br>(Target IP)</th><td><strong>{vpn_req_ip}</strong></td></tr>
+                <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                {url_html}
+            </table>
+            <h2>総合判定結果 (Attribution)</h2>
+            <table>
+                <tr><th style="width: 30%;">総合ステータス</th><td><strong style="color:{comp_status_color}; font-size: 1.1em;">{comp_status_text}</strong></td></tr>
+                <tr><th>検知内容および情報源<br>(Source)</th><td><strong style="font-size: 1.1em;">{html.escape(proxy_info)}</strong></td></tr>
+            </table>
+            {vpnapi_detail_html}
         </div>
         """
         contents_html += vpnapi_content
@@ -4062,6 +4107,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             <table>
                 <tr><th>対象IPアドレス<br>(Target IP)</th><td><strong>{clean_ip}</strong></td></tr>
                 <tr><th>取得日時<br>(Timestamp)</th><td><strong>{current_time_str}</strong></td></tr>
+                <tr><th>情報源<br>(Data Source)</th><td><strong>{source_name}</strong></td></tr>
                 <tr><th>ヒット総数<br>(Total Records)</th><td>{display_count_text}</td></tr>
             </table>
             <h2>紐づくドメイン一覧</h2>
@@ -4163,8 +4209,6 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
             </div>
             <button onclick="window.print()">🖨️ すべての情報を一括印刷</button>
         </div>
-        
-        {attribution_section}
         
         <div class="tab-container no-print">
             {tabs_html}
@@ -4611,7 +4655,10 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                     is_datetime = False
                     if any(k in col_name.lower() for k in ['date', 'time', '日時', '時間', '時刻']):
                         try:
-                            parsed_dates = pd.to_datetime(raw_series, errors='coerce').dropna()
+                            try:
+                                parsed_dates = pd.to_datetime(raw_series, errors='coerce', format='mixed').dropna()
+                            except ValueError:
+                                parsed_dates = pd.to_datetime(raw_series, errors='coerce', infer_datetime_format=True).dropna()
                             if not parsed_dates.empty:
                                 is_datetime = True
                                 min_date = parsed_dates.min().date()
@@ -4666,7 +4713,10 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                                 if f_type == 'date' and len(f_val) == 2:
                                     if val:
                                         try:
-                                            row_date = pd.to_datetime(val).date()
+                                            try:
+                                                row_date = pd.to_datetime(val, format='mixed').date()
+                                            except ValueError:
+                                                row_date = pd.to_datetime(val, infer_datetime_format=True).date()
                                             if not (f_val[0] <= row_date <= f_val[1]):
                                                 row_match = False
                                                 break
@@ -4736,7 +4786,11 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         with col_opt5: opt_whois = st.checkbox("WHOIS", value=default_whois, disabled=not has_whois_in_selection)
         
         with col_opt6: opt_ipinfo = st.checkbox("IPinfo", value=bool(pro_api_key) and has_ip_in_selection, disabled=not bool(pro_api_key) or not has_ip_in_selection)
-        with col_opt7: opt_vpnapi = st.checkbox("VPNAPI.io", value=bool(vpnapi_key) and has_ip_in_selection, disabled=not bool(vpnapi_key) or not has_ip_in_selection)
+        
+        # ローカルDBで検知されたプロキシ情報が含まれているか確認
+        has_proxy_alert_in_selection = any(r.get('Proxy_Type', '') not in ["", "Standard Connection", "N/A", "N/A (Domain)"] for r in target_results)
+        enable_proxy_tab = (bool(vpnapi_key) and has_ip_in_selection) or has_proxy_alert_in_selection
+        with col_opt7: opt_vpnapi = st.checkbox("匿名通信判定", value=enable_proxy_tab, disabled=not enable_proxy_tab)
         
         # 履歴機能の分離 (ドメイン用のDNS履歴 と IP用のReverse IP)
         with col_opt8: opt_st_dns = st.checkbox("DNS履歴", value=bool(st_api_key) and has_domain_in_selection, disabled=not bool(st_api_key) or not has_domain_in_selection)
@@ -5128,7 +5182,10 @@ def render_merged_analysis(df_merged):
                 if selected_time_col:
                     df_time = df_merged.copy()
                     try:
-                        df_time['JST_Datetime'] = pd.to_datetime(df_time[selected_time_col], errors='coerce')
+                        try:
+                            df_time['JST_Datetime'] = pd.to_datetime(df_time[selected_time_col], errors='coerce', format='mixed')
+                        except ValueError:
+                            df_time['JST_Datetime'] = pd.to_datetime(df_time[selected_time_col], errors='coerce', infer_datetime_format=True)
                         df_time = df_time.dropna(subset=['JST_Datetime'])
                         
                         if df_time.empty:
@@ -5482,7 +5539,16 @@ def main():
                 st_api_key = st.text_input("SecurityTrails API Key", type="password", key="input_st", help="FQDN（ドメイン）が入力された際、過去のA/AAAAレコードの履歴を取得するために使用します。").strip()
 
             # 4. AlienVault OTX (Passive DNS) の設定
-            otx_api_key = st.text_input("AlienVault OTX API Key", type="password", key="input_otx", help="Reverse IP (Passive DNS) を無制限に取得するために使用します。SecurityTrailsの無料枠枯渇対策に有効です。").strip()
+            otx_api_key = ""
+            if HARDCODED_OTX_KEY:
+                use_hc_otx = st.checkbox("埋め込みキー (AlienVault OTX) を使用", value=True, help="オフにすると、埋め込まれたAPIキーを無効化し、空欄または手動入力モードに切り替えます。")
+                if use_hc_otx:
+                    otx_api_key = HARDCODED_OTX_KEY
+                    st.success(f"✅ AlienVault OTX Key Loaded: {otx_api_key[:4]}***")
+                else:
+                    otx_api_key = st.text_input("AlienVault OTX API Key", type="password", key="input_otx", help="Reverse IP (Passive DNS) を無制限に取得するために使用します。SecurityTrailsの無料枠枯渇対策に有効です。").strip()
+            else:
+                otx_api_key = st.text_input("AlienVault OTX API Key", type="password", key="input_otx", help="Reverse IP (Passive DNS) を無制限に取得するために使用します。SecurityTrailsの無料枠枯渇対策に有効です。").strip()
 
             st_start_date = None
             st_end_date = None
@@ -5899,12 +5965,17 @@ def main():
                         }
 
                         def convert_tz_smartly_advanced(df, time_col, dest_col, source_tz_type, dest_tz_type):
-                            # 変換元の情報を保存（変換のトレーサビリティを確保）
+                        # 変換元の情報を保存（変換のトレーサビリティを確保）
                             df[f"{dest_col}_Original"] = df[time_col]
-                            
-                            # 文字列を datetime 型にパース
-                            converted_time = pd.to_datetime(df[time_col], errors='coerce', utc=False)
-                            
+                    
+                            # さまざまな時刻表記（yyyy/mm/dd h:m:sなど）や混在フォーマットに対応するためのパース処理
+                            try:
+                                # Pandas 2.0以降の推奨オプション（mixed指定による複数フォーマット解析）
+                                converted_time = pd.to_datetime(df[time_col], errors='coerce', utc=False, format='mixed')
+                            except ValueError:
+                                # Pandas 1.x系へのフォールバック処理
+                                converted_time = pd.to_datetime(df[time_col], errors='coerce', utc=False, infer_datetime_format=True)
+
                             def apply_tz_logic(dt_val, src_tz, dst_tz):
                                 if pd.isna(dt_val): return dt_val, "N/A", "N/A"
                                 
@@ -6456,6 +6527,12 @@ def main():
                         if current_delay < 2.0:
                             current_delay = 2.0
                         st.info("ℹ️ 逆引き精度向上のため、負荷調整モード（シングルスレッド/最低2秒待機）で実行中...")
+                    elif use_st_reverse_ip:
+                        # Reverse IP (OTX/ST) の過負荷による接続拒否・データ欠損を防ぐ
+                        current_max_workers = 1
+                        if current_delay < 2.0:
+                            current_delay = 2.0
+                        st.info("ℹ️ Reverse IP (Passive DNS) の接続安定化のため、負荷調整モード（シングルスレッド/最低2秒待機）で実行中...")
 
                     # --- asyncio / aiohttp を用いた非同期実行ラッパー関数 ---
                     import asyncio
@@ -6620,7 +6697,9 @@ def main():
                 if len(st.session_state.finished_ips) == total_targets and not st.session_state.deferred_ips:
                     st.session_state.is_searching = False
                     clear_recovery_data() # 正常完了時はバックアップを消去
-                    st.info("✅ 全ての検索が完了しました。")
+                    with status_text_container:
+                        st.success("✅ 全ての検索タスクが完了しました。結果を展開します...")
+                    time.sleep(1.0) # 高速処理時にUI描画(一覧ビュー等)の同期を安定化させるための待機時間
                     st.rerun()
                 
                 elif st.session_state.deferred_ips and not st.session_state.cancel_search:
