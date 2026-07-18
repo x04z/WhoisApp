@@ -1,0 +1,18 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# 環境変数・APIキー
+.env
+
+# データベース・バックアップファイル
+*.db
+*.json
+*.xlsx
+*.xls
+whois_recovery_session.json
+whois_recovery_details.json
+
+# 開発用ディレクトリ
+exports/
+.streamlit/
