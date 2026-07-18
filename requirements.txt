@@ -8,3 +8,5 @@ numpy
 openpyxl
 shodan
 dnspython
+duckdb
+aiohttp
