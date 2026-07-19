@@ -159,7 +159,8 @@ def generate_stix2_bundle(results):
     """ 調査結果をSTIX 2.1形式のBundle (JSON) に変換する """
     objects = []
     # STIXの時刻は UTC の ISO8601 形式が必須
-    now_str = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    now_str = now_utc.strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
     # 1. ツール自身のIdentity（作成者）オブジェクト
     identity_id = f"identity--{uuid.uuid4()}"
@@ -484,10 +485,18 @@ def create_advanced_excel(df, time_col_name=None):
         if os.path.exists(tmp_excel_path):
             os.remove(tmp_excel_path)
 
-def generate_individual_html_report(res, clean_ip, report_opts=None):
-    """ 
-    個別IPの詳細HTMLレポートを生成する（判定ソースの明記に対応）
+def generate_individual_html_report(res, clean_ip, report_opts=None, resolved_dns_map=None):
     """
+    個別IPの詳細HTMLレポートを生成する
+    
+    Args:
+        res: 検索結果辞書
+        clean_ip: 表示用IPアドレス
+        report_opts: レポート出力オプション辞書
+        resolved_dns_map: DNS解決結果辞書（st.session_stateから渡す）
+    """
+    if resolved_dns_map is None:
+        resolved_dns_map = {}
     if report_opts is None:
         report_opts = {"tld": True, "dns": True, "subnet": True, "rdap": True, "whois": True, "ipinfo": True, "vpnapi": True, "st": True, "rdns": True, "revip": True}
     
@@ -526,10 +535,10 @@ def generate_individual_html_report(res, clean_ip, report_opts=None):
     
     if "(" in target_ip and ")" in target_ip:
         domain_name_for_nslookup = target_ip.split("(")[0].strip()
-        nslookup_data = st.session_state.get('resolved_dns_map', {}).get(domain_name_for_nslookup, {})
+        nslookup_data = resolved_dns_map.get(domain_name_for_nslookup, {})
     elif not is_valid_ip(target_ip): 
         domain_name_for_nslookup = target_ip
-        nslookup_data = st.session_state.get('resolved_dns_map', {}).get(domain_name_for_nslookup, {})
+        nslookup_data = resolved_dns_map.get(domain_name_for_nslookup, {})
     
     nslookup_raw = nslookup_data.get('raw', '') if isinstance(nslookup_data, dict) else ""
     nslookup_ips = nslookup_data.get('ips', []) if isinstance(nslookup_data, dict) else []

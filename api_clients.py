@@ -12,6 +12,7 @@ import dns.exception
 import streamlit as st
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from utils import query_local_proxy_db
 
 # Step 1と2で作成した外部ファイルからのインポート
 from constants import RDAP_BOOTSTRAP_URL, VPNAPI_URL, PUBLIC_DNS_SERVERS
@@ -153,8 +154,9 @@ def fetch_classic_whois(target):
         return decoded_text, whois_server
         
     except socket.timeout:
-        error_msg = "Error: WHOISサーバーからの応答がタイムアウトしました。\n短時間での連続アクセスによる一時的な制限（Rate Limit）の可能性が高いです。\nしばらく時間をおいてから再度お試しください。"
-        return error_msg, whois_server if 'whois_server' in locals() and whois_server else "不明"
+        server_name = whois_server if 'whois_server' in locals() and whois_server else "不明"
+        error_msg = "Error: WHOISサーバーからの応答がタイムアウトしました。..."
+        return error_msg, server_name
     except ConnectionRefusedError:
         error_msg = "Error: WHOISサーバーへの接続が拒否されました。\n接続制限、または相手方サーバーがダウンしている可能性があります。"
         return error_msg, whois_server if 'whois_server' in locals() and whois_server else "不明"
