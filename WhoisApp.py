@@ -28,6 +28,7 @@ import uuid
 import duckdb
 import aiohttp
 import asyncio
+import html
 
 # ==========================================
 #  [Local User Config] API Key Loading
@@ -420,7 +421,7 @@ WORLD_MAP_GEOJSON = get_world_map_data()
 # --- ヘルパー関数群 ---
 from utils import (
     extract_actual_ip, clean_ocr_error_chars, is_valid_ip, is_bogon_ip,
-    is_valid_domain, is_ipv4, ip_to_int, get_cidr_block
+    is_valid_domain, is_ipv4, ip_to_int, get_cidr_block,classify_local_proxy,
 )
 
 def get_authoritative_rir_link(ip, country_code):
@@ -543,23 +544,15 @@ def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, dela
     try:
         # --- 動的スリープ判定（バルク処理のボトルネック解消） ---
         has_bulk_cache = bool(api_key and bulk_ipinfo_cache and actual_ip in bulk_ipinfo_cache and isinstance(bulk_ipinfo_cache[actual_ip], dict))
-        
-        # --- 階層化ロジックの実装: ローカル脅威・匿名検知リストによる事前判定 (NEW) ---
-        
-        # 1. 脅威インテリジェンス (Abuse.ch)
+                
+        # 1. 脅威インテリジェンス (Feodo Tracker) の判定
         if threat_intel_list and actual_ip in threat_intel_list:
             result['IoT_Risk'] = "🚨 Threat Intel Match (Source: Feodo Tracker)"
-            
-        # 2. ローカルIP2Location DBによる匿名判定
-        # local_proxy_type = query_local_proxy_db(actual_ip)
-        local_proxy_type = None
-        if local_proxy_type:
-            # DBから取得した明確な種別（VPN, PUB, TOR等）をそのまま使用する
-            result['Proxy_Type'] = f"{local_proxy_type} (Source: IP2Location LITE)"
-        # 3. FireHOLによる匿名判定
-        elif proxy_intel_list and actual_ip in proxy_intel_list:
-            # 汎用的なDetectedではなく、実態に即したProxyに変更
-            result['Proxy_Type'] = "Open Proxy (Source: FireHOL)"
+        
+        # 2. ローカルDB (IP2Location / FireHOL) の判定
+        proxy_type_val = classify_local_proxy(actual_ip, threat_intel_list, proxy_intel_list)
+        if proxy_type_val:
+            result['Proxy_Type'] = proxy_type_val
             
         # skip_whoisがオンでも、Reverse IP等にチェックが入っている場合は通信が発生するため待機が必要
         needs_other_apis = any([
@@ -871,16 +864,17 @@ async def get_ip_details_from_api_async(
         try:
             has_bulk_cache = bool(pro_api_key and bulk_ipinfo_cache and actual_ip in bulk_ipinfo_cache and isinstance(bulk_ipinfo_cache[actual_ip], dict))
             
+            # 1. 脅威インテリジェンス (Feodo Tracker) の判定
             if threat_intel_list and actual_ip in threat_intel_list:
                 result['IoT_Risk'] = "🚨 Threat Intel Match (Source: Feodo Tracker)"
-                
-            # local_proxy_type = query_local_proxy_db(actual_ip)
-            local_proxy_type = None
-            if local_proxy_type:
-                result['Proxy_Type'] = f"Detected (Source: IP2Location LITE)"
-            elif proxy_intel_list and actual_ip in proxy_intel_list:
-                result['Proxy_Type'] = "Open Proxy (Source: FireHOL)"
-                
+            
+            # 2. ローカルDB (IP2Location / FireHOL) の判定 — 同期版と完全同一のヘルパーを使う
+            from utils import classify_local_proxy
+            proxy_type_val = classify_local_proxy(actual_ip, threat_intel_list, proxy_intel_list)
+            if proxy_type_val:
+                result['Proxy_Type'] = proxy_type_val
+
+
             needs_other_apis = any([
                 vpnapi_key and not skip_whois, 
                 use_rdap and not skip_whois, 
@@ -2187,21 +2181,26 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                 with col_chk:
                     is_done = st.checkbox("✅ 調査完了", key=done_key)
 
-                # チェック状態に応じて表示UIを動的に切り替える
-                if is_done:
-                    # 完了時：グレーアウト ＆ 取り消し線
-                    with col_title:
-                        st.markdown(f"<h5 style='color: #9e9e9e; text-decoration: line-through;'>🎯 [{i+1}/{total_selected}] Target: {target_ip}</h5>", unsafe_allow_html=True)
-                    
-                    # 詳細情報を Expander に格納し、デフォルトで閉じておく（画面のスペースを空ける）
-                    container_context = st.expander("📁 完了済みの詳細データを再確認する", expanded=False)
-                else:
-                    # 未完了時：通常表示
-                    with col_title:
-                        st.markdown(f"##### 🎯 [{i+1}/{total_selected}] Target: `{target_ip}`")
-                    
-                    # 詳細情報を Container に格納し、そのまま展開して表示する
-                    container_context = st.container()
+                        # チェック状態に応じて表示UIを動的に切り替える
+            if is_done:
+                with col_title:
+                    safe_target_ip = html.escape(str(target_ip))
+                    safe_total_selected = html.escape(str(total_selected))
+                    safe_i = html.escape(str(i + 1))
+                    st.markdown(
+                        f"<h5 style='color: #9e9e9e; text-decoration: line-through;'>"
+                        f"🎯 [{safe_i}/{safe_total_selected}] Target: {safe_target_ip}</h5>",
+                        unsafe_allow_html=True
+                    )
+                
+                container_context = st.expander("📁 完了済みの詳細データを再確認する", expanded=False)
+            else:
+                with col_title:
+                    st.markdown(f"##### 🎯 [{i+1}/{total_selected}] Target: `{target_ip}`")
+                
+                # 詳細情報を Container に格納し、そのまま展開して表示する
+                container_context = st.container()
+
 
                 # 詳細情報の描画（完了・未完了問わず中身は同じ）
                 with container_context:
@@ -2256,64 +2255,86 @@ def render_spider_web_analysis(df):
         st.warning("データがありません。")
         return
 
+    # ============================================================
+    # ★ Graphviz DOT 言語インジェクション対策: ユーザ入力をサニタイズ
+    # ============================================================
+    def _sanitize_dot(s, max_len=80):
+        """
+        Graphviz DOT の特殊文字 (, ; [ ] { } = \n \r) を全て除去し、
+        ラベル文字列として安全なASCIIのみを残す。
+        """
+        if s is None:
+            return ""
+        s = str(s)
+        # 制御文字・改行・引用符・括弧・演算子を全て無害な文字に置換
+        for bad in ['\\', '"', '\n', '\r', '\t', '[', ']', '{', '}', '(', ')', ';', '=', '<', '>']:
+            s = s.replace(bad, '_')
+        # 長さ制限でグラフの見た目を維持
+        s = s.strip()
+        if len(s) > max_len:
+            s = s[:max_len - 1] + "…"
+        return s or "(empty)"
+
     # GraphvizのDOT言語でグラフ構造を定義
     dot_lines = [
         'graph {',
-        '  layout=neato;', # ノードを物理的な反発力で自動配置するエンジン
+        '  layout=neato;',  # ノードを物理的な反発力で自動配置するエンジン
         '  overlap=false;',
         '  splines=true;',
         '  node [fontname="Helvetica", fontsize=10];'
     ]
-    
+
     nodes = set()
     edges = set()
-    
+
     # 描画負荷を考慮し、上位50件程度でプロット
     plot_df = df.head(50).fillna("N/A")
 
     for _, row in plot_df.iterrows():
-        # 文字列化し、ダブルクォーテーションを除去してGraphvizの構文崩壊を完全に防ぐ安全処理
-        ip = str(row.get('IPアドレス', row.get('Target_IP', 'Unknown'))).replace('"', '')
-        
-        isp = str(row.get('Whois結果（日本語名称）', row.get('ISP_JP', row.get('ISP', 'N/A')))).replace('"', '')
-        country = str(row.get('国名', row.get('Country_JP', row.get('Country', 'N/A')))).replace('"', '')
-        risk = str(row.get('IoTリスク', row.get('IoT_Risk', ''))).replace('"', '')
-        proxy = str(row.get('プロキシ種別', row.get('Proxy Type', ''))).replace('"', '')
+        # ★ 修正: replace('"', '') ではなく _sanitize_dot() を使う
+        ip = _sanitize_dot(row.get('IPアドレス', row.get('Target_IP', 'Unknown')))
+
+        isp = _sanitize_dot(row.get('Whois結果（日本語名称）', row.get('ISP_JP', row.get('ISP', 'N/A'))))
+        country = _sanitize_dot(row.get('国名', row.get('Country_JP', row.get('Country', 'N/A'))))
+        risk = _sanitize_dot(row.get('IoTリスク', row.get('IoT_Risk', '')))
+        proxy = _sanitize_dot(row.get('プロキシ種別', row.get('Proxy Type', '')))
 
         # 1. IPノード (水色の丸)
         nodes.add(f'"{ip}" [shape=circle, style=filled, fillcolor="#E0F2F1", width=0.8];')
 
         # 2. ISPノード (オレンジの四角) - IPと線を結ぶ
-        if isp != "N/A":
+        if isp != "N/A" and isp != "(empty)":
             nodes.add(f'"{isp}" [shape=box, style=filled, fillcolor="#FFF3E0", color="#FF9800", penwidth=2];')
-            # 不正な属性 alpha=0.5 を廃止し、カラーコードの末尾に「80」（透過度50%の16進数）を付与する国際標準仕様に修正
             edges.add(f'"{ip}" -- "{isp}" [color="#FF980080"];')
 
         # 3. 国ノード (緑の楕円)
-        if country != "N/A":
+        if country != "N/A" and country != "(empty)":
             nodes.add(f'"{country}" [shape=ellipse, style=filled, fillcolor="#F1F8E9", color="#8BC34A"];')
             edges.add(f'"{ip}" -- "{country}" [style=dotted, color="#8BC34A"];')
 
         # 4. リスクノード (赤の二重丸) - 複数リスクは分割して線を結ぶ
-        if risk and risk not in ["[No Match]", "[Not Checked]", "[No Data]", "N/A", ""]:
+        if risk and risk not in ("[No Match]", "[Not Checked]", "[No Data]", "N/A", "", "(empty)"):
             for r in risk.split(" / "):
-                nodes.add(f'"{r}" [shape=doublecircle, style=filled, fillcolor="#FFEBEE", color="#F44336", fontcolor="#B71C1C", penwidth=3];')
-                edges.add(f'"{ip}" -- "{r}" [color="#F44336", penwidth=2];')
+                r_clean = _sanitize_dot(r)
+                if not r_clean or r_clean == "(empty)":
+                    continue
+                nodes.add(f'"{r_clean}" [shape=doublecircle, style=filled, fillcolor="#FFEBEE", color="#F44336", fontcolor="#B71C1C", penwidth=3];')
+                edges.add(f'"{ip}" -- "{r_clean}" [color="#F44336", penwidth=2];')
 
         # 5. プロキシノード (紫の六角形)
-        if proxy and proxy != "Standard Connection":
+        if proxy and proxy != "Standard Connection" and proxy != "(empty)":
             nodes.add(f'"{proxy}" [shape=hexagon, style=filled, fillcolor="#F3E5F5", color="#9C27B0"];')
             edges.add(f'"{ip}" -- "{proxy}" [color="#9C27B0"];')
 
     dot_lines.extend(list(nodes))
     dot_lines.extend(list(edges))
     dot_lines.append('}')
-    
+
     dot_string = "\n".join(dot_lines)
-    
+
     # Streamlit標準のGraphviz描画機能を使用
     st.graphviz_chart(dot_string)
-    
+
     with st.expander("💡 読み解きのヒント"):
         st.write("""
         - **大きな塊（ハブ）**: 複数のIPから線が集まっているノード（ISPやリスク）は、今回の調査対象に共通するインフラです。
@@ -2321,8 +2342,10 @@ def render_spider_web_analysis(df):
         - **独立したノード**: 他と繋がりのないIPは、今回のグループとは別の背景を持つ可能性があります。
         """)
 
+
 # 📊 元データ結合分析機能 (タブ化対応 & 時間クロス分析対応)
 def render_merged_analysis(df_merged):
+
     st.markdown("### 📈 分析センター")
     
     # グループ化した際のカラーパレット（配色テーマ）を選べるように拡張
@@ -4229,7 +4252,9 @@ def main():
                             if c in csv_display.columns:
                                 # 対象文字列のドットとhttpをエスケープ
                                 csv_display[c] = csv_display[c].apply(
-                                    lambda x: str(x).replace('.', '[.]').replace('http', 'hxxp') if str(x) not in ['nan', 'None', '', 'N/A'] else x
+                                    lambda x: str(x).replace('.', '[.]').replace('hxxp', 'http')  # ← 逆順
+                                    if str(x) not in ['nan', 'None', '', 'N/A']
+                                    else x
                                 )
 
                     with c1:
