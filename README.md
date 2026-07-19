@@ -22,8 +22,7 @@
 ### 1. 必要なライブラリのインストール
 
 ```bash
-pip install streamlit pandas requests streamlit-option-menu altair openpyxl
-
+pip install streamlit pandas requests streamlit-option-menu altair openpyxl numpy shodan dnspython duckdb aiohttp
 ```
 
 ### 2. アプリの起動
