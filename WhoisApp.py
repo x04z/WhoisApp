@@ -3713,6 +3713,8 @@ def main():
                                     logging.error(f"Async loop error: {e}")
 
                     import threading
+                    # Streamlitのスレッドコンテキストを引き継ぐためのモジュール
+                    from streamlit.runtime.scriptrunner import add_script_run_ctx
 
                     def run_async_isolated(coro):
                         """Streamlitメインスレッドから完全に独立したループで非同期処理を実行する"""
@@ -3733,6 +3735,10 @@ def main():
 
                         # 専用スレッドを立ち上げて実行し、終了を待機する（Streamlitの同期的な流れを維持）
                         thread = threading.Thread(target=_thread_worker)
+                        
+                        # 📝 追加: 新しいスレッドに現在のStreamlitセッション(st.*)のアクセス権を付与する
+                        add_script_run_ctx(thread) 
+                        
                         thread.start()
                         thread.join()
 
