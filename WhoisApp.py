@@ -509,344 +509,202 @@ def create_secondary_links(target):
     return link_html.rstrip(' | ')
 
 # --- API通信関数 (Main) ---
-def get_ip_details_from_api(ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests, rate_limit_wait_seconds, tor_nodes, cloud_ip_data, use_rdap, use_internetdb, use_rdns, use_st_reverse_ip, skip_whois=False, api_key=None, vpnapi_key=None, st_api_key=None, otx_api_key=None, st_start_date=None, st_end_date=None, use_st_rev_fetchall=False, is_single_target=False, bulk_ipinfo_cache=None, threat_intel_list=None, proxy_intel_list=None):
-    actual_ip = extract_actual_ip(ip)
-    
-    result = {
-        'Target_IP': ip, 
-        'ISP_API_Raw': 'N/A', 'ISP_JP': 'N/A', 
-        'RDAP_Name_Raw': '', 'RDAP_JP': '',    
-        'ISP': 'N/A', 
-        'Country': 'N/A', 'Country_JP': 'N/A', 'CountryCode': 'N/A', 
-        'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
-        'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
-        'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
-        'Proxy_Type': '', 'ST_REVERSE_IP_JSON': None,
-        'DOMAIN_WHOIS_TEXT': None, 'DOMAIN_WHOIS_SERVER': None,
-        'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None,
-        'RDNS_Hosts': '',
-        'ST_Reverse_Hosts': ''
-    }
-    new_cache_entry = None
-    new_learned_isp = None
-    cidr_block = get_cidr_block(actual_ip)
-    
-    if cidr_block and cidr_block in cidr_cache_snapshot:
-        cached_data = cidr_cache_snapshot[cidr_block]
-        # KeyError回避のため .get() を使用 (キーがない場合は0を返し、必ず再取得させる)
-        if time.time() - cached_data.get('Timestamp', 0) < 86400:
-            result.update(cached_data) 
-            result['Target_IP'] = ip  # 本来のリクエストIPを再設定し、キャッシュによる上書きを防ぐ
-            result['Status'] = "Success (Cache)" 
-            result['Secondary_Security_Links'] = create_secondary_links(ip)
-            return result, None, None
 
-    try:
-        # --- 動的スリープ判定（バルク処理のボトルネック解消） ---
-        has_bulk_cache = bool(api_key and bulk_ipinfo_cache and actual_ip in bulk_ipinfo_cache and isinstance(bulk_ipinfo_cache[actual_ip], dict))
-                
-        # 1. 脅威インテリジェンス (Feodo Tracker) の判定
-        if threat_intel_list and actual_ip in threat_intel_list:
-            result['IoT_Risk'] = "🚨 Threat Intel Match (Source: Feodo Tracker)"
-        
-        # 2. ローカルDB (IP2Location / FireHOL) の判定
-        proxy_type_val = classify_local_proxy(actual_ip, threat_intel_list, proxy_intel_list)
-        if proxy_type_val:
-            result['Proxy_Type'] = proxy_type_val
-            
-        # skip_whoisがオンでも、Reverse IP等にチェックが入っている場合は通信が発生するため待機が必要
-        needs_other_apis = any([
-            vpnapi_key and not skip_whois, 
-            use_rdap and not skip_whois, 
-            use_internetdb and not skip_whois, 
-            use_st_reverse_ip,
-            use_rdns,
-            is_single_target and not skip_whois
-        ])
-
-        if has_bulk_cache and not needs_other_apis:
-            pass 
-        elif skip_whois and not use_st_reverse_ip and not use_rdns:
-            time.sleep(0.1) 
+async def _fetch_base_network_info_async(actual_ip, skip_whois, pro_api_key, bulk_ipinfo_cache, session, rate_limit_wait_seconds):
+    """基本ネットワーク情報(ISP, Country等)を取得"""
+    result_update = {}
+    status_api = 'N/A'
+    defer_until = None
+    
+    if skip_whois:
+        result_update['ISP_API_Raw'] = 'N/A (Skipped)'
+        result_update['CountryCode'] = 'N/A'
+        result_update['Country'] = 'N/A'
+        status_api = 'Success (Skipped)'
+    elif pro_api_key:
+        if bulk_ipinfo_cache and actual_ip in bulk_ipinfo_cache and isinstance(bulk_ipinfo_cache[actual_ip], dict):
+            data = bulk_ipinfo_cache[actual_ip]
+            result_update['IPINFO_JSON'] = data
+            org_raw = data.get('org') or ''
+            raw_isp = re.sub(r'^AS\d+\s+', '', str(org_raw)) if org_raw else 'N/A'
+            if raw_isp == 'N/A' and data.get('asn') and isinstance(data['asn'], dict):
+                raw_isp = data['asn'].get('name', 'N/A')
+            result_update['ISP_API_Raw'] = raw_isp
+            country_code = data.get('country') or 'N/A'
+            result_update['CountryCode'] = str(country_code).upper() if country_code != 'N/A' else 'N/A'
+            result_update['Country'] = result_update['CountryCode']
+            status_api = 'Success (Pro Bulk)'
         else:
-            time.sleep(delay_between_requests) 
-        
-        # --- API通信セクション ---
-        if skip_whois:
-            result['ISP_API_Raw'] = 'N/A (Skipped)'
-            result['CountryCode'] = 'N/A'
-            result['Country'] = 'N/A'
-            status_api = 'Success (Skipped)'
-            # 完全にWhois通信を行わないフラグ
-        elif api_key:
-            # バルクキャッシュが存在する場合はそれを優先使用して通信をスキップ
-            if bulk_ipinfo_cache and actual_ip in bulk_ipinfo_cache and isinstance(bulk_ipinfo_cache[actual_ip], dict):
-                data = bulk_ipinfo_cache[actual_ip]
-                result['IPINFO_JSON'] = data 
-                    
-                # None(null)による正規表現クラッシュを回避
-                org_raw = data.get('org') or ''
-                raw_isp = re.sub(r'^AS\d+\s+', '', str(org_raw)) if org_raw else 'N/A'
-                
-                # orgが空の場合、asnフィールドからのフォールバックを試みる
-                if raw_isp == 'N/A' and data.get('asn') and isinstance(data['asn'], dict):
-                    raw_isp = data['asn'].get('name', 'N/A')
-                    
-                result['ISP_API_Raw'] = raw_isp
-                
-                country_code = data.get('country') or 'N/A'
-                result['CountryCode'] = str(country_code).upper() if country_code != 'N/A' else 'N/A'
-                result['Country'] = result['CountryCode']
-                    
-                status_api = 'Success (Pro Bulk)'
-            else:
-                # キャッシュミス時のみ個別にリクエスト
-                url = IPINFO_API_URL.format(ip=actual_ip) 
-                headers = {"Authorization": f"Bearer {api_key}"}
-                response = session.get(url, headers=headers, timeout=10)
-                    
-                if response.status_code == 429:
-                    result['Status'] = 'エラー: API利用制限 (待機後に自動再試行します)'
-                    result['Defer_Until'] = time.time() + rate_limit_wait_seconds
-                    return result, None, None
-                        
+            url = IPINFO_API_URL.format(ip=actual_ip)
+            headers = {"Authorization": f"Bearer {pro_api_key}"}
+            async with session.get(url, headers=headers, timeout=10) as response:
+                if response.status == 429:
+                    status_api = 'エラー: API利用制限 (待機後に自動再試行します)'
+                    defer_until = time.time() + rate_limit_wait_seconds
+                    return result_update, status_api, defer_until
                 response.raise_for_status()
-                data = response.json()
-                result['IPINFO_JSON'] = data 
-                    
-                # 個別リクエスト側も同様に安全処理とフォールバックを適用
+                data = await response.json()
+                result_update['IPINFO_JSON'] = data
                 org_raw = data.get('org') or ''
                 raw_isp = re.sub(r'^AS\d+\s+', '', str(org_raw)) if org_raw else 'N/A'
-                
                 if raw_isp == 'N/A' and data.get('asn') and isinstance(data['asn'], dict):
                     raw_isp = data['asn'].get('name', 'N/A')
-                    
-                result['ISP_API_Raw'] = raw_isp
-                
+                result_update['ISP_API_Raw'] = raw_isp
                 country_code = data.get('country') or 'N/A'
-                result['CountryCode'] = str(country_code).upper() if country_code != 'N/A' else 'N/A'
-                result['Country'] = result['CountryCode']
-                    
+                result_update['CountryCode'] = str(country_code).upper() if country_code != 'N/A' else 'N/A'
+                result_update['Country'] = result_update['CountryCode']
                 status_api = 'Success (Pro)'
-
-        else:
-            url = IP_API_URL.format(ip=actual_ip)
-            response = session.get(url, timeout=45)
-            
-            if response.status_code == 429:
-                result['Status'] = 'エラー: API利用制限 (待機後に自動再試行します)'
-                result['Defer_Until'] = time.time() + rate_limit_wait_seconds
-                return result, None, None
-            
+    else:
+        url = IP_API_URL.format(ip=actual_ip)
+        async with session.get(url, timeout=45) as response:
+            if response.status == 429:
+                status_api = 'エラー: API利用制限 (待機後に自動再試行します)'
+                defer_until = time.time() + rate_limit_wait_seconds
+                return result_update, status_api, defer_until
             response.raise_for_status()
-            data = response.json()
-            
+            data = await response.json()
             if data.get('status') == 'success':
-                result['CountryCode'] = data.get('countryCode', 'N/A')
-                result['Country'] = data.get('country', 'N/A')
+                result_update['CountryCode'] = data.get('countryCode', 'N/A')
+                result_update['Country'] = data.get('country', 'N/A')
                 raw_isp_val = data.get('isp', 'N/A')
                 raw_org_val = data.get('org', '')
-                result['ISP_API_Raw'] = raw_isp_val if raw_org_val == raw_isp_val else f"{raw_isp_val} / {raw_org_val}"
-                
+                result_update['ISP_API_Raw'] = raw_isp_val if raw_org_val == raw_isp_val else f"{raw_isp_val} / {raw_org_val}"
                 status_api = 'Success (API)'
             else:
-                result['Status'] = f"エラー: IP情報取得失敗 ({data.get('message', '原因不明')})"
-                return result, None, None
+                status_api = f"エラー: IP情報取得失敗 ({data.get('message', '原因不明')})"
+                return result_update, status_api, defer_until
 
-        # --- 匿名通信・クラウドインフラ 高精度判定 ---
-        
-        # 1. 公式リスト・Torリストに基づく自前判定
-        cloud_provider = check_cloud_provider(actual_ip, cloud_ip_data)
-        
-        # 既にローカルDBで判定済みの場合、Tor判定以外の上書きはしない（信頼性重視のため）
-        if actual_ip in tor_nodes:
-            result['Proxy_Type'] = "TorNode (Source: Tor Project)"
-        elif cloud_provider and not result['Proxy_Type']: # 既存判定がなければ設定
-            result['Proxy_Type'] = f"Hosting ({cloud_provider})"
+    return result_update, status_api, defer_until
 
-        # 2. VPNAPI.io による実地検証 (APIキーがあり、かつまだ判定がない場合のみ実行)
-        if vpnapi_key and not skip_whois:
-            # ローカルDB等で判定済みの場合は補足情報として結合する
-            proxy_data = get_vpnapi_data(actual_ip, vpnapi_key)
-            if proxy_data:
-                result['VPNAPI_JSON'] = proxy_data
-                sec = proxy_data.get('security', {})
-                if any(sec.values()):
-                    detected = [k.upper() for k, v in sec.items() if v]
-                    p_type = "/".join(detected)
-                    
-                    if result['Proxy_Type']:
-                        result['Proxy_Type'] += f" / API Confirmed ({p_type})"
-                    else:
-                        result['Proxy_Type'] = f"[{p_type}] (Source: API VPNAPI.io)"
+async def _assess_proxy_and_threat_async(actual_ip, skip_whois, threat_intel_list, proxy_intel_list, tor_nodes, cloud_ip_data, vpnapi_key, session):
+    """プロキシ、Hosting、Tor、IoT脅威などの判定を行う"""
+    result_update = {}
+    
+    # 1. 脅威インテリジェンス (Feodo Tracker)
+    if threat_intel_list and actual_ip in threat_intel_list:
+        result_update['IoT_Risk'] = "🚨 Threat Intel Match (Source: Feodo Tracker)"
+        
+    # 2. ローカルDB (IP2Location / FireHOL)
+    from utils import classify_local_proxy
+    proxy_type_val = classify_local_proxy(actual_ip, threat_intel_list, proxy_intel_list)
+    if proxy_type_val:
+        result_update['Proxy_Type'] = proxy_type_val
+        
+    # 3. クラウドインフラ・Torノード
+    cloud_provider = check_cloud_provider(actual_ip, cloud_ip_data)
+    if actual_ip in tor_nodes:
+        result_update['Proxy_Type'] = "TorNode (Source: Tor Project)"
+    elif cloud_provider and not result_update.get('Proxy_Type'):
+        result_update['Proxy_Type'] = f"Hosting ({cloud_provider})"
+
+    # 4. VPNAPI.io
+    if vpnapi_key and not skip_whois:
+        proxy_data = await get_vpnapi_data_async(actual_ip, vpnapi_key, session)
+        if proxy_data:
+            result_update['VPNAPI_JSON'] = proxy_data
+            sec = proxy_data.get('security', {})
+            if any(sec.values()):
+                detected = [k.upper() for k, v in sec.items() if v]
+                p_type = "/".join(detected)
+                if result_update.get('Proxy_Type'):
+                    result_update['Proxy_Type'] += f" / API Confirmed ({p_type})"
                 else:
-                    if not result['Proxy_Type']:
-                        result['Proxy_Type'] = "Standard Connection"
+                    result_update['Proxy_Type'] = f"[{p_type}] (Source: API VPNAPI.io)"
+            else:
+                if not result_update.get('Proxy_Type'):
+                    result_update['Proxy_Type'] = "Standard Connection"
+                    
+    if not result_update.get('Proxy_Type') and not skip_whois:
+        result_update['Proxy_Type'] = "Standard Connection"
+        
+    return result_update
 
-        # ---------------------------------------------
-        # ローカル検知にもAPIにも引っかからなかったクリーンなIP
-        # ---------------------------------------------
-        if not result['Proxy_Type'] and not skip_whois:
-            result['Proxy_Type'] = "Standard Connection"
-
-        # --- RDAP等の補助データ取得 ---
-        if use_rdap and not skip_whois:
-            rdap_res = fetch_rdap_data(actual_ip) 
-            if rdap_res:
-                raw_rdap_name = rdap_res['name']
-                result['RDAP_Name_Raw'] = raw_rdap_name 
-                result['RDAP_JSON'] = rdap_res['json']
-                result['RDAP_URL'] = rdap_res['url']
-                rdap_jp, _ = get_jp_names(raw_rdap_name, result['CountryCode'])
-                result['RDAP_JP'] = rdap_jp
-
-        is_composite = (actual_ip != ip and "(" in ip)
-
-        # 複合ターゲット（ドメインから解決されたIP）の場合は、生WHOISの取得をスキップしてIP-BANを防ぐ
-        if not is_composite and is_single_target and not skip_whois:
-            w_text_ip, w_server_ip = fetch_classic_whois(actual_ip)
-
-            if w_text_ip:
-                result['IP_WHOIS_TEXT'] = w_text_ip
-                result['IP_WHOIS_SERVER'] = w_server_ip
-
-        if is_composite and not skip_whois:
-            domain_part = ip.split("(")[0].strip()
-            res_d = fetch_domain_rdap_data(domain_part)
-            if res_d:
-                result['DOMAIN_RDAP_JSON'] = res_d['json']
-                result['DOMAIN_RDAP_URL'] = res_d['url']
+async def _fetch_auxiliary_data_async(ip, actual_ip, skip_whois, is_single_target, use_rdap, use_rdns, use_st_reverse_ip, use_internetdb, st_api_key, otx_api_key, st_start_date, st_end_date, use_st_rev_fetchall, session):
+    """RDAP, WHOIS, SecurityTrails, OTXなどの付加情報を取得"""
+    result_update = {}
+    is_composite = (actual_ip != ip and "(" in ip)
+    
+    if use_rdap and not skip_whois:
+        rdap_res = await fetch_rdap_data_async(actual_ip, session)
+        if rdap_res:
+            result_update['RDAP_Name_Raw'] = rdap_res['name']
+            result_update['RDAP_JSON'] = rdap_res['json']
+            result_update['RDAP_URL'] = rdap_res['url']
             
-            # RDAPの成否に関わらず、生のWHOISテキストは証拠として常に取得を試みる
-            if is_single_target and not skip_whois:
-                w_text, w_server = fetch_classic_whois(domain_part)
-                if w_text:
-                    result['DOMAIN_WHOIS_TEXT'] = w_text
-                    result['DOMAIN_WHOIS_SERVER'] = w_server
+    if not is_composite and is_single_target and not skip_whois:
+        w_text_ip, w_server_ip = await asyncio.to_thread(fetch_classic_whois, actual_ip)
+        if w_text_ip:
+            result_update['IP_WHOIS_TEXT'] = w_text_ip
+            result_update['IP_WHOIS_SERVER'] = w_server_ip
 
-        is_composite = (actual_ip != ip and "(" in ip)
-        if is_composite and st_api_key:
-            st_res = get_securitytrails_data(ip.split("(")[0].strip(), st_api_key, st_start_date, st_end_date)
-            if st_res: result['ST_JSON'] = st_res
+    if is_composite and not skip_whois:
+        domain_part = ip.split("(")[0].strip()
+        res_d = await fetch_domain_rdap_data_async(domain_part, session)
+        if res_d:
+            result_update['DOMAIN_RDAP_JSON'] = res_d['json']
+            result_update['DOMAIN_RDAP_URL'] = res_d['url']
+        if is_single_target:
+            w_text, w_server = await asyncio.to_thread(fetch_classic_whois, domain_part)
+            if w_text:
+                result_update['DOMAIN_WHOIS_TEXT'] = w_text
+                result_update['DOMAIN_WHOIS_SERVER'] = w_server
 
-        if use_rdns:
-            rdns_hosts, rdns_raw = resolve_ip_nslookup(actual_ip)
-            if rdns_raw: result['RDNS_DATA'] = {'hosts': rdns_hosts, 'raw': rdns_raw}
-            if rdns_hosts: result['RDNS_Hosts'] = " / ".join(rdns_hosts)
+    if is_composite and st_api_key:
+        st_res = await get_securitytrails_data_async(ip.split("(")[0].strip(), st_api_key, session, st_start_date, st_end_date)
+        if st_res: result_update['ST_JSON'] = st_res
 
-        if use_st_reverse_ip and (st_api_key or otx_api_key):
-            rev_res = None
-            
-            # AlienVault OTXを優先して利用 (API利用制限回避のため)
-            if otx_api_key:
-                rev_res = get_alienvault_otx_pdns(actual_ip, otx_api_key)
-            # OTXキーがない場合はSecurityTrailsにフォールバック
-            elif st_api_key:
-                rev_res = get_securitytrails_reverse_ip(actual_ip, st_api_key, use_st_rev_fetchall)
+    if use_rdns:
+        rdns_hosts, rdns_raw = await asyncio.to_thread(resolve_ip_nslookup, actual_ip)
+        if rdns_raw: result_update['RDNS_DATA'] = {'hosts': rdns_hosts, 'raw': rdns_raw}
+        if rdns_hosts: result_update['RDNS_Hosts'] = " / ".join(rdns_hosts)
 
-            if rev_res: 
-                result['ST_REVERSE_IP_JSON'] = rev_res
-                records = rev_res.get('records', [])
-                
-                # 順序を保持したまま重複を排除してホスト名を抽出
-                hosts = []
-                for r in records:
-                    h = r.get('hostname')
-                    if h and h not in hosts:
-                        hosts.append(h)
-                
-                if hosts:
-                    # 一覧表・Excelでの視認性崩壊を防ぐため、表示上限を3件に設定
-                    display_limit = 3
-                    if len(hosts) > display_limit:
-                        result['ST_Reverse_Hosts'] = " / ".join(hosts[:display_limit]) + f" (他 {len(hosts) - display_limit}件)"
-                    else:
-                        result['ST_Reverse_Hosts'] = " / ".join(hosts)
+    if use_st_reverse_ip and (st_api_key or otx_api_key):
+        rev_res = None
+        if otx_api_key:
+            rev_res = await get_alienvault_otx_pdns_async(actual_ip, otx_api_key, session)
+        elif st_api_key:
+            rev_res = await get_securitytrails_reverse_ip_async(actual_ip, st_api_key, session, use_st_rev_fetchall)
+        if rev_res:
+            result_update['ST_REVERSE_IP_JSON'] = rev_res
+            records = rev_res.get('records', [])
+            hosts = []
+            for r in records:
+                h = r.get('hostname')
+                if h and h not in hosts:
+                    hosts.append(h)
+            if hosts:
+                display_limit = 3
+                if len(hosts) > display_limit:
+                    result_update['ST_Reverse_Hosts'] = " / ".join(hosts[:display_limit]) + f" (他 {len(hosts) - display_limit}件)"
+                else:
+                    result_update['ST_Reverse_Hosts'] = " / ".join(hosts)
 
-        if use_internetdb and not skip_whois:
-            result['IoT_Risk'] = check_internetdb_risk(actual_ip)
-        else:
-            result['IoT_Risk'] = "[Not Checked]" 
-
-        result['Status'] = status_api
-        result['RIR_Link'] = get_authoritative_rir_link(actual_ip, result['CountryCode'])
-        result['Secondary_Security_Links'] = create_secondary_links(ip)
-
-        isp_jp, country_jp = get_jp_names(result['ISP_API_Raw'], result['CountryCode'])
-        result['ISP_JP'] = isp_jp
-        result['Country_JP'] = country_jp
-        result['ISP'] = result['ISP_JP'] if result['ISP_JP'] != 'N/A' else result['ISP_API_Raw']
-
-        # キャッシュの鮮度判定用に現在時刻のタイムスタンプを付与
-        result['Timestamp'] = time.time()
-
-        if cidr_block:
-            new_cache_entry = { cidr_block: result } 
-
-    except requests.exceptions.ConnectionError:
-        # 物理的なネットワーク切断（Wi-Fi切れ等）を検知した場合、15秒間保留キューに入れる
-        result['Status'] = '待機: ネットワーク切断 (自動再試行します)'
-        result['Defer_Until'] = time.time() + 15
-        return result, None, None
-    except requests.exceptions.Timeout:
-        result['Status'] = 'エラー: 応答タイムアウト (相手サーバーの混雑または停止)'
-    except requests.exceptions.HTTPError as e:
-        status_code = e.response.status_code if e.response is not None else "不明"
-        result['Status'] = f'エラー: 通信拒否または存在なし (HTTP {status_code})'
-    except requests.exceptions.RequestException as e:
-        result['Status'] = f'エラー: ネットワーク接続失敗 ({type(e).__name__})'
-    except ValueError:
-        result['Status'] = 'エラー: データ形式が不正 (JSON解析失敗)'
-    except Exception as e:
-        result['Status'] = f'エラー: 予期せぬシステム例外 ({type(e).__name__})'
-
-    return result, new_cache_entry, new_learned_isp
+    if use_internetdb and not skip_whois:
+        result_update['IoT_Risk'] = await check_internetdb_risk_async(actual_ip, session)
+    elif 'IoT_Risk' not in result_update:
+        result_update['IoT_Risk'] = "[Not Checked]"
+        
+    return result_update
 
 async def get_ip_details_from_api_async(
-    sem,
-    session,
-    ip, 
-    cidr_cache_snapshot, 
-    learned_isps_snapshot, 
-    delay_between_requests,
-    rate_limit_wait_seconds,
-    tor_nodes,
-    cloud_ip_data,
-    use_rdap,
-    use_internetdb,
-    use_rdns,
-    use_st_reverse_ip,
-    skip_whois,
-    pro_api_key,
-    vpnapi_key,
-    st_api_key,
-    otx_api_key,
-    st_start_date,
-    st_end_date,
-    use_st_rev_fetchall,
-    is_single_target,
-    bulk_ipinfo_cache,
-    threat_intel_list,
-    proxy_intel_list
+    sem, session, ip, cidr_cache_snapshot, learned_isps_snapshot, delay_between_requests,
+    rate_limit_wait_seconds, tor_nodes, cloud_ip_data, use_rdap, use_internetdb,
+    use_rdns, use_st_reverse_ip, skip_whois, pro_api_key, vpnapi_key, st_api_key,
+    otx_api_key, st_start_date, st_end_date, use_st_rev_fetchall, is_single_target,
+    bulk_ipinfo_cache, threat_intel_list, proxy_intel_list
 ):
     async with sem:
         import time
         actual_ip = extract_actual_ip(ip)
         
         result = {
-            'Target_IP': ip, 
-            'ISP_API_Raw': 'N/A', 'ISP_JP': 'N/A', 
-            'RDAP_Name_Raw': '', 'RDAP_JP': '',    
-            'ISP': 'N/A', 
-            'Country': 'N/A', 'Country_JP': 'N/A', 'CountryCode': 'N/A', 
+            'Target_IP': ip, 'ISP_API_Raw': 'N/A', 'ISP_JP': 'N/A', 'RDAP_Name_Raw': '', 'RDAP_JP': '',    
+            'ISP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 'CountryCode': 'N/A', 
             'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
             'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
             'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
-            'Proxy_Type': '', 'ST_REVERSE_IP_JSON': None,
-            'DOMAIN_WHOIS_TEXT': None, 'DOMAIN_WHOIS_SERVER': None,
-            'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None,
-            'RDNS_Hosts': '',
-            'ST_Reverse_Hosts': ''
+            'Proxy_Type': '', 'ST_REVERSE_IP_JSON': None, 'DOMAIN_WHOIS_TEXT': None, 'DOMAIN_WHOIS_SERVER': None,
+            'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None, 'RDNS_Hosts': '', 'ST_Reverse_Hosts': ''
         }
         new_cache_entry = None
         new_learned_isp = None
@@ -863,25 +721,9 @@ async def get_ip_details_from_api_async(
 
         try:
             has_bulk_cache = bool(pro_api_key and bulk_ipinfo_cache and actual_ip in bulk_ipinfo_cache and isinstance(bulk_ipinfo_cache[actual_ip], dict))
-            
-            # 1. 脅威インテリジェンス (Feodo Tracker) の判定
-            if threat_intel_list and actual_ip in threat_intel_list:
-                result['IoT_Risk'] = "🚨 Threat Intel Match (Source: Feodo Tracker)"
-            
-            # 2. ローカルDB (IP2Location / FireHOL) の判定 — 同期版と完全同一のヘルパーを使う
-            from utils import classify_local_proxy
-            proxy_type_val = classify_local_proxy(actual_ip, threat_intel_list, proxy_intel_list)
-            if proxy_type_val:
-                result['Proxy_Type'] = proxy_type_val
-
-
             needs_other_apis = any([
-                vpnapi_key and not skip_whois, 
-                use_rdap and not skip_whois, 
-                use_internetdb and not skip_whois, 
-                use_st_reverse_ip,
-                use_rdns,
-                is_single_target and not skip_whois
+                vpnapi_key and not skip_whois, use_rdap and not skip_whois, 
+                use_internetdb and not skip_whois, use_st_reverse_ip, use_rdns, is_single_target and not skip_whois
             ])
 
             if has_bulk_cache and not needs_other_apis:
@@ -890,182 +732,27 @@ async def get_ip_details_from_api_async(
                 await asyncio.sleep(0.1) 
             else:
                 await asyncio.sleep(delay_between_requests) 
-            
-            if skip_whois:
-                result['ISP_API_Raw'] = 'N/A (Skipped)'
-                result['CountryCode'] = 'N/A'
-                result['Country'] = 'N/A'
-                status_api = 'Success (Skipped)'
-            elif pro_api_key:
-                if bulk_ipinfo_cache and actual_ip in bulk_ipinfo_cache and isinstance(bulk_ipinfo_cache[actual_ip], dict):
-                    data = bulk_ipinfo_cache[actual_ip]
-                    result['IPINFO_JSON'] = data 
-                        
-                    org_raw = data.get('org') or ''
-                    raw_isp = re.sub(r'^AS\d+\s+', '', str(org_raw)) if org_raw else 'N/A'
-                    
-                    if raw_isp == 'N/A' and data.get('asn') and isinstance(data['asn'], dict):
-                        raw_isp = data['asn'].get('name', 'N/A')
-                        
-                    result['ISP_API_Raw'] = raw_isp
-                    
-                    country_code = data.get('country') or 'N/A'
-                    result['CountryCode'] = str(country_code).upper() if country_code != 'N/A' else 'N/A'
-                    result['Country'] = result['CountryCode']
-                        
-                    status_api = 'Success (Pro Bulk)'
-                else:
-                    url = IPINFO_API_URL.format(ip=actual_ip) 
-                    headers = {"Authorization": f"Bearer {pro_api_key}"}
-                    async with session.get(url, headers=headers, timeout=10) as response:
-                        if response.status == 429:
-                            result['Status'] = 'エラー: API利用制限 (待機後に自動再試行します)'
-                            result['Defer_Until'] = time.time() + rate_limit_wait_seconds
-                            return result, None, None
-                            
-                        response.raise_for_status()
-                        data = await response.json()
-                        result['IPINFO_JSON'] = data 
-                        
-                        org_raw = data.get('org') or ''
-                        raw_isp = re.sub(r'^AS\d+\s+', '', str(org_raw)) if org_raw else 'N/A'
-                        
-                        if raw_isp == 'N/A' and data.get('asn') and isinstance(data['asn'], dict):
-                            raw_isp = data['asn'].get('name', 'N/A')
-                            
-                        result['ISP_API_Raw'] = raw_isp
-                        
-                        country_code = data.get('country') or 'N/A'
-                        result['CountryCode'] = str(country_code).upper() if country_code != 'N/A' else 'N/A'
-                        result['Country'] = result['CountryCode']
-                            
-                        status_api = 'Success (Pro)'
 
-            else:
-                url = IP_API_URL.format(ip=actual_ip)
-                async with session.get(url, timeout=45) as response:
-                    if response.status == 429:
-                        result['Status'] = 'エラー: API利用制限 (待機後に自動再試行します)'
-                        result['Defer_Until'] = time.time() + rate_limit_wait_seconds
-                        return result, None, None
-                    
-                    response.raise_for_status()
-                    data = await response.json()
-                    
-                    if data.get('status') == 'success':
-                        result['CountryCode'] = data.get('countryCode', 'N/A')
-                        result['Country'] = data.get('country', 'N/A')
-                        raw_isp_val = data.get('isp', 'N/A')
-                        raw_org_val = data.get('org', '')
-                        result['ISP_API_Raw'] = raw_isp_val if raw_org_val == raw_isp_val else f"{raw_isp_val} / {raw_org_val}"
-                        
-                        status_api = 'Success (API)'
-                    else:
-                        result['Status'] = f"エラー: IP情報取得失敗 ({data.get('message', '原因不明')})"
-                        return result, None, None
+            # 1. 基本ネットワーク情報取得
+            base_info, status_api, defer_until = await _fetch_base_network_info_async(actual_ip, skip_whois, pro_api_key, bulk_ipinfo_cache, session, rate_limit_wait_seconds)
+            result.update(base_info)
+            if defer_until:
+                result['Status'] = status_api
+                result['Defer_Until'] = defer_until
+                return result, None, None
 
-            cloud_provider = check_cloud_provider(actual_ip, cloud_ip_data)
-            
-            if actual_ip in tor_nodes:
-                result['Proxy_Type'] = "TorNode (Source: Tor Project)"
-            elif cloud_provider and not result['Proxy_Type']:
-                result['Proxy_Type'] = f"Hosting ({cloud_provider})"
+            # 2. プロキシと脅威の判定
+            proxy_threat_info = await _assess_proxy_and_threat_async(actual_ip, skip_whois, threat_intel_list, proxy_intel_list, tor_nodes, cloud_ip_data, vpnapi_key, session)
+            result.update(proxy_threat_info)
 
-            if vpnapi_key and not skip_whois:
-                proxy_data = await get_vpnapi_data_async(actual_ip, vpnapi_key, session)
-                if proxy_data:
-                    result['VPNAPI_JSON'] = proxy_data
-                    sec = proxy_data.get('security', {})
-                    if any(sec.values()):
-                        detected = [k.upper() for k, v in sec.items() if v]
-                        p_type = "/".join(detected)
-                        
-                        if result['Proxy_Type']: 
-                            result['Proxy_Type'] += f" / API Confirmed ({p_type})"
-                        else:
-                            result['Proxy_Type'] = f"[{p_type}] (Source: API VPNAPI.io)"
-                    else:
-                        if not result['Proxy_Type']:
-                            result['Proxy_Type'] = "Standard Connection"
+            # 3. 補助データの取得 (RDAP, WHOIS, SecurityTrails, OTX等)
+            aux_data = await _fetch_auxiliary_data_async(ip, actual_ip, skip_whois, is_single_target, use_rdap, use_rdns, use_st_reverse_ip, use_internetdb, st_api_key, otx_api_key, st_start_date, st_end_date, use_st_rev_fetchall, session)
+            result.update(aux_data)
 
-            # ---------------------------------------------
-            # ローカル検知にもAPIにも引っかからなかったクリーンなIP
-            # ---------------------------------------------
-            if not result['Proxy_Type'] and not skip_whois:
-                result['Proxy_Type'] = "Standard Connection"
-
-            if use_rdap and not skip_whois:
-                rdap_res = await fetch_rdap_data_async(actual_ip, session) 
-                if rdap_res:
-                    raw_rdap_name = rdap_res['name']
-                    result['RDAP_Name_Raw'] = raw_rdap_name 
-                    result['RDAP_JSON'] = rdap_res['json']
-                    result['RDAP_URL'] = rdap_res['url']
-                    rdap_jp, _ = get_jp_names(raw_rdap_name, result['CountryCode'])
-                    result['RDAP_JP'] = rdap_jp
-
-            is_composite = (actual_ip != ip and "(" in ip)
-
-            if not is_composite and is_single_target and not skip_whois:
-                # 同期関数である旧式WHOIS取得を非同期ループ上でブロックさせないため、別スレッドに逃がす
-                w_text_ip, w_server_ip = await asyncio.to_thread(fetch_classic_whois, actual_ip)
-                if w_text_ip:
-                    result['IP_WHOIS_TEXT'] = w_text_ip
-                    result['IP_WHOIS_SERVER'] = w_server_ip
-
-            if is_composite and not skip_whois:
-                domain_part = ip.split("(")[0].strip()
-                res_d = await fetch_domain_rdap_data_async(domain_part, session)
-                if res_d:
-                    result['DOMAIN_RDAP_JSON'] = res_d['json']
-                    result['DOMAIN_RDAP_URL'] = res_d['url']
-                
-                if is_single_target and not skip_whois:
-                    # こちらも同期関数のため別スレッド化
-                    w_text, w_server = await asyncio.to_thread(fetch_classic_whois, domain_part)
-                    if w_text:
-                        result['DOMAIN_WHOIS_TEXT'] = w_text
-                        result['DOMAIN_WHOIS_SERVER'] = w_server
-
-            if is_composite and st_api_key:
-                st_res = await get_securitytrails_data_async(ip.split("(")[0].strip(), st_api_key, session, st_start_date, st_end_date)
-                if st_res: result['ST_JSON'] = st_res
-
-            if use_rdns:
-                # DNS解決も同期処理のため別スレッド化
-                rdns_hosts, rdns_raw = await asyncio.to_thread(resolve_ip_nslookup, actual_ip)
-                if rdns_raw: result['RDNS_DATA'] = {'hosts': rdns_hosts, 'raw': rdns_raw}
-                if rdns_hosts: result['RDNS_Hosts'] = " / ".join(rdns_hosts)
-
-            if use_st_reverse_ip and (st_api_key or otx_api_key):
-                rev_res = None
-                
-                if otx_api_key:
-                    rev_res = await get_alienvault_otx_pdns_async(actual_ip, otx_api_key, session)
-                elif st_api_key:
-                    rev_res = await get_securitytrails_reverse_ip_async(actual_ip, st_api_key, session, use_st_rev_fetchall)
-
-                if rev_res: 
-                    result['ST_REVERSE_IP_JSON'] = rev_res
-                    records = rev_res.get('records', [])
-                    
-                    hosts = []
-                    for r in records:
-                        h = r.get('hostname')
-                        if h and h not in hosts:
-                            hosts.append(h)
-                    
-                    if hosts:
-                        display_limit = 3
-                        if len(hosts) > display_limit:
-                            result['ST_Reverse_Hosts'] = " / ".join(hosts[:display_limit]) + f" (他 {len(hosts) - display_limit}件)"
-                        else:
-                            result['ST_Reverse_Hosts'] = " / ".join(hosts)
-
-            if use_internetdb and not skip_whois:
-                result['IoT_Risk'] = await check_internetdb_risk_async(actual_ip, session)
-            else:
-                result['IoT_Risk'] = "[Not Checked]" 
+            # 4. データ整形と最終設定
+            if result.get('RDAP_Name_Raw'):
+                rdap_jp, _ = get_jp_names(result['RDAP_Name_Raw'], result['CountryCode'])
+                result['RDAP_JP'] = rdap_jp
 
             result['Status'] = status_api
             result['RIR_Link'] = get_authoritative_rir_link(actual_ip, result['CountryCode'])
@@ -1077,7 +764,6 @@ async def get_ip_details_from_api_async(
             result['ISP'] = result['ISP_JP'] if result['ISP_JP'] != 'N/A' else result['ISP_API_Raw']
 
             result['Timestamp'] = time.time()
-
             if cidr_block:
                 new_cache_entry = { cidr_block: result } 
 
@@ -1088,8 +774,7 @@ async def get_ip_details_from_api_async(
         except asyncio.TimeoutError:
             result['Status'] = 'エラー: 応答タイムアウト (相手サーバーの混雑または停止)'
         except aiohttp.ClientResponseError as e:
-            status_code = e.status
-            result['Status'] = f'エラー: 通信拒否または存在なし (HTTP {status_code})'
+            result['Status'] = f'エラー: 通信拒否または存在なし (HTTP {e.status})'
         except aiohttp.ClientError as e:
             result['Status'] = f'エラー: ネットワーク接続失敗 ({type(e).__name__})'
         except ValueError:
@@ -1385,6 +1070,7 @@ def summarize_in_realtime(raw_results):
     return isp_df, country_df, freq_df, country_all_df_raw, isp_full_df, country_full_df, freq_full_df, proxy_df
 
 # --- 集計結果描画ヘルパー関数 (2x2ダッシュボード & 1枚絵出力対応) ---
+@st.fragment
 def draw_summary_content(isp_summary_df, country_summary_df, target_frequency_df, country_all_df, proxy_df, title):
     # --- 以下の変数を初期化 ---
     c_map_img = None
@@ -2245,105 +1931,91 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         st.caption("詳細を表示するには、一覧の行をクリックするか、条件を指定してください。")
 
 # --- リンク分析エンジン ---
+# ファイルの先頭付近にインポートを追加
+from streamlit_agraph import agraph, Node, Edge, Config
+
 def render_spider_web_analysis(df):
     """
-    ノードベースの相関グラフ表示機能。Graphvizを使用して描画する。
+    ノードベースの相関グラフ表示機能。streamlit-agraphを使用してインタラクティブに描画する。
     """
-    st.info("IPアドレス、ISP、国、およびリスクの繋がりを視覚化します。共通のISPやリスクを持つIPが中心に集まり、攻撃インフラの『ハブ』を特定できます。")
+    st.info("IPアドレス、ISP、国、およびリスクの繋がりを視覚化します。ノードをドラッグして動かしたり、マウスホイールでズームイン・アウトが可能です。")
 
     if df.empty:
         st.warning("データがありません。")
         return
 
-    # ============================================================
-    # ★ Graphviz DOT 言語インジェクション対策: ユーザ入力をサニタイズ
-    # ============================================================
-    def _sanitize_dot(s, max_len=80):
-        """
-        Graphviz DOT の特殊文字 (, ; [ ] { } = \n \r) を全て除去し、
-        ラベル文字列として安全なASCIIのみを残す。
-        """
-        if s is None:
-            return ""
-        s = str(s)
-        # 制御文字・改行・引用符・括弧・演算子を全て無害な文字に置換
-        for bad in ['\\', '"', '\n', '\r', '\t', '[', ']', '{', '}', '(', ')', ';', '=', '<', '>']:
-            s = s.replace(bad, '_')
-        # 長さ制限でグラフの見た目を維持
-        s = s.strip()
-        if len(s) > max_len:
-            s = s[:max_len - 1] + "…"
-        return s or "(empty)"
-
-    # GraphvizのDOT言語でグラフ構造を定義
-    dot_lines = [
-        'graph {',
-        '  layout=neato;',  # ノードを物理的な反発力で自動配置するエンジン
-        '  overlap=false;',
-        '  splines=true;',
-        '  node [fontname="Helvetica", fontsize=10];'
-    ]
-
-    nodes = set()
-    edges = set()
+    nodes = []
+    edges = []
+    added_nodes = set()
 
     # 描画負荷を考慮し、上位50件程度でプロット
     plot_df = df.head(50).fillna("N/A")
 
     for _, row in plot_df.iterrows():
-        # ★ 修正: replace('"', '') ではなく _sanitize_dot() を使う
-        ip = _sanitize_dot(row.get('IPアドレス', row.get('Target_IP', 'Unknown')))
+        ip = str(row.get('IPアドレス', row.get('Target_IP', 'Unknown')))
+        isp = str(row.get('Whois結果（日本語名称）', row.get('ISP_JP', row.get('ISP', 'N/A'))))
+        country = str(row.get('国名', row.get('Country_JP', row.get('Country', 'N/A'))))
+        risk = str(row.get('IoTリスク', row.get('IoT_Risk', '')))
+        proxy = str(row.get('プロキシ種別', row.get('Proxy Type', '')))
 
-        isp = _sanitize_dot(row.get('Whois結果（日本語名称）', row.get('ISP_JP', row.get('ISP', 'N/A'))))
-        country = _sanitize_dot(row.get('国名', row.get('Country_JP', row.get('Country', 'N/A'))))
-        risk = _sanitize_dot(row.get('IoTリスク', row.get('IoT_Risk', '')))
-        proxy = _sanitize_dot(row.get('プロキシ種別', row.get('Proxy Type', '')))
+        # 1. IPノード (水色)
+        if ip not in added_nodes:
+            nodes.append(Node(id=ip, label=ip, size=15, color="#E0F2F1"))
+            added_nodes.add(ip)
 
-        # 1. IPノード (水色の丸)
-        nodes.add(f'"{ip}" [shape=circle, style=filled, fillcolor="#E0F2F1", width=0.8];')
-
-        # 2. ISPノード (オレンジの四角) - IPと線を結ぶ
-        if isp != "N/A" and isp != "(empty)":
-            nodes.add(f'"{isp}" [shape=box, style=filled, fillcolor="#FFF3E0", color="#FF9800", penwidth=2];')
-            edges.add(f'"{ip}" -- "{isp}" [color="#FF980080"];')
+        # 2. ISPノード (オレンジの四角)
+        if isp != "N/A" and isp != "":
+            if isp not in added_nodes:
+                nodes.append(Node(id=isp, label=isp, size=20, color="#FF9800", shape="box"))
+                added_nodes.add(isp)
+            edges.append(Edge(source=ip, target=isp, color="#FF9800"))
 
         # 3. 国ノード (緑の楕円)
-        if country != "N/A" and country != "(empty)":
-            nodes.add(f'"{country}" [shape=ellipse, style=filled, fillcolor="#F1F8E9", color="#8BC34A"];')
-            edges.add(f'"{ip}" -- "{country}" [style=dotted, color="#8BC34A"];')
+        if country != "N/A" and country != "":
+            if country not in added_nodes:
+                nodes.append(Node(id=country, label=country, size=20, color="#8BC34A", shape="ellipse"))
+                added_nodes.add(country)
+            edges.append(Edge(source=ip, target=country, color="#8BC34A", dashes=True))
 
-        # 4. リスクノード (赤の二重丸) - 複数リスクは分割して線を結ぶ
-        if risk and risk not in ("[No Match]", "[Not Checked]", "[No Data]", "N/A", "", "(empty)"):
+        # 4. リスクノード (赤色)
+        if risk and risk not in ("[No Match]", "[Not Checked]", "[No Data]", "N/A", ""):
             for r in risk.split(" / "):
-                r_clean = _sanitize_dot(r)
-                if not r_clean or r_clean == "(empty)":
+                r_clean = r.strip()
+                if not r_clean:
                     continue
-                nodes.add(f'"{r_clean}" [shape=doublecircle, style=filled, fillcolor="#FFEBEE", color="#F44336", fontcolor="#B71C1C", penwidth=3];')
-                edges.add(f'"{ip}" -- "{r_clean}" [color="#F44336", penwidth=2];')
+                if r_clean not in added_nodes:
+                    nodes.append(Node(id=r_clean, label=r_clean, size=25, color="#F44336", font={'color': 'white'}))
+                    added_nodes.add(r_clean)
+                edges.append(Edge(source=ip, target=r_clean, color="#F44336"))
 
         # 5. プロキシノード (紫の六角形)
-        if proxy and proxy != "Standard Connection" and proxy != "(empty)":
-            nodes.add(f'"{proxy}" [shape=hexagon, style=filled, fillcolor="#F3E5F5", color="#9C27B0"];')
-            edges.add(f'"{ip}" -- "{proxy}" [color="#9C27B0"];')
+        if proxy and proxy not in ("Standard Connection", "", "N/A (Domain)", "未検証"):
+            if proxy not in added_nodes:
+                nodes.append(Node(id=proxy, label=proxy, size=20, color="#9C27B0", shape="hexagon"))
+                added_nodes.add(proxy)
+            edges.append(Edge(source=ip, target=proxy, color="#9C27B0"))
 
-    dot_lines.extend(list(nodes))
-    dot_lines.extend(list(edges))
-    dot_lines.append('}')
+    # 物理エンジンの設定（ノードが反発しあって自動配置される）
+    config = Config(
+        width="100%",
+        height=600,
+        directed=False,
+        physics=True,
+        hierarchical=False,
+    )
 
-    dot_string = "\n".join(dot_lines)
-
-    # Streamlit標準のGraphviz描画機能を使用
-    st.graphviz_chart(dot_string)
+    # グラフの描画
+    agraph(nodes=nodes, edges=edges, config=config)
 
     with st.expander("💡 読み解きのヒント"):
         st.write("""
         - **大きな塊（ハブ）**: 複数のIPから線が集まっているノード（ISPやリスク）は、今回の調査対象に共通するインフラです。
-        - **赤い二重丸**: 危険なポートが露出している共通のリスク要因です。攻撃者の踏み台リストの可能性があります。
-        - **独立したノード**: 他と繋がりのないIPは、今回のグループとは別の背景を持つ可能性があります。
+        - **赤いノード**: 危険なポートが露出している共通のリスク要因です。
+        - ノードをドラッグして整理することで、繋がりがより明確になります。
         """)
 
-
-# 📊 元データ結合分析機能 (タブ化対応 & 時間クロス分析対応)
+# 元データ結合分析機能 (タブ化対応 & 時間クロス分析対応)
+@st.fragment
 def render_merged_analysis(df_merged):
 
     st.markdown("### 📈 分析センター")
