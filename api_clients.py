@@ -250,198 +250,46 @@ def _parse_vpnapi_response(data):
 # ==========================================
 
 def fetch_rdap_data(ip):
-    url = RDAP_BOOTSTRAP_URL.format(ip=ip)
-    try:
-        response = session.get(url, timeout=TIMEOUT_RDAP, allow_redirects=True)
-        response.raise_for_status()
-        if response.status_code == 200:
-            return _parse_rdap_response(response.json(), url)
-    except requests.exceptions.Timeout:
-        logging.warning(f"[RDAP Sync] タイムアウト: {ip}")
-    except requests.exceptions.RequestException as e:
-        logging.warning(f"[RDAP Sync] 通信エラー ({type(e).__name__}): {ip}")
-    except ValueError as e:
-        logging.error(f"[RDAP Sync] JSON解析エラー: {ip} - {str(e)}")
-    except Exception as e:
-        logging.error(f"[RDAP Sync] 予期せぬエラー: {ip} - {str(e)}")
-    return None
+    async def _runner():
+        async with aiohttp.ClientSession() as session_async:
+            return await fetch_rdap_data_async(ip, session_async)
+    return asyncio.run(_runner())
 
 def fetch_domain_rdap_data(domain):
-    try:
-        url = f"https://rdap.org/domain/{domain}"
-        response = session.get(url, timeout=TIMEOUT_RDAP, allow_redirects=True)
-        response.raise_for_status()
-        if response.status_code == 200:
-            return _parse_domain_rdap_response(response.json(), response.url)
-    except requests.exceptions.Timeout:
-        logging.warning(f"[Domain RDAP Sync] タイムアウト: {domain}")
-    except requests.exceptions.RequestException as e:
-        logging.warning(f"[Domain RDAP Sync] 通信エラー ({type(e).__name__}): {domain}")
-    except ValueError as e:
-        logging.error(f"[Domain RDAP Sync] JSON解析エラー: {domain} - {str(e)}")
-    except Exception as e:
-        logging.error(f"[Domain RDAP Sync] 予期せぬエラー: {domain} - {str(e)}")
-    return None
+    async def _runner():
+        async with aiohttp.ClientSession() as session_async:
+            return await fetch_domain_rdap_data_async(domain, session_async)
+    return asyncio.run(_runner())
 
 def get_securitytrails_data(domain, api_key, start_date=None, end_date=None):
-    if not api_key or not domain:
-        return None
-    
-    headers = {"APIKEY": api_key, "accept": "application/json"}
-    combined_records = []
-    
-    for record_type in ['a', 'aaaa']:
-        try:
-            url = f"https://api.securitytrails.com/v1/history/{domain}/dns/{record_type}"
-            res = session.get(url, headers=headers, timeout=TIMEOUT_ST)
-            res.raise_for_status() 
-            data = res.json()
-            if "records" in data:
-                combined_records.extend(data["records"])
-        except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 429:
-                logging.warning(f"[SecurityTrails Sync] レートリミット到達: {domain} ({record_type})")
-                return {"error": "rate_limit"}
-            logging.warning(f"[SecurityTrails Sync] HTTPエラー: {domain} ({record_type})")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"[SecurityTrails Sync] 通信エラー: {domain} ({record_type}) - {str(e)}")
-        except ValueError as e:
-            logging.error(f"[SecurityTrails Sync] JSON解析エラー: {domain} ({record_type}) - {str(e)}")
-
-    return _process_securitytrails_records(combined_records, start_date, end_date)
+    async def _runner():
+        async with aiohttp.ClientSession() as session_async:
+            return await get_securitytrails_data_async(domain, api_key, session_async, start_date, end_date)
+    return asyncio.run(_runner())
 
 def get_securitytrails_reverse_ip(ip, api_key, fetch_all=False):
-    if not api_key or not ip:
-        return None
-    
-    headers = {"APIKEY": api_key, "accept": "application/json", "content-type": "application/json"}
-    ip_key = "ipv4" if is_ipv4(ip) else "ipv6"
-    payload = {"filter": {ip_key: ip}}
-    
-    try:
-        url = "https://api.securitytrails.com/v1/domains/list"
-        res = session.post(url, headers=headers, json=payload, timeout=TIMEOUT_REV_IP)
-        res.raise_for_status()
-        data = res.json()
-        
-        if fetch_all:
-            total_pages = data.get('meta', {}).get('total_pages', 1)
-            current_page = 1
-            while current_page < total_pages and current_page <= 100:
-                current_page += 1
-                payload['page'] = current_page
-                try:
-                    time.sleep(1) 
-                    res_next = session.post(url, headers=headers, json=payload, timeout=TIMEOUT_REV_IP)
-                    res_next.raise_for_status()
-                    data_next = res_next.json()
-                    if 'records' in data_next:
-                        data['records'].extend(data_next['records'])
-                except requests.exceptions.HTTPError as e:
-                    if e.response is not None and e.response.status_code == 429:
-                        logging.warning(f"[SecurityTrails RevIP Sync] ページネーション中にレートリミット到達: {ip}")
-                        data['error'] = "rate_limit_during_pagination"
-                        break
-                    else:
-                        logging.warning(f"[SecurityTrails RevIP Sync] ページネーション中HTTPエラー: {ip} - {str(e)}")
-                        break
-                except Exception as e:
-                    logging.error(f"[SecurityTrails RevIP Sync] ページネーション中予期せぬエラー: {ip} - {str(e)}")
-                    break
-        return data
-        
-    except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 429:
-            logging.warning(f"[SecurityTrails RevIP Sync] レートリミット到達: {ip}")
-            return {"error": "rate_limit"}
-        logging.warning(f"[SecurityTrails RevIP Sync] HTTPエラー: {ip} - {str(e)}")
-        return None
-    except Exception as e:
-        logging.error(f"[SecurityTrails RevIP Sync] 予期せぬエラー: {ip} - {str(e)}")
-        return None
+    async def _runner():
+        async with aiohttp.ClientSession() as session_async:
+            return await get_securitytrails_reverse_ip_async(ip, api_key, session_async, fetch_all)
+    return asyncio.run(_runner())
 
 def get_alienvault_otx_pdns(ip, otx_api_key):
-    if not otx_api_key or not ip:
-        return None
-    
-    url = f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/passive_dns"
-    headers = {"X-OTX-API-KEY": otx_api_key}
-    
-    try:
-        res = session.get(url, headers=headers, timeout=TIMEOUT_OTX)
-        res.raise_for_status()
-        return _parse_otx_response(res.json())
-    except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 429:
-            logging.warning(f"[OTX Sync] レートリミット到達: {ip}")
-            return {"error": "rate_limit"}
-        logging.warning(f"[OTX Sync] HTTPエラー ({e.response.status_code if e.response else '不明'}): {ip}")
-        return None
-    except requests.exceptions.RequestException as e:
-        logging.error(f"[OTX Sync] 通信エラー: {ip} - {str(e)}")
-        return None
-    except Exception as e:
-        logging.error(f"[OTX Sync] 予期せぬエラー: {ip} - {str(e)}")
-        return None
+    async def _runner():
+        async with aiohttp.ClientSession() as session_async:
+            return await get_alienvault_otx_pdns_async(ip, otx_api_key, session_async)
+    return asyncio.run(_runner())
 
 def check_internetdb_risk(ip, max_retries=3):
-    for attempt in range(max_retries):
-        try:
-            url = f"https://internetdb.shodan.io/{ip}"
-            response = session.get(url, timeout=TIMEOUT_API_FAST)
-            
-            if response.status_code == 404:
-                return "[データなし]"
-            elif response.status_code == 429:
-                return "エラー: Shodanのアクセス制限超過"
-            elif 500 <= response.status_code < 600:
-                return f"エラー: Shodanサーバー側の障害 ({response.status_code})"
-            elif response.status_code != 200:
-                return f"エラー: Shodan通信障害 ({response.status_code})"
-                
-            return _parse_internetdb_response(response.json())
-            
-        except requests.exceptions.ConnectionError as e:
-            logging.error(f"[InternetDB Sync] 接続エラー: {ip} - {str(e)}")
-            raise
-        except requests.exceptions.Timeout:
-            logging.warning(f"[InternetDB Sync] タイムアウト (試行 {attempt+1}/{max_retries}): {ip}")
-            if attempt == max_retries - 1:
-                return "エラー: Shodan応答タイムアウト (サーバー混雑)"
-            time.sleep(1.5)
-        except requests.exceptions.RequestException as e:
-            logging.error(f"[InternetDB Sync] 通信エラー: {ip} - {str(e)}")
-            return "エラー: ネットワーク接続に失敗しました"
-        except ValueError as e:
-            logging.error(f"[InternetDB Sync] JSON解析エラー: {ip} - {str(e)}")
-            return "エラー: データ解析失敗 (相手から不正なデータが返されました)"
-        except Exception as e:
-            logging.error(f"[InternetDB Sync] 予期せぬエラー: {ip} - {str(e)}")
-            return "エラー: 予期せぬシステム例外"
+    async def _runner():
+        async with aiohttp.ClientSession() as session_async:
+            return await check_internetdb_risk_async(ip, session_async)
+    return asyncio.run(_runner())
 
 def get_vpnapi_data(ip, api_key):
-    if not api_key:
-        return None
-    try:
-        url = VPNAPI_URL.format(ip=ip, key=api_key)
-        response = session.get(url, timeout=TIMEOUT_API_FAST)
-        
-        if response.status_code == 429:
-            logging.warning(f"[VPNAPI Sync] レートリミット到達: {ip}")
-            return {"error": "rate_limit"}
-            
-        response.raise_for_status()
-        if response.status_code == 200:
-            return _parse_vpnapi_response(response.json())
-    except requests.exceptions.Timeout:
-        logging.warning(f"[VPNAPI Sync] タイムアウト: {ip}")
-    except requests.exceptions.RequestException as e:
-        logging.warning(f"[VPNAPI Sync] 通信エラー ({type(e).__name__}): {ip}")
-    except ValueError as e:
-        logging.error(f"[VPNAPI Sync] JSON解析エラー: {ip} - {str(e)}")
-    except Exception as e:
-        logging.error(f"[VPNAPI Sync] 予期せぬエラー: {ip} - {str(e)}")
-    return None
+    async def _runner():
+        async with aiohttp.ClientSession() as session_async:
+            return await get_vpnapi_data_async(ip, api_key, session_async)
+    return asyncio.run(_runner())
 
 def fetch_classic_whois(target):
     try:
