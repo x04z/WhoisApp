@@ -3319,67 +3319,61 @@ def main():
     resolved_dns_map = {} # nslookupの生出力保存用辞書
 
     def resolve_domain_nslookup(domain):
-    
         ips = []
         raw_lines = []
     
         try:
-            # システムのリゾルバに依存せず、Google/CloudflareのパブリックDNSを明示的に使用
-            resolver = dns.resolver.Resolver(configure=False)
-            resolver.nameservers = random.sample(PUBLIC_DNS_SERVERS, 2) + random.sample(PUBLIC_DNS_V6_SERVERS, 1)
-            resolver.timeout = 3
-            resolver.lifetime = 3
-
+            # Streamlit CloudのUDP53番ポート通信ブロックを回避するため、
+            # DNS over HTTPS (DoH) を使用してHTTPS通信(ポート443)で名前解決を行う
             raw_lines.append(f";; Domain: {domain}")
-            raw_lines.append(f";; Resolver: {resolver.nameservers}")
-
+            raw_lines.append(f";; Resolver: DNS over HTTPS (Google DoH)")
+    
             # --- Aレコード (IPv4) 取得 ---
             try:
-                answers_v4 = resolver.resolve(domain, 'A')
-                for rdata in answers_v4:
-                    ip = rdata.to_text()
-                    if ip not in ips:
-                        ips.append(ip)
-                    raw_lines.append(f"{domain}. \tIN \tA \t{ip}")
-            except dns.resolver.NoAnswer:
-                raw_lines.append(f";; IPv4 (A) record not found for {domain}")
-            except dns.resolver.NXDOMAIN:
-                raw_lines.append(f";; Domain {domain} does not exist (NXDOMAIN)")
-                return [], "\n".join(raw_lines) # ドメインがないなら終了
+                res_v4 = requests.get(f"https://dns.google/resolve?name={domain}&type=A", timeout=5)
+                data_v4 = res_v4.json() if res_v4.status_code == 200 else {}
+                if data_v4.get("Status") == 0 and "Answer" in data_v4:
+                    for ans in data_v4["Answer"]:
+                        if ans["type"] == 1: # Aレコード
+                            ip = ans["data"]
+                            if ip not in ips:
+                                ips.append(ip)
+                            raw_lines.append(f"{domain}. \tIN \tA \t{ip}")
+                else:
+                    raw_lines.append(f";; IPv4 (A) record not found for {domain}")
             except Exception as e:
                 raw_lines.append(f";; IPv4 Query Failed: {str(e)}")
-
+    
             # --- AAAAレコード (IPv6) 取得 ---
             try:
-                answers_v6 = resolver.resolve(domain, 'AAAA')
-                for rdata in answers_v6:
-                    ip = rdata.to_text()
-                    if ip not in ips:
-                        ips.append(ip)
-                    raw_lines.append(f"{domain}. \tIN \tAAAA \t{ip}")
-            except dns.resolver.NoAnswer:
-                pass # IPv6がないのは一般的
+                res_v6 = requests.get(f"https://dns.google/resolve?name={domain}&type=AAAA", timeout=5)
+                data_v6 = res_v6.json() if res_v6.status_code == 200 else {}
+                if data_v6.get("Status") == 0 and "Answer" in data_v6:
+                    for ans in data_v6["Answer"]:
+                        if ans["type"] == 28: # AAAAレコード
+                            ip = ans["data"]
+                            if ip not in ips:
+                                ips.append(ip)
+                            raw_lines.append(f"{domain}. \tIN \tAAAA \t{ip}")
             except Exception as e:
                 raw_lines.append(f";; IPv6 Query Failed: {str(e)}")
-
+    
             # --- MXレコード (Mail Exchange) 取得 ---
             try:
-                # MXレコードは捨てアド特定の生命線であるため、専用の長いライフタイムを設定して取得を試みる
-                resolver_mx = dns.resolver.Resolver(configure=False)
-                resolver_mx.nameservers = random.sample(PUBLIC_DNS_SERVERS, 3)
-                resolver_mx.timeout = 5
-                resolver_mx.lifetime = 10
-                
-                answers_mx = resolver_mx.resolve(domain, 'MX')
-                for rdata in answers_mx:
-                    mx_target = rdata.exchange.to_text(omit_final_dot=True)
-                    mx_pref = rdata.preference
-                    raw_lines.append(f"{domain}. \tIN \tMX \t{mx_pref} {mx_target}")
-            except dns.resolver.NoAnswer:
-                raw_lines.append(f";; MX record not found for {domain}")
+                res_mx = requests.get(f"https://dns.google/resolve?name={domain}&type=MX", timeout=5)
+                data_mx = res_mx.json() if res_mx.status_code == 200 else {}
+                if data_mx.get("Status") == 0 and "Answer" in data_mx:
+                    for ans in data_mx["Answer"]:
+                        if ans["type"] == 15: # MXレコード
+                            parts = ans["data"].split()
+                            mx_pref = parts[0] if len(parts) > 1 else "10"
+                            mx_target = parts[-1].rstrip('.')
+                            raw_lines.append(f"{domain}. \tIN \tMX \t{mx_pref} {mx_target}")
+                else:
+                    raw_lines.append(f";; MX record not found for {domain}")
             except Exception as e:
                 raw_lines.append(f";; MX Query Failed: {str(e)}")
-
+    
         except Exception as e:
             raw_lines.append(f";; Critical DNS Error: {str(e)}")
     
