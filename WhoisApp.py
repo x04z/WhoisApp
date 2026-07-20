@@ -385,33 +385,121 @@ def check_cloud_provider(ip_str, cloud_data):
 
 @st.cache_data(ttl=86400, show_spinner=False, max_entries=10)
 def fetch_disposable_domains():
-    """ GitHubの有名リポジトリから最新の捨てアドドメイン一覧を取得 (1日1回更新) """
+    """ GitHubのリスト取得に加え、国内サービスの公式サイトから最新のドメイン一覧を自動スクレイピングする (1日1回更新) """
+    domains_dict = {}
+    
+    # 1. GitHubのグローバルリスト取得
     try:
-        url = "https://raw.githubusercontent.com/disposable-email-domains/disposable-email-domains/master/disposable_email_blocklist.conf"
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
+        url_global = "https://raw.githubusercontent.com/disposable-email-domains/disposable-email-domains/master/disposable_email_blocklist.conf"
+        response = requests.get(url_global, timeout=10)
         if response.status_code == 200:
-            # 空行とコメントを除外し、小文字でセット（集合）に格納して高速化
-            return set([line.strip().lower() for line in response.text.splitlines() if line.strip() and not line.startswith('//')])
-    except requests.exceptions.RequestException as e:
+            for line in response.text.splitlines():
+                line = line.strip().lower()
+                if line and not line.startswith('//'):
+                    domains_dict[line] = "外部DB検知 (サービス名特定不可)"
+    except Exception as e:
         import logging
-        logging.warning(f"使い捨てドメインリストの取得に失敗しました: {e}")
-    return set()
+        logging.warning(f"グローバル使い捨てドメインリストの取得に失敗しました: {e}")
+
+    # 2. 国内捨てアドサービスからの動的スクレイピング (メルアドぽいぽい 等)
+    try:
+        jp_sources = [
+            ("https://m.kuku.lu/config_domain.php", "捨てメアド (メルアドぽいぽい)")
+            # 今後別のサービスが増えた場合はここに追加するだけで対応可能
+        ]
+        import re
+        
+        # ボット検知(WAF)を回避するための標準的なブラウザヘッダー
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+        }
+        
+        for source_url, label in jp_sources:
+            res_jp = requests.get(source_url, headers=headers, timeout=10)
+            if res_jp.status_code == 200:
+                html_text = res_jp.text
+                
+                # --- 完璧なクレンジング処理 (ドメイン吸着) ---
+                # 1. ＠と全角ドットを半角に統一
+                html_text = html_text.replace('＠', '@').replace('&#65312;', '@').replace('．', '.')
+                
+                # 2. 見えない要素 (display:none 等) を除去してダミーテキストの混入を防ぐ
+                html_text = re.sub(r'<[^>]*display\s*:\s*none[^>]*>.*?</[^>]+>', '', html_text, flags=re.IGNORECASE|re.DOTALL)
+                
+                # 3. ドメイン同士がくっつくのを防ぐため、ブロック要素や改行は「スペース」に置換
+                html_text = re.sub(r'<(br|div|p|tr|td|li|ul|table)[^>]*>', ' ', html_text, flags=re.IGNORECASE)
+                html_text = html_text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+                
+                # 4. imgタグは確実にドット(.)に置換 (kuku.luの dot.gif 対策)
+                html_text = re.sub(r'<img[^>]*>', '.', html_text, flags=re.IGNORECASE)
+                
+                # 5. ★最重要★ 残ったインラインタグ (b, span 等) は「空文字」にして文字を強制的に結合させる
+                html_text = re.sub(r'<[^>]+>', '', html_text)
+                
+                # 6. @とドットの周りのスペースを強制的に削除し、分断されたドメインを完全に吸着させる
+                html_text = re.sub(r'\s*@\s*', '@', html_text)
+                html_text = re.sub(r'\s*\.\s*', '.', html_text)
+                
+                # 7. 連続するドットを1つに正規化
+                html_text = re.sub(r'\.+', '.', html_text)
+                
+                # 8. @に続くドメイン名を抽出
+                found_domains = re.findall(r'@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', html_text)
+                
+                for d in found_domains:
+                    d_lower = d.lower().strip()
+                    # 末尾の不要なドットを削除
+                    d_lower = d_lower.rstrip('.')
+                    if d_lower:
+                        # グローバルリストの「特定不可」を上書きし、明確なサービス名にする
+                        domains_dict[d_lower] = label
+
+    except Exception as e:
+        import logging
+        logging.warning(f"国内捨てアドサービスのスクレイピングに失敗しました: {e}")
+
+    return domains_dict
 
 def check_disposable_domain(domain, nslookup_raw):
     """ MXレコードやドメイン名から捨てアドサービスを検知し、特定されたサービス名のリストを返す """
-    dynamic_disposable_list = fetch_disposable_domains()
+    dynamic_disposable_dict = fetch_disposable_domains()
     detected_services = []
     raw_lower = nslookup_raw.lower() if nslookup_raw else ""
     query_domain_lower = domain.lower()
     
     import re
     mx_targets = re.findall(r'\bin\s+mx\s+\d+\s+(\S+)', raw_lower)
+    
+    # 既存のDNS情報にMXが無い場合、サブプロセスで強制的にMXレコードを追跡する
+    if not mx_targets:
+        try:
+            import subprocess
+            # Windows/Linux 共通の nslookup -type=mx コマンド
+            res = subprocess.run(["nslookup", "-type=mx", domain], capture_output=True, text=True, timeout=3)
+            # 出力からMXドメインを抽出 (Windows: mail exchanger = xxx / Linux: mail exchanger = 10 xxx.)
+            for line in res.stdout.splitlines():
+                if "mail exchanger" in line.lower() or "mx preference" in line.lower():
+                    parts = line.split()
+                    if parts:
+                        mx_domain = parts[-1].strip('.') # 末尾のドメイン部分を抽出
+                        if mx_domain and mx_domain not in mx_targets:
+                            mx_targets.append(mx_domain.lower())
+        except Exception:
+            pass
+            
     targets_to_check = mx_targets + [query_domain_lower]
     
-    # 1. 既知の辞書を使った特定
+    # 1. 既知の固定辞書を使った特定
     for target in targets_to_check:
-        target = target.strip('.')
+        target = target.strip('.').lower()
+        
+        # ★メルアドぽいぽいの実体インフラ (erinn.biz / kuku.lu) を強制検知
+        if "erinn.biz" in target or "kuku.lu" in target:
+            if "捨てメアド (メルアドぽいぽい)" not in detected_services:
+                detected_services.append("捨てメアド (メルアドぽいぽい)")
+
         for pattern, service_name in DISPOSABLE_MX_SERVICES.items():
             if pattern in target and service_name not in detected_services:
                 detected_services.append(service_name)
@@ -419,19 +507,23 @@ def check_disposable_domain(domain, nslookup_raw):
             if pattern in target and service_name not in detected_services:
                 detected_services.append(service_name)
                 
-    # 2. 外部DB（GitHubリスト）による特定不可ドメインの捕捉
-    if not detected_services and dynamic_disposable_list:
+    # 2. 外部DB（GitHubリスト ＋ スクレイピング）による捕捉
+    if not detected_services and dynamic_disposable_dict:
         for target in targets_to_check:
             target = target.strip('.')
             parts = target.split('.')
             for i in range(len(parts) - 1): 
                 domain_to_check = '.'.join(parts[i:])
-                if domain_to_check in dynamic_disposable_list:
-                    label = f"外部DB検知 ({domain_to_check} / サービス名特定不可)"
+                if domain_to_check in dynamic_disposable_dict:
+                    label = dynamic_disposable_dict[domain_to_check]
+                    
+                    if "特定不可" in label:
+                        label = f"外部DB検知 ({domain_to_check} / サービス名特定不可)"
+                        
                     if label not in detected_services:
                         detected_services.append(label)
                     break 
-    return detected_services   
+    return detected_services
 
 def get_jp_names(english_isp, country_code):
     jp_country = COUNTRY_JP_NAME.get(country_code, country_code)
@@ -482,9 +574,29 @@ from utils import (
     is_valid_domain, is_ipv4, ip_to_int, get_cidr_block,classify_local_proxy,
 )
 
-def get_authoritative_rir_link(ip, country_code):
-    rir_name = COUNTRY_CODE_TO_RIR.get(country_code)
-    # RIR共通のポップアップ説明文
+def get_authoritative_rir_link(ip, country_code, rdap_url=None):
+    rir_name = None
+    
+    # 1. RDAP URLが存在する場合、実際の応答元レジストリから優先判定
+    if rdap_url:
+        rdap_url_lower = str(rdap_url).lower()
+        if 'nic.ad.jp' in rdap_url_lower:
+            rir_name = 'JPNIC'
+        elif 'apnic' in rdap_url_lower:
+            rir_name = 'APNIC'
+        elif 'ripe' in rdap_url_lower:
+            rir_name = 'RIPE'
+        elif 'arin' in rdap_url_lower:
+            rir_name = 'ARIN'
+        elif 'afrinic' in rdap_url_lower:
+            rir_name = 'AFRINIC'
+        elif 'lacnic' in rdap_url_lower:
+            rir_name = 'LACNIC'
+
+    # 2. RDAP情報がない、または判定できない場合は国コードマップからフォールバック判定
+    if not rir_name:
+        rir_name = COUNTRY_CODE_TO_RIR.get(country_code)
+
     desc = "IPアドレスを管轄する公式レジストリ。法的な保有組織などの最も正確な情報を確認できます。"
     
     if rir_name and rir_name in RIR_LINKS:
@@ -749,12 +861,65 @@ async def get_ip_details_from_api_async(
     rate_limit_wait_seconds, tor_nodes, cloud_ip_data, use_rdap, use_internetdb,
     use_rdns, use_st_reverse_ip, skip_whois, pro_api_key, vpnapi_key, st_api_key,
     otx_api_key, st_start_date, st_end_date, use_st_rev_fetchall, is_single_target,
-    bulk_ipinfo_cache, threat_intel_list, proxy_intel_list
+    bulk_ipinfo_cache, threat_intel_list, proxy_intel_list, resolved_dns_map_snapshot # ← ★引数を追加
 ):
     async with sem:
         import time
         actual_ip = extract_actual_ip(ip)
+        is_composite = (actual_ip != ip and "(" in ip)
+
+        # --- 複合型の場合、ドメイン部分の捨てアド判定を行う ---
+        detected_disposables = []
+        if is_composite:
+            domain_part = ip.split("(")[0].strip()
+            ns_raw = resolved_dns_map_snapshot.get(domain_part, {}).get('raw', '')
+            detected_disposables = check_disposable_domain(domain_part, ns_raw)
         
+        # プライベートIP判定時は外部通信を行わずに即座に結果を生成して返す
+        if is_bogon_ip(actual_ip):
+            dummy_whois_text = (
+                "【スキップ】プライベートIPアドレス\n\n"
+                "対象のIPアドレスはローカル・プライベートIP（または予約帯域）です。\n"
+                "インターネット上で一意に割り当てられるパブリックIPではないため、"
+                "外部API（Whois/RDAP/IPinfo等）への問い合わせ処理は自動スキップされました。"
+            )
+            
+            proxy_val = 'Private Network'
+
+            result = {
+                'Target_IP': ip, 
+                'ISP_API_Raw': 'N/A (プライベートIP)', 
+                'ISP_JP': '内部ネットワーク (LAN)', 
+                'RDAP_Name_Raw': '', 
+                'RDAP_JP': 'ローカルアドレス',    
+                'ISP': '内部ネットワーク (LAN)', 
+                'Country': 'N/A', 
+                'Country_JP': 'プライベートIP', 
+                'CountryCode': 'N/A', 
+                'RIR_Link': 'N/A', 
+                'Secondary_Security_Links': 'N/A', 
+                'Status': 'Success (プライベートIPアドレス)',
+                'RDAP_JSON': None, 
+                'VPNAPI_JSON': None, 
+                'RDAP_URL': '', 
+                'IPINFO_JSON': None, 
+                'IoT_Risk': '[Not Checked]',
+                'DOMAIN_RDAP_JSON': None, 
+                'DOMAIN_RDAP_URL': '', 
+                'ST_JSON': None, 
+                'RDNS_DATA': None,
+                'Proxy_Type': proxy_val, 
+                'DISPOSABLE_SERVICES': detected_disposables, # ← ★追加
+                'ST_REVERSE_IP_JSON': None, 
+                'DOMAIN_WHOIS_TEXT': None, 
+                'DOMAIN_WHOIS_SERVER': None,
+                'IP_WHOIS_TEXT': dummy_whois_text, 
+                'IP_WHOIS_SERVER': 'Local / Offline', 
+                'RDNS_Hosts': '', 
+                'ST_Reverse_Hosts': ''
+            }
+            return result, None, None
+
         result = {
             'Target_IP': ip, 'ISP_API_Raw': 'N/A', 'ISP_JP': 'N/A', 'RDAP_Name_Raw': '', 'RDAP_JP': '',    
             'ISP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 'CountryCode': 'N/A', 
@@ -762,7 +927,8 @@ async def get_ip_details_from_api_async(
             'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
             'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
             'Proxy_Type': '', 'ST_REVERSE_IP_JSON': None, 'DOMAIN_WHOIS_TEXT': None, 'DOMAIN_WHOIS_SERVER': None,
-            'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None, 'RDNS_Hosts': '', 'ST_Reverse_Hosts': ''
+            'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None, 'RDNS_Hosts': '', 'ST_Reverse_Hosts': '',
+            'DISPOSABLE_SERVICES': detected_disposables # ← ★追加
         }
         new_cache_entry = None
         new_learned_isp = None
@@ -812,8 +978,16 @@ async def get_ip_details_from_api_async(
                 rdap_jp, _ = get_jp_names(result['RDAP_Name_Raw'], result['CountryCode'])
                 result['RDAP_JP'] = rdap_jp
 
+            # --- ★追加: 捨てアドの結果をマージ ---
+            if detected_disposables:
+                disp_str = f"⚠️ 捨てアド ({' / '.join(detected_disposables)})"
+                if result.get('Proxy_Type') and result['Proxy_Type'] not in ["Standard Connection", "未検証"]:
+                    result['Proxy_Type'] = f"{disp_str} / " + result['Proxy_Type']
+                else:
+                    result['Proxy_Type'] = disp_str
+
             result['Status'] = status_api
-            result['RIR_Link'] = get_authoritative_rir_link(actual_ip, result['CountryCode'])
+            result['RIR_Link'] = get_authoritative_rir_link(actual_ip, result['CountryCode'], rdap_url=result.get('RDAP_URL'))
             result['Secondary_Security_Links'] = create_secondary_links(ip)
 
             isp_jp, country_jp = get_jp_names(result['ISP_API_Raw'], result['CountryCode'])
@@ -839,6 +1013,15 @@ async def get_ip_details_from_api_async(
             result['Status'] = 'エラー: データ形式が不正 (JSON解析失敗)'
         except Exception as e:
             result['Status'] = f'エラー: 予期せぬシステム例外 ({type(e).__name__})'
+
+        # 例外が発生してスキップされても、必ず一番最後でマージする
+        if detected_disposables:
+            disp_str = f"⚠️ 捨てアド ({' / '.join(detected_disposables)})"
+            if result.get('Proxy_Type') and result['Proxy_Type'] not in ["Standard Connection", "未検証", ""]:
+                if disp_str not in result['Proxy_Type']:
+                    result['Proxy_Type'] = f"{disp_str} / " + result['Proxy_Type']
+            else:
+                result['Proxy_Type'] = disp_str
 
         return result, new_cache_entry, new_learned_isp
 
@@ -967,11 +1150,19 @@ def group_results_by_isp(results):
 
     for res in successful_results:
         is_ip = is_valid_ip(res['Target_IP'])
-        if not is_ip or not is_ipv4(res['Target_IP']) or res['ISP'] == 'N/A' or res['Country'] == 'N/A' or res['ISP'] == 'N/A (簡易モード)':
-            if res['Status'].startswith('Success (IPv4 CIDR Cache)'):
-                non_aggregated_results.append(res)
-            else:
-                non_aggregated_results.append(res)
+        is_private = (res.get('Status') == 'Success (プライベートIPアドレス)')
+        
+        skip_aggregation = False
+        if not is_ip or not is_ipv4(res['Target_IP']):
+            skip_aggregation = True
+        elif res['ISP'] == 'N/A (簡易モード)':
+            skip_aggregation = True
+        # プライベートIPでない場合で、ISPか国がN/Aなら集約スキップ
+        elif not is_private and (res['ISP'] == 'N/A' or res['Country'] == 'N/A'):
+            skip_aggregation = True
+
+        if skip_aggregation:
+            non_aggregated_results.append(res)
             continue
         
         key = (res['ISP'], res['CountryCode']) 
@@ -1465,6 +1656,11 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
             result_lookup[target] = r
             if actual and actual != target:
                 result_lookup[actual] = r
+
+            # ドメイン(IP) 複合型の場合、元の入力であるドメイン名もキーとして登録
+            if "(" in target and ")" in target:
+                domain_part = target.split("(")[0].strip()
+                result_lookup[domain_part] = r
 
         def get_result_info(raw_ip_str):
             if pd.isna(raw_ip_str): return {}
@@ -3203,9 +3399,7 @@ def main():
         if is_ocr_error_likely:
             cleaned_t = clean_ocr_error_chars(original_t)
             if is_valid_ip(cleaned_t):
-                if is_bogon_ip(cleaned_t):
-                    private_targets_skipped.append(cleaned_t)
-                elif cleaned_t not in targets: 
+                if cleaned_t not in targets: 
                     targets.append(cleaned_t)
                 continue
             t = original_t
@@ -3216,9 +3410,7 @@ def main():
         is_likely_domain_or_host = has_hyphen or has_strictly_domain_char
     
         if is_valid_ip(t):
-            if is_bogon_ip(t):
-                private_targets_skipped.append(t)
-            elif t not in targets: 
+            if t not in targets: 
                 targets.append(t)
         elif is_likely_domain_or_host:
             # ドメイン形式の厳格チェック
@@ -3230,9 +3422,7 @@ def main():
         else:
             cleaned_t_final = clean_ocr_error_chars(t)
             if is_valid_ip(cleaned_t_final):
-                if is_bogon_ip(cleaned_t_final):
-                    private_targets_skipped.append(cleaned_t_final)
-                elif cleaned_t_final not in targets: 
+                if cleaned_t_final not in targets: 
                     targets.append(cleaned_t_final)
             else:
                 # クリーンアップ後もドメイン形式の厳格チェック
@@ -3244,35 +3434,26 @@ def main():
     # スキップされたターゲットがあれば警告を表示
     if invalid_targets_skipped:
         st.warning(f"⚠️ 以下の入力は「IPアドレス」または「有効なドメイン形式 (例: example.com)」を満たしていないため、検索対象から除外されました: **{', '.join(list(set(invalid_targets_skipped)))}**")
-        
-    if private_targets_skipped:
-        st.info(f"🛡️ 以下の入力は「ローカルIP / プライベートIP / 予約IP」のため、無駄なAPI通信を防止する目的で自動除外されました: **{', '.join(list(set(private_targets_skipped)))}**")
 
-    # --- プレビュー表に判定結果を反映させる (NEW) ---
+    # --- プレビュー表に判定結果を反映させる ---
     if 'preview_container' in locals() and df_orig is not None and ip_col:
         preview_df = df_orig.copy()
-        # 除外対象がある場合のみ判定列を追加する
-        if invalid_targets_skipped or private_targets_skipped:
-            invalid_set = set(invalid_targets_skipped)
-            private_set = set(private_targets_skipped)
-            def check_status(val):
-                if pd.isna(val): return "➖ 空欄"
-                val_str = str(val).strip()
-                
-                if val_str in invalid_set:
-                    return "除外 (形式エラー)"
-                if val_str in private_set:
-                    return "除外 (ローカルIP)"
-                    
-                # クリーンアップされたIPがマッチするかも判定
-                cleaned_val = clean_ocr_error_chars(val_str)
-                if cleaned_val in private_set:
-                    return "除外 (ローカルIP)"
-                    
-                return "✅ 検索対象"
+        invalid_set = set(invalid_targets_skipped)
+        
+        def check_status(val):
+            if pd.isna(val): return "➖ 空欄"
+            val_str = str(val).strip()
+            cleaned_val = clean_ocr_error_chars(val_str)
             
-            # データフレームの一番左 (インデックス0) に判定列を挿入
-            preview_df.insert(0, '📝 判定結果', preview_df[ip_col].apply(check_status))
+            if val_str in invalid_set:
+                return "除外 (形式エラー)"
+            if is_valid_ip(cleaned_val) and is_bogon_ip(cleaned_val):
+                return "プライベートIPアドレス"
+                
+            return "✅ 検索対象"
+        
+        # データフレームの一番左 (インデックス0) に判定列を挿入
+        preview_df.insert(0, '📝 判定結果', preview_df[ip_col].apply(check_status))
             
         # プレースホルダーにデータフレームを描画
         preview_container.dataframe(preview_df, width="stretch")
@@ -3533,6 +3714,7 @@ def main():
                 if immediate_ip_queue:
                     cidr_cache_snapshot = st.session_state.cidr_cache.copy() 
                     learned_isps_snapshot = st.session_state.learned_proxy_isps.copy()
+                    resolved_dns_map_snapshot = st.session_state.get('resolved_dns_map', {}).copy()
                     
                     # --- IPinfo バルク一括取得の実行 ---
                     bulk_ipinfo_cache_snapshot = {}
@@ -3575,7 +3757,7 @@ def main():
                         sem = asyncio.Semaphore(current_max_workers)
                         connector = aiohttp.TCPConnector(limit=current_max_workers)
                         
-                        # 【修正】WAF（Cloudflare等）によるボット判定・切断を防ぐための標準的なブラウザヘッダーを設定
+                        # WAF（Cloudflare等）によるボット判定・切断を防ぐための標準的なブラウザヘッダーを設定
                         headers = {
                             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                             "Accept": "application/json"
@@ -3612,7 +3794,8 @@ def main():
                                         is_single_input,
                                         bulk_ipinfo_cache_snapshot,
                                         threat_intel_list=threat_intel_list,
-                                        proxy_intel_list=proxy_intel_list
+                                        proxy_intel_list=proxy_intel_list,
+                                        resolved_dns_map_snapshot=resolved_dns_map_snapshot # ← ★これを追加
                                     )
                                 )
                                 tasks.append(task)
@@ -3837,6 +4020,11 @@ def main():
                 result_lookup[target] = r
                 if actual and actual != target:
                     result_lookup[actual] = r
+                    
+                # ドメイン(IP) 複合型の場合、元の入力であるドメイン名もキーとして登録
+                if "(" in target and ")" in target:
+                    domain_part = target.split("(")[0].strip()
+                    result_lookup[domain_part] = r
 
             def get_result_info(raw_ip_str):
                 if pd.isna(raw_ip_str): return {}
