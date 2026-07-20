@@ -20,16 +20,47 @@ def extract_actual_ip(target):
             pass
     return target
 
+import re
 
 def clean_ocr_error_chars(target):
-    """OCR誤読で混入しやすい文字を、デジタル分析で扱いやすい文字に強制置換する"""
-    cleaned_target = target.replace('Ⅱ', '11').replace('I', '1').replace('l', '1').replace('|', '1')
-    cleaned_target = cleaned_target.replace('O', '0').replace('o', '0')
-    cleaned_target = cleaned_target.replace(';', '.').replace(',', '.')
-    if ':' not in cleaned_target:
-        cleaned_target = cleaned_target.replace('S', '5').replace('s', '5')
-    return cleaned_target
+    """OCR誤読やWebからのコピペゴミを除去し、デジタル分析で扱いやすい文字に強制置換する"""
+    if not isinstance(target, str):
+        return target
+        
+    # HTMLタグの除去 (例: <img src="img/dot.gif"> -> .)
+    cleaned = re.sub(r'<[^>]+>', '.', target)
+    
+    # ＠や全角ドットを半角に
+    cleaned = cleaned.replace('＠', '@').replace('．', '.')
+    
+    # @が含まれる場合は、メールアドレスと判定して@以降（ドメイン）だけを抽出
+    if '@' in cleaned:
+        cleaned = cleaned.split('@')[-1]
+        
+    # 連続するドットを1つに正規化
+    cleaned = re.sub(r'\.+', '.', cleaned).strip()
+    
+    # ドメイン(IP)の複合型の場合はドメイン名破壊を防ぐためそのまま返す
+    if "(" in cleaned and ")" in cleaned:
+        return cleaned
 
+    # 一旦、IP向けのOCR補正を試みる
+    ocr_fixed = cleaned.replace('Ⅱ', '11').replace('I', '1').replace('l', '1').replace('|', '1')
+    ocr_fixed = ocr_fixed.replace('O', '0').replace('o', '0')
+    ocr_fixed = ocr_fixed.replace(';', '.').replace(',', '.')
+    if ':' not in ocr_fixed:
+        ocr_fixed = ocr_fixed.replace('S', '5').replace('s', '5')
+        
+    # 安全装置: 補正結果が正しいIPアドレスになる場合のみ、OCR補正版を採用する
+    try:
+        possible_ip = extract_actual_ip(ocr_fixed)
+        ipaddress.ip_address(possible_ip)
+        return ocr_fixed
+    except ValueError:
+        pass
+        
+    # 正しいIPにならない場合（ドメイン名など）は、文字置換せずに元の文字列を返す
+    return cleaned
 
 def is_valid_ip(target):
     try:

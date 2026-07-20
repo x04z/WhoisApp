@@ -43,28 +43,27 @@ def async_retry_with_backoff(max_retries=3, base_delay=1.0, max_delay=10.0):
                 
                 # タイムアウトとサーバー側HTTPエラーを捕捉してリトライ対象とします
                 except (asyncio.TimeoutError, aiohttp.ServerTimeoutError, aiohttp.ClientConnectionError, aiohttp.ClientResponseError) as e:
-                    # 404(Not Found)や403(Forbidden)など、リトライしても解決しないエラーは即座に終了
-                    if isinstance(e, aiohttp.ClientResponseError) and e.status in [400, 401, 403, 404]:
-                        logging.error(f"[{func.__name__}] リトライ不要なHTTPエラー ({e.status})")
-                        raise
+                    if isinstance(e, aiohttp.ClientResponseError):
+                        # 404や403など、リトライしても無駄なエラーは「None」を返して全体を道連れにしない
+                        if e.status in [400, 401, 403, 404]:
+                            logging.warning(f"[{func.__name__}] リトライ不要なHTTPエラー ({e.status}) - 無視して続行します")
+                            return None
+                        # レートリミット(429)の場合は制限フラグを返す
+                        if e.status == 429:
+                            logging.warning(f"[{func.__name__}] レートリミット到達: {e.status}")
+                            return {"error": "rate_limit"}
                         
                     if attempt == max_retries - 1:
-                        logging.error(f"[{func.__name__}] タイムアウトまたは通信エラー (試行 {attempt + 1}/{max_retries}) - 最終試行失敗")
-                        raise
+                        logging.warning(f"[{func.__name__}] タイムアウトまたは通信エラー (試行 {attempt + 1}/{max_retries}) - 無視して続行します")
+                        return None
                     
-                    # 指数バックオフの計算: base_delay * (2 ^ attempt)
                     delay = min(base_delay * (2 ** attempt), max_delay)
-                    # ジッターの加算: 0.0秒から0.5秒の乱数
                     jitter = random.uniform(0.0, 0.5)
-                    sleep_time = delay + jitter
-                    
-                    logging.warning(f"[{func.__name__}] タイムアウト発生。{sleep_time:.2f}秒後に再試行します (試行 {attempt + 1}/{max_retries})")
-                    await asyncio.sleep(sleep_time)
+                    await asyncio.sleep(delay + jitter)
                 
-                # タイムアウト以外の予期せぬエラー（認証エラーなど）はリトライせず即座に例外を投げる
                 except Exception as e:
-                    logging.error(f"[{func.__name__}] 予期せぬエラーによりリトライを中断: {e}")
-                    raise
+                    logging.error(f"[{func.__name__}] 予期せぬエラー: {e} - 無視して続行します")
+                    return None
         return wrapper
     return decorator
 
