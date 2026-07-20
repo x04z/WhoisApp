@@ -30,6 +30,67 @@ import aiohttp
 import asyncio
 import html
 
+import sqlite3
+import json
+
+# ==========================================
+# セッション状態管理 (OOM回避用 テンポラリDB)
+# ==========================================
+SESSION_DB_FILE = "whois_session_heavy_data.db"
+
+def init_session_db():
+    """現在の検索セッション用のローカルDBを初期化"""
+    conn = sqlite3.connect(SESSION_DB_FILE, check_same_thread=False)
+    
+    # WALモードを有効化し、並行書き込み時のロックを軽減する
+    conn.execute('PRAGMA journal_mode=WAL;')
+    
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS heavy_data (
+            target_ip TEXT PRIMARY KEY,
+            json_data TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_heavy_data_to_db(target_ip, heavy_data_dict):
+    """巨大なJSON(詳細データ)をSQLiteに退避してメモリを解放"""
+    if not heavy_data_dict: return
+    
+    # timeout=10.0 を追加し、万が一ロックされていても10秒間はリトライを待機する
+    conn = sqlite3.connect(SESSION_DB_FILE, timeout=10.0, check_same_thread=False)
+    
+    try:
+        conn.execute('''
+            REPLACE INTO heavy_data (target_ip, json_data)
+            VALUES (?, ?)
+        ''', (target_ip, json.dumps(heavy_data_dict, ensure_ascii=False)))
+        conn.commit()
+    except Exception as e:
+        import logging
+        logging.error(f"DB Write Error for {target_ip}: {e}")
+    finally:
+        conn.close()
+
+def get_heavy_data_from_db(target_ip):
+    """レポート生成時など、必要な時だけSQLiteから巨大なJSONを読み込む"""
+    conn = sqlite3.connect(SESSION_DB_FILE, check_same_thread=False)
+    cur = conn.cursor()
+    cur.execute("SELECT json_data FROM heavy_data WHERE target_ip = ?", (target_ip,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0]:
+        return json.loads(row[0])
+    return {}
+
+def clear_session_db():
+    """新規検索時にDBをクリア"""
+    conn = sqlite3.connect(SESSION_DB_FILE, check_same_thread=False)
+    conn.execute("DELETE FROM heavy_data")
+    conn.commit()
+    conn.close()
+
 # ==========================================
 #  [Local User Config] API Key Loading
 # ==========================================
@@ -66,15 +127,12 @@ def save_recovery_data():
         
         # 一時ファイルに完全に書き込んでからリネーム(アトミック書き込み)し、クラッシュ時のデータ破損を防ぐ
         tmp_session = BACKUP_FILE + ".tmp"
-        tmp_details = BACKUP_DETAILS_FILE + ".tmp"
         
         with open(tmp_session, "w", encoding="utf-8") as f:
             json.dump(session_data, f, ensure_ascii=False)
-        with open(tmp_details, "w", encoding="utf-8") as f:
-            json.dump(st.session_state.detailed_data, f, ensure_ascii=False)
             
         os.replace(tmp_session, BACKUP_FILE)
-        os.replace(tmp_details, BACKUP_DETAILS_FILE)
+        # ※ heavy_data は既にSQLiteに保存されているため jsonへの出力は不要
     except TypeError as e:
         import logging
         logging.error(f"[Recovery Save Error] JSONシリアライズ失敗: {e}")
@@ -1703,7 +1761,7 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         has_whois_in_selection = False
         for r in target_results:
             target_ip = r.get('Target_IP', 'N/A')
-            detailed = st.session_state.get('detailed_data', {}).get(target_ip, {})
+            detailed = get_heavy_data_from_db(target_ip)
             if detailed.get('IP_WHOIS_TEXT') or detailed.get('DOMAIN_WHOIS_TEXT'):
                 has_whois_in_selection = True
                 break
@@ -1739,7 +1797,7 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         has_revip_in_selection = False
         for r in target_results:
             target_ip = r.get('Target_IP', 'N/A')
-            detailed = st.session_state.get('detailed_data', {}).get(target_ip, {})
+            detailed = get_heavy_data_from_db(target_ip)
             if detailed.get('ST_REVERSE_IP_JSON'):
                 has_revip_in_selection = True
                 break
@@ -1767,13 +1825,16 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
             # 重い処理の前にスピナーを割り込ませ、フリーズではなく「処理中」であることを明示する
             with st.spinner(f"⏳ {total_selected} 件のレポートデータを構築中... (しばらくお待ちください)"):
                 
-                # メモリ節約のため分離されていた詳細データ(detailed_data)を統合した完全なリストを構築
+                # メモリ節約のため分離されていた詳細データをSQLiteから一時的に復元して構築
                 full_target_results = []
                 for res in target_results:
                     clean_ip = get_copy_target(res.get('Target_IP', 'N/A'))
                     full_res = {**res}
-                    if clean_ip in st.session_state.get('detailed_data', {}):
-                        full_res.update(st.session_state['detailed_data'][clean_ip])
+                    
+                    db_data = get_heavy_data_from_db(clean_ip)
+                    if db_data:
+                        full_res.update(db_data)
+                        
                     full_target_results.append(full_res)
 
                 # 1. 統合レポート(HTML)の生成 (完全なデータリストを渡す)
@@ -1910,8 +1971,10 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                         # HTMLレポート生成
                         full_res = {**res}
                         target_ip = res.get('Target_IP', 'N/A')
-                        if target_ip in st.session_state.get('detailed_data', {}):
-                            full_res.update(st.session_state['detailed_data'][target_ip])
+                        
+                        db_data = get_heavy_data_from_db(target_ip)
+                        if db_data:
+                            full_res.update(db_data)
                             
                         html_report = generate_individual_html_report(full_res, clean_ip, current_report_opts)
                         if html_report:
@@ -2368,6 +2431,8 @@ def render_merged_analysis(df_merged):
 # ==========================================
 def init_session_state():
     """ アプリケーション起動時・リセット時に必要なSession Stateを初期化する """
+    init_session_db() # DBの初期化を追加
+    
     default_states = {
         'cancel_search': False,
         'raw_results': [],
@@ -2379,8 +2444,8 @@ def init_session_state():
         'target_freq_map': {},
         'cidr_cache': {},
         'debug_summary': {},
-        'detailed_data': {},
         'learned_proxy_isps': {}
+        # 'detailed_data': {} 完全に削除
     }
     
     for key, default_value in default_states.items():
@@ -2389,19 +2454,19 @@ def init_session_state():
 
 def reset_search_state():
     """ 新規検索を開始する際に、前回の巨大なデータを明示的にメモリから解放する """
-    # 巨大なリストや辞書を削除してガベージコレクションを促す
     if 'detailed_data' in st.session_state:
-        st.session_state['detailed_data'].clear()
+        del st.session_state['detailed_data'] # 念のため残骸を削除
     if 'raw_results' in st.session_state:
         st.session_state['raw_results'].clear()
         
+    clear_session_db() # 新規検索前に古いDBの中身を空にする
+    
     st.session_state.is_searching = True
     st.session_state.cancel_search = False
     st.session_state.deferred_ips = {}
     st.session_state.finished_ips = set()
     st.session_state.search_start_time = time.time()
     clear_recovery_data()
-
 
 # --- メイン処理 ---
 def main():
@@ -3453,7 +3518,10 @@ def main():
                         
                         heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT']
                         ip_val = res_domain['Target_IP']
-                        st.session_state.detailed_data[ip_val] = {k: res_domain.pop(k) for k in heavy_keys if k in res_domain}
+                        
+                        # セッションではなくDBへ退避
+                        heavy_data_payload = {k: res_domain.pop(k) for k in heavy_keys if k in res_domain}
+                        save_heavy_data_to_db(ip_val, heavy_data_payload)
                         
                         st.session_state.raw_results.append(res_domain)
                     st.session_state.finished_ips.update(domain_targets)
@@ -3581,7 +3649,9 @@ def main():
                                         
                                     if res.get('Status', '').startswith('Success'):
                                         heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT']
-                                        st.session_state.detailed_data[ip] = {k: res.pop(k) for k in heavy_keys if k in res}
+                                        # セッションではなくDBへ退避
+                                        heavy_data_payload = {k: res.pop(k) for k in heavy_keys if k in res}
+                                        save_heavy_data_to_db(ip, heavy_data_payload)
                                         
                                         st.session_state.raw_results.append(res)
                                         st.session_state.finished_ips.add(ip)
@@ -3589,7 +3659,9 @@ def main():
                                         st.session_state.deferred_ips[ip] = res['Defer_Until']
                                     else:
                                         heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT']
-                                        st.session_state.detailed_data[ip] = {k: res.pop(k) for k in heavy_keys if k in res}
+                                        # セッションではなくDBへ退避
+                                        heavy_data_payload = {k: res.pop(k) for k in heavy_keys if k in res}
+                                        save_heavy_data_to_db(ip, heavy_data_payload)
                                         
                                         st.session_state.raw_results.append(res)
                                         st.session_state.finished_ips.add(ip)
@@ -3640,20 +3712,36 @@ def main():
                                     import logging
                                     logging.error(f"Async loop error: {e}")
 
-                    # Streamlitの同期ループ上で、非同期イベントループを起動して実行を待機
-                    # (実行環境によって既にループが回っている場合のエラー回避ロジック)
-                    try:
-                        loop = asyncio.get_running_loop()
-                    except RuntimeError:
-                        loop = None
+                    import threading
 
-                    if loop and loop.is_running():
-                        # 既にループが回っている場合は task として投入
-                        future = asyncio.run_coroutine_threadsafe(process_targets_async(), loop)
-                        future.result()
-                    else:
-                        # ループがない場合は標準のrun
-                        asyncio.run(process_targets_async())
+                    def run_async_isolated(coro):
+                        """Streamlitメインスレッドから完全に独立したループで非同期処理を実行する"""
+                        result = None
+                        exception = None
+
+                        def _thread_worker():
+                            nonlocal result, exception
+                            # スレッド専用の新しいイベントループを作成
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            try:
+                                result = loop.run_until_complete(coro)
+                            except Exception as e:
+                                exception = e
+                            finally:
+                                loop.close()
+
+                        # 専用スレッドを立ち上げて実行し、終了を待機する（Streamlitの同期的な流れを維持）
+                        thread = threading.Thread(target=_thread_worker)
+                        thread.start()
+                        thread.join()
+
+                        if exception:
+                            raise exception
+                        return result
+
+                    # 独立したスレッドで非同期バッチ処理を安全に実行
+                    run_async_isolated(process_targets_async())
                     
                     # 完了時の最終UI更新
                     if total_ip_api_targets > 0 and not st.session_state.deferred_ips and not st.session_state.cancel_search:
