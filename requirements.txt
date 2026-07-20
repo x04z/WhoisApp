@@ -1,12 +1,10 @@
 streamlit
-streamlit-option-menu
 pandas
 requests
-ipaddress
-altair>=5.0.0
-numpy
+streamlit-option-menu
+altair
 openpyxl
-shodan
 dnspython
 duckdb
 aiohttp
+streamlit-agraph

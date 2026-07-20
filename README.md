@@ -1,10 +1,10 @@
-<p align="center">
-  <img src="img/logo.PNG" width="250" alt="検索大臣ロゴ">
-</p>
 
-# 🔎 検索大臣 - Whois & IP Intelligence Tool -
+---
 
-`検索大臣` は、IPアドレスやドメインから、所有者情報（Whois）、地理的位置、ISP属性、および潜在的なIoT露出リスクを一括解析する実務特化型のインフラ調査ツールです。
+## 🔎 検索大臣 - Whois & IP Intelligence Tool -
+
+`検索大臣` は、IPアドレスやドメインから、所有者情報（Whois/RDAP）、地理的位置、ISP属性、および潜在的なIoT露出リスクを一括解析する実務特化型のインフラ調査・フォレンジックツールです。
+最新のアップデートにより、完全非同期I/Oエンジンへの移行、`st.fragment` による高速部分描画、およびブラウザ上で操作可能な動的相関グラフが実装されました。
 
 ## 💻 動作モードについて (重要)
 
@@ -22,13 +22,14 @@
 ### 1. 必要なライブラリのインストール
 
 ```bash
-pip install streamlit pandas requests streamlit-option-menu altair openpyxl numpy shodan dnspython duckdb aiohttp
+pip install streamlit pandas requests streamlit-option-menu altair openpyxl dnspython duckdb aiohttp streamlit-agraph
+
 ```
 
 ### 2. アプリの起動
 
 ```bash
-streamlit run xxxxx.py
+streamlit run WhoisApp.py
 
 ```
 
@@ -36,17 +37,50 @@ streamlit run xxxxx.py
 
 ## ⚙️ 主な機能と設定
 
-### 1. 表示モード
+### 1. 表示モードと非同期レンダリング
 
 * **標準モード**: ターゲットを1行ずつ詳細に表示。
+
+
 * **集約モード (IPv4 Group)**: 同じISP・国で連続するIPアドレスを1行に集約し、全体像を把握。
+
+
 * **簡易モード (APIなし)**: API通信を行わず、調査用リンク（VirusTotal等）の生成のみを実行。
 
-### 2. 詳細オプション
 
-* **🔍 高精度モード (RDAP併用)**: `ip-api.com` の情報に加え、公式レジストリ(RDAP)へ直接照会。運用者だけでなく法的保有組織の特定を支援。
-* **💀 IoTリスク検知 (InternetDB)**: Shodanのポートスキャン履歴を参照し、危険なポート開放を自動検知。APIキー不要。
-* **🔑 Pro Mode (ipinfo.io)**: `ipinfo.io` のAPIキーを適用。VPN/Proxy判定の精度が劇的に向上し、API制限の回避策として有効。
+* **非同期部分再描画 (st.fragment)**: `st.fragment` の全面採用により、API通信が完了した順にダッシュボードを1.5秒ごとに部分更新。遅いターゲットのタイムアウトを待つ必要がなく、処理中のUIフリーズを完全に解消。
+
+
+
+### 2. インタラクティブ相関グラフ (リンク分析)
+
+* **動的ネットワーク化 (streamlit-agraph)**: 従来の静的なGraphvizを廃止し、ブラウザ上でノード（IP、ISP、国、リスク、プロキシ）をドラッグして動かしたり、マウスホイールで自由にズームイン・アウトができる動的グラフへアップグレード。共通インフラのハブ（攻撃者の足場）特定が直感的に可能。
+
+
+
+### 3. 詳細オプションとインテリジェンス連携
+
+* **🔍 公式レジストリ情報 (RDAP併用)**: 各地域レジストリ(RIR)の公式台帳へ直接照会。実運用の「ISP」と法的な「保有組織」の乖離を特定。
+
+
+* **🔄 IP逆引き (Reverse DNS)**: `dnspython` を使用し、OSキャッシュを介さず信頼性の高いパブリックDNSへ直接PTRレコードを照会。
+
+
+* **📜 過去のDNS履歴・Reverse IP**: `SecurityTrails` APIに加え、無制限にパッシブDNS逆引き検索が可能な `AlienVault OTX` に対応。CDNなどの同居ドメイン特定を支援。
+
+
+* **🛡️ ローカル脅威・匿名検知**: `Abuse.ch Feodo Tracker` (C2) や `FireHOL` (Proxy) をシステム内部に実装。APIを消費せず悪意あるインフラをミリ秒単位で即座に特定。
+
+
+* **💀 IoTリスク検知 (InternetDB)**: Shodanのポートスキャン履歴を参照し、危険なポート開放を自動検知。
+
+
+* **🕒 タイムゾーンスマート変換**: ローカル版専用機能。インポートしたログの日時列を、米国時間等から日本標準時 (JST) へOffset情報および変換経路付きで自動変換。
+
+
+* **⚡ CDN調査用検索スキップ**: 調査対象がCDN等である場合、不要なWHOIS/RDAP取得をトグルでスキップし、処理速度を極大化。
+
+
 
 ---
 
@@ -55,28 +89,46 @@ streamlit run xxxxx.py
 解析結果に表示される警告の意味は以下の通りです：
 
 * **🧅 [Tor Node]**: 匿名化ネットワークTorの出口ノード。
+
+
 * **💀 [IoT Risk]**: 外部からアクセス可能な危険なポートを検知。
+
+
 * **🍏 [iCloud Private Relay]**: Appleデバイスのプライバシー保護通信。
-* **☁️ [Hosting/VPN/Proxy]**: データセンターや商用VPN経由。Botや匿名化ツールの可能性。
+
+
+* **☁️ [Hosting/Infra/VPN/Proxy]**: データセンター、商用VPN、クラウド（AWS等）経由。Botや自動巡回、攻撃インフラの可能性。
+
+
 
 ### 🚨 監視対象ポートのリスク詳細
 
 * **⚠️ 23 (Telnet) / 21 (FTP)**: 暗号化なし。踏み台化の危険性が極めて高い。
-* **🔥 1080 / 3128 / 8080 (Proxy)**: 攻撃の中継点として悪用される典型的なポート。
+
+
+* **🔥 1080 / 3128 / 8080 (Proxy)**: 攻撃の中継点として悪用される典型的なプロキシポート。
+
+
 * **💀 7547 (CWMP)**: ルーター乗っ取りの兆候。深刻な脆弱性の可能性。
+
+
 * **🤖 5555 / 5554 (ADB)**: Androidデバイスが認証なしで外部操作可能な状態。
-* **📡 1900 (UPnP)**: ネットワーク内の機器探索用プロトコルの露出。
+
+
+* **📡 1900 (UPnP)**: ネットワーク内の機器探査用プロトコルの露出。
+
+
 
 ---
 
 ## 📝 FAQ
 
 * **Q. 検索が途中で止まる、または遅い。**
-* A. 無料版APIのレートリミット（分間45回）が原因です。ツールは自動待機しますが、スムーズな解析には「Local版」の利用、または「Pro Mode (IPinfo)」の適用を検討してください。
+* A. 通常版APIの流量制限、または相手先RDAPサーバーの応答遅延が原因です。本ツールは完全非同期化されているため、一部が保留（Deferred）になっても他の処理は並行して進みます。スムーズな解析には「Pro Mode (IPinfo)」の適用、またはパッシブDNS用に「AlienVault OTX」キーの設定を検討してください。
 
 
 * **Q. ISP名とRDAPの名前が違うのですが？**
-* A. 「運用者」と「法的保有組織（土地の持ち主）」の違いです。
+* A. 技術的な「実運用者（ISP）」と法的な「保有組織（土地の持ち主）」の違いです。
 
 
 * **Q. 発信者情報開示をどちらに請求すればいいでしょうか？**
@@ -84,5 +136,24 @@ streamlit run xxxxx.py
 
 
 * **Q. IoT Risk判定は確定ですか？**
-* A. いいえ。Shodanの過去のスキャン履歴に基づく指標であり、リアルタイムの確定情報ではありません。
+* A. いいえ。Shodanの過去のスキャン履歴に基づく指標であり、リアルタイムの確定情報ではありません。一般回線ではIP共有者の1人が脆弱なだけというケースもあります。
 
+
+
+---
+
+## 📦 ライブラリ構成 (`requirements.txt`)
+
+```text
+streamlit
+pandas
+requests
+streamlit-option-menu
+altair
+openpyxl
+dnspython
+duckdb
+aiohttp
+streamlit-agraph
+
+```
