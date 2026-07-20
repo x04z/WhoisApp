@@ -378,34 +378,32 @@ def resolve_ip_nslookup(ip):
     try:
         rev_name = dns.reversename.from_address(ip)
         
-        resolver = dns.resolver.Resolver(configure=False)
-        resolver.nameservers = random.sample(PUBLIC_DNS_SERVERS, 2)
-        # DNSは高速足切りを適用
-        resolver.timeout = TIMEOUT_DNS
-        resolver.lifetime = TIMEOUT_DNS
+        # DNS over HTTPS (DoH) に変更し、UDPポート53の制限を回避
+        url = f"https://dns.google/resolve?name={rev_name}&type=PTR"
+        res = requests.get(url, timeout=TIMEOUT_DNS)
         
-        answers = resolver.resolve(rev_name, 'PTR')       
-       
         raw_lines = []
-        for rdata in answers:
-            host = rdata.target.to_text(omit_final_dot=True)
-            if host and host not in hostnames:
-                hostnames.append(host)
-            raw_lines.append(f"{rev_name} domain name pointer {host}")
-            
-        raw_output = "\n".join(raw_lines)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("Status") == 0 and "Answer" in data:
+                for ans in data["Answer"]:
+                    if ans["type"] == 12: # PTRレコード
+                        host = ans["data"].rstrip('.')
+                        if host and host not in hostnames:
+                            hostnames.append(host)
+                        raw_lines.append(f"{rev_name} domain name pointer {host}")
+                raw_output = "\n".join(raw_lines)
+            else:
+                # ステータスエラー、またはAnswerが含まれない場合
+                error_msg = data.get("Comment", "PTRレコードが見つかりませんでした")
+                raw_output = f"NXDOMAIN/NoAnswer: {ip} に対する応答 ({error_msg})"
+        else:
+            raw_output = f"Error: DoHサーバーエラー (HTTP {res.status_code})"
         
     except ImportError:
         raw_output = "Error: 'dnspython' ライブラリがインストールされていません。\nターミナルで 'pip install dnspython' を実行してください。"
-    except dns.resolver.NXDOMAIN:
-        raw_output = f"NXDOMAIN: {ip} に対するPTRレコードが見つかりませんでした。"
-    except dns.resolver.NoAnswer:
-        raw_output = f"NoAnswer: {ip} に対するPTRレコードの応答がありません。"
-    except (dns.resolver.Timeout, dns.exception.Timeout):
-        raw_output = "Error: DNSクエリがタイムアウトしました。"
-        logging.warning(f"[DNS PTR] タイムアウト: {ip}")
     except Exception as e:
-        raw_output = f"Error executing dnspython: {str(e)}"
+        raw_output = f"Error executing DoH PTR query: {str(e)}"
         logging.error(f"[DNS PTR] エラー: {ip} - {str(e)}")
     
     return hostnames, raw_output
