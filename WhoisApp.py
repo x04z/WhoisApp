@@ -934,7 +934,9 @@ async def get_ip_details_from_api_async(
         new_learned_isp = None
         cidr_block = get_cidr_block(actual_ip)
         
-        if cidr_block and cidr_block in cidr_cache_snapshot:
+        # 複合型（ドメイン+IP）の場合はドメイン固有のOSINT調査があるため、
+        # 純粋なIPアドレスの場合のみキャッシュを利用して早期リターンする。
+        if not is_composite and cidr_block and cidr_block in cidr_cache_snapshot:
             cached_data = cidr_cache_snapshot[cidr_block]
             if time.time() - cached_data.get('Timestamp', 0) < 86400:
                 result.update(cached_data) 
@@ -3691,8 +3693,10 @@ def main():
                     st.rerun()
 
             else:
-                if not any(res['ISP'] == 'Domain/Host' for res in st.session_state.raw_results) and domain_targets:
-                    for d in domain_targets:
+                # 未処理のドメインだけを正確に抽出し、確実にループ処理を実行させる
+                unprocessed_domains = [d for d in domain_targets if d not in st.session_state.finished_ips]
+                if unprocessed_domains:
+                    for d in unprocessed_domains:
                         dns_data = st.session_state.get('resolved_dns_map', {}).get(d, {})
                         ns_raw = dns_data.get('raw', '') if isinstance(dns_data, dict) else str(dns_data)
                         res_domain = get_domain_details(d, ns_raw, st_api_key, st_start_date, st_end_date, is_single_target=is_single_input, skip_whois=skip_whois)
