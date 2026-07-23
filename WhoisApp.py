@@ -861,7 +861,7 @@ async def get_ip_details_from_api_async(
     rate_limit_wait_seconds, tor_nodes, cloud_ip_data, use_rdap, use_internetdb,
     use_rdns, use_st_reverse_ip, skip_whois, pro_api_key, vpnapi_key, st_api_key,
     otx_api_key, st_start_date, st_end_date, use_st_rev_fetchall, is_single_target,
-    bulk_ipinfo_cache, threat_intel_list, proxy_intel_list, resolved_dns_map_snapshot # ← ★引数を追加
+    bulk_ipinfo_cache, bulk_asn_cache, threat_intel_list, proxy_intel_list, resolved_dns_map_snapshot 
 ):
     async with sem:
         import time
@@ -923,13 +923,20 @@ async def get_ip_details_from_api_async(
         result = {
             'Target_IP': ip, 'ISP_API_Raw': 'N/A', 'ISP_JP': 'N/A', 'RDAP_Name_Raw': '', 'RDAP_JP': '',    
             'ISP': 'N/A', 'Country': 'N/A', 'Country_JP': 'N/A', 'CountryCode': 'N/A', 
+            'ASN': '', 'AS_Name': '', 
             'RIR_Link': 'N/A', 'Secondary_Security_Links': 'N/A', 'Status': 'N/A',
             'RDAP_JSON': None, 'VPNAPI_JSON': None, 'RDAP_URL': '', 'IPINFO_JSON': None, 'IoT_Risk': '',
             'DOMAIN_RDAP_JSON': None, 'DOMAIN_RDAP_URL': '', 'ST_JSON': None, 'RDNS_DATA': None,
             'Proxy_Type': '', 'ST_REVERSE_IP_JSON': None, 'DOMAIN_WHOIS_TEXT': None, 'DOMAIN_WHOIS_SERVER': None,
             'IP_WHOIS_TEXT': None, 'IP_WHOIS_SERVER': None, 'RDNS_Hosts': '', 'ST_Reverse_Hosts': '',
-            'DISPOSABLE_SERVICES': detected_disposables # ← ★追加
+            'DISPOSABLE_SERVICES': detected_disposables
         }
+        
+        # Bulk ASNデータがあれば専用キーに格納
+        if bulk_asn_cache and actual_ip in bulk_asn_cache:
+            result['ASN'] = bulk_asn_cache[actual_ip].get('asn', '')
+            result['AS_Name'] = bulk_asn_cache[actual_ip].get('as_name', '')
+            result['CYMRU_JSON'] = bulk_asn_cache[actual_ip]
         new_cache_entry = None
         new_learned_isp = None
         cidr_block = get_cidr_block(actual_ip)
@@ -1177,7 +1184,9 @@ def group_results_by_isp(results):
                 'Country': res['Country'], 
                 'Status': res['Status'],
                 'ISP_JP': res.get('ISP_JP', 'N/A'),
-                'Country_JP': res.get('Country_JP', 'N/A')
+                'Country_JP': res.get('Country_JP', 'N/A'),
+                'ASN': res.get('ASN', ''),
+                'AS_Name': res.get('AS_Name', '')
             }
         ip_int = ip_to_int(res['Target_IP'])
         if ip_int != 0:
@@ -1216,7 +1225,9 @@ def group_results_by_isp(results):
             'RIR_Link': data['RIR_Link'], 
             'Secondary_Security_Links': data['Secondary_Security_Links'],
             'Status': status_display,
-            'IoT_Risk': 'Aggr Mode (Skip)' # 集約時はShodan個別判定は省略
+            'IoT_Risk': 'Aggr Mode (Skip)', # 集約時はShodan個別判定は省略
+            'ASN': data['ASN'],
+            'AS_Name': data['AS_Name']
         })
     
     final_grouped_results.extend(non_aggregated_results)
@@ -1636,6 +1647,8 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
             row_data = {"No.": idx + 1}
             row_data.update({
                 "IPアドレス": target_ip,
+                "ASN番号": res.get('ASN', ''),
+                "ASN情報": res.get('AS_Name', ''),
                 "Whois(元データ)": res.get('ISP_API_Raw', 'N/A'),
                 "Whois(日本語名)": res.get('ISP_JP', 'N/A'),
                 "RDAP(元データ)": res.get('RDAP_Name_Raw', ''),
@@ -1696,6 +1709,8 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                 
                 row_data.update({
                     "IPアドレス": raw_val,
+                    "ASN番号": res.get('ASN', ''),
+                    "ASN情報": res.get('AS_Name', ''),
                     "Whois(元データ)": res.get('ISP_API_Raw', 'N/A'),
                     "Whois(日本語名)": res.get('ISP_JP', 'N/A'),
                     "RDAP(元データ)": res.get('RDAP_Name_Raw', ''),
@@ -1722,6 +1737,8 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                 row_data = {"No.": len(df_list) + 1}
                 row_data.update({
                     "IPアドレス": raw_val,
+                    "ASN番号": res.get('ASN', ''),
+                    "ASN情報": res.get('AS_Name', ''),
                     "Whois(元データ)": res.get('ISP_API_Raw', 'N/A'),
                     "Whois(日本語名)": res.get('ISP_JP', 'N/A'),
                     "RDAP(元データ)": res.get('RDAP_Name_Raw', ''),
@@ -1739,6 +1756,11 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
 
     # UIの一覧ビューからも不要なカラムを動的に消去する
     ui_cols_to_drop = []
+    
+    # ASN情報が取得されていない（Bulk WHOISオフ または 取得失敗）場合はカラムごと消す
+    if all(r.get('ASN', '') == '' for r in results):
+        ui_cols_to_drop.extend(["ASN番号", "ASN情報"])
+        
     if not use_rdap_option:
         ui_cols_to_drop.extend(["RDAP(元データ)", "RDAP(日本語名)"])
         
@@ -1763,9 +1785,16 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
     col_config = {
         "No.": st.column_config.NumberColumn(width="small"),
         "IPアドレス": st.column_config.TextColumn(width="medium"),
+    }
+    
+    if "ASN番号" not in ui_cols_to_drop:
+        col_config["ASN番号"] = st.column_config.TextColumn(width="small")
+        col_config["ASN情報"] = st.column_config.TextColumn(width="medium")
+        
+    col_config.update({
         "Whois(元データ)": st.column_config.TextColumn(width="medium"),
         "Whois(日本語名)": st.column_config.TextColumn(width="medium"),
-    }
+    })
     if "RDAP(元データ)" not in ui_cols_to_drop:
         col_config["RDAP(元データ)"] = st.column_config.TextColumn(width="medium")
         col_config["RDAP(日本語名)"] = st.column_config.TextColumn(width="medium")
@@ -1817,7 +1846,7 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                         target_results_dict[r_target] = r
                         break
 
-    # B. フィルタリングUIを常に表示し、条件指定の取得を行う
+# B. フィルタリングUIを常に表示し、条件指定の取得を行う
     st.info("👆 一覧の行クリック選択と、以下の条件指定は同時に併用可能です。")
     with st.expander("🔎 条件でターゲットを一括指定する", expanded=True):
         col_f1, col_f2 = st.columns(2)
@@ -1828,6 +1857,50 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
             all_isps = sorted(list(set([r.get('ISP_JP', 'N/A') for r in results])))
             sel_isps = st.multiselect("Whois(日本語名)で選択:", all_isps)
             
+        st.markdown("---")
+        
+        # --- クエリビルダーUI ---
+        st.markdown("**➕ 詳細条件を追加 (クエリビルダー)**")
+        col_qb1, col_qb2, col_qb3, col_qb4, col_qb5 = st.columns([2, 2, 3, 1, 1])
+        
+        filter_target_cols = [
+            "IPアドレス", "Whois(元データ)", "Whois(日本語名)", "国名", 
+            "プロキシ種別", "IoTリスク", "逆引き結果", "Reverse IP", "ステータス"
+        ]
+        
+        with col_qb1:
+            qb_col = st.selectbox("項目", filter_target_cols, key="qb_col")
+        with col_qb2:
+            qb_op = st.selectbox("条件", ["を含む", "含まない", "と等しい", "と異なる"], key="qb_op")
+        with col_qb3:
+            qb_val = st.text_input("値", key="qb_val")
+        with col_qb4:
+            qb_logic = st.radio("結合", ["AND", "OR"], key="qb_logic")
+        with col_qb5:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("追加", key="qb_add"):
+                if qb_val:
+                    if 'query_filters' not in st.session_state:
+                        st.session_state['query_filters'] = []
+                    st.session_state['query_filters'].append({
+                        "col": qb_col, "op": qb_op, "val": qb_val, "logic": qb_logic
+                    })
+                    st.rerun()
+
+        # 適用中フィルターの可視化
+        if st.session_state.get('query_filters'):
+            st.markdown("**📌 適用中のフィルター**")
+            for i, f in enumerate(st.session_state['query_filters']):
+                col_disp1, col_disp2 = st.columns([11, 1])
+                prefix = f"**[{f['logic']}]** " if i > 0 else ""
+                disp_text = f"{prefix}**[{f['col']}]** が **[{f['val']}]** を **[{f['op']}]**"
+                with col_disp1:
+                    st.info(disp_text)
+                with col_disp2:
+                    if st.button("❌", key=f"qb_del_{i}"):
+                        st.session_state['query_filters'].pop(i)
+                        st.rerun()
+
         # --- 元データの属性フィルタUI ---
         orig_filters = {}
         if original_cols and not df.empty:
@@ -1839,10 +1912,7 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
             
             for col_name in original_cols:
                 with filter_cols[col_idx % 3]:
-                    # UIフィルターは、結合された表示用dfではなく、元の生データから正確な選択肢を生成する
                     raw_series = st.session_state['original_df'][col_name] if st.session_state.get('original_df') is not None else df[col_name]
-                    
-                    # 列が日時として解釈できるか判定
                     is_datetime = False
                     if any(k in col_name.lower() for k in ['date', 'time', '日時', '時間', '時刻']):
                         try:
@@ -1861,7 +1931,6 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                         date_range = st.date_input(f"📅 {col_name} (範囲)", value=[min_date, max_date], key=f"filter_{col_name}")
                         orig_filters[col_name] = {'type': 'date', 'value': date_range}
                     else:
-                        # 結合文字列ではなく、個別のユニークな値を抽出
                         unique_vals = [str(v) for v in raw_series.dropna().unique() if str(v).strip() != '']
                         if 0 < len(unique_vals) <= 50:
                             selected_vals = st.multiselect(f"🏷️ {col_name}", sorted(unique_vals), key=f"filter_{col_name}")
@@ -1872,8 +1941,7 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                 col_idx += 1
         
         # --- フィルタリング実行 ---
-        # 何らかのフィルタ指定が存在するかチェック
-        has_filter_input = bool(sel_countries or sel_isps)
+        has_filter_input = bool(sel_countries or sel_isps or st.session_state.get('query_filters'))
         for f in orig_filters.values():
             if f['type'] == 'date' and len(f['value']) == 2:
                 has_filter_input = True
@@ -1881,6 +1949,19 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                 has_filter_input = True
 
         if has_filter_input:
+            # 評価用のマッピング辞書
+            col_map = {
+                "IPアドレス": 'Target_IP',
+                "Whois(元データ)": 'ISP_API_Raw',
+                "Whois(日本語名)": 'ISP_JP',
+                "国名": 'Country_JP',
+                "プロキシ種別": 'Proxy_Type',
+                "IoTリスク": 'IoT_Risk',
+                "逆引き結果": 'RDNS_Hosts',
+                "Reverse IP": 'ST_Reverse_Hosts',
+                "ステータス": 'Status'
+            }
+
             for res in results:
                 target_ip = res.get('Target_IP')
                 actual_ip = extract_actual_ip(target_ip)
@@ -1888,12 +1969,62 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                 c_match = res.get('Country_JP', 'N/A') in sel_countries if sel_countries else True
                 i_match = res.get('ISP_JP', 'N/A') in sel_isps if sel_isps else True
                 
+                # クエリビルダーの評価
+                qb_match = True
+                if st.session_state.get('query_filters'):
+                    qb_match = False
+                    current_result = False
+                    for i, f in enumerate(st.session_state['query_filters']):
+                        
+                        # ★修正ポイント: Reverse IPの場合は、DBから「全件のFQDN」を呼び出して検索対象にする
+                        if f['col'] == "Reverse IP":
+                            heavy_data = get_heavy_data_from_db(extract_actual_ip(target_ip))
+                            rev_json = heavy_data.get('ST_REVERSE_IP_JSON') or {}
+                            records = rev_json.get('records', [])
+                            # 全FQDNをスペース区切りで結合した文字列を作成（検索用）
+                            full_hosts = [r.get('hostname', '').lower() for r in records if r.get('hostname')]
+                            target_val = " ".join(full_hosts)
+                            
+                        # ★逆引き結果（RDNS）も念のためフルデータを対象にする
+                        elif f['col'] == "逆引き結果":
+                            heavy_data = get_heavy_data_from_db(extract_actual_ip(target_ip))
+                            rdns_data = heavy_data.get('RDNS_DATA') or {}
+                            hosts = rdns_data.get('hosts', [])
+                            target_val = " ".join([h.lower() for h in hosts])
+                            
+                        else:
+                            # それ以外の項目は一覧表示用データから取得
+                            target_val = str(res.get(col_map.get(f['col'], ''), '')).lower()
+                            
+                        filter_val = str(f['val']).lower()
+                        
+                        # 条件の判定
+                        cond_met = False
+                        if f['op'] == "を含む":
+                            cond_met = filter_val in target_val
+                        elif f['op'] == "含まない":
+                            cond_met = filter_val not in target_val
+                        elif f['op'] == "と等しい":
+                            cond_met = target_val == filter_val
+                        elif f['op'] == "と異なる":
+                            cond_met = target_val != filter_val
+                            
+                        # 論理演算（AND / OR）の適用
+                        if i == 0:
+                            current_result = cond_met
+                        else:
+                            if f['logic'] == "AND":
+                                current_result = current_result and cond_met
+                            else: # OR
+                                current_result = current_result or cond_met
+                                
+                    qb_match = current_result
+
                 orig_match = True
                 if orig_filters:
                     rows_list = orig_data_map.get(actual_ip, [])
                     if rows_list:
                         any_row_match = False
-                        # IPに紐づく複数の履歴(行)のうち、いずれか1行でも全てのフィルタ条件を満たせば抽出対象とする
                         for row_data in rows_list:
                             row_match = True
                             for col_name, filter_info in orig_filters.items():
@@ -1933,9 +2064,9 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
                         if not any_row_match:
                             orig_match = False
                     else:
-                        orig_match = False # 元データが存在しないIPはフィルタ除外
+                        orig_match = False
                 
-                if c_match and i_match and orig_match:
+                if c_match and i_match and qb_match and orig_match:
                     target_results_dict[target_ip] = res
 
     # 辞書から最終的なリストを生成 (重複は自動的に上書き・排除される)
@@ -1960,7 +2091,7 @@ def display_results(results, current_mode_full_text, display_mode, use_rdap_opti
         for r in target_results:
             target_ip = r.get('Target_IP', 'N/A')
             detailed = get_heavy_data_from_db(target_ip)
-            if detailed.get('IP_WHOIS_TEXT') or detailed.get('DOMAIN_WHOIS_TEXT'):
+            if detailed.get('IP_WHOIS_TEXT') or detailed.get('DOMAIN_WHOIS_TEXT') or detailed.get('CYMRU_JSON'):
                 has_whois_in_selection = True
                 break
 
@@ -2205,6 +2336,26 @@ def render_spider_web_analysis(df):
         st.warning("データがありません。")
         return
 
+    # ------------------- フィルターと画像保存用UI -------------------
+    st.markdown("#### ⚙️ グラフ表示設定 & 保存")
+    st.write("書類への添付など、不要なノードを非表示にしてスッキリさせることができます。")
+    
+    col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
+    show_isp = col_f1.checkbox("🏢 ISP (オレンジ)", value=True)
+    show_country = col_f2.checkbox("🌍 国名 (緑)", value=True)
+    show_asn = col_f3.checkbox("🔢 ASN (青)", value=True)
+    show_risk = col_f4.checkbox("🚨 リスク (赤)", value=True)
+    show_proxy = col_f5.checkbox("🕵️ プロキシ (紫)", value=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_img1, col_img2 = st.columns([1, 2])
+    with col_img1:
+        freeze_physics = st.checkbox("❄️ グラフの動きを止める", value=False, help="チェックを入れると物理演算が停止し、配置が固定されます。画像を保存する際に使用してください。")
+    with col_img2:
+        st.caption("📸 **PNGで保存するには:** グラフ上の空白部分で**右クリック** ＞ **「名前を付けて画像を保存」** または **「画像をコピー」** を選択してください。（動きを止めると綺麗に撮影できます）")
+    st.markdown("---")
+    # ----------------------------------------------------------------------
+
     nodes = []
     edges = []
     added_nodes = set()
@@ -2218,6 +2369,8 @@ def render_spider_web_analysis(df):
         country = str(row.get('国名', row.get('Country_JP', row.get('Country', 'N/A'))))
         risk = str(row.get('IoTリスク', row.get('IoT_Risk', '')))
         proxy = str(row.get('プロキシ種別', row.get('Proxy Type', '')))
+        asn_info = str(row.get('ASN情報', row.get('AS_Name', '')))
+        asn_num = str(row.get('ASN番号', row.get('ASN', '')))
 
         # 1. IPノード (水色)
         if ip not in added_nodes:
@@ -2225,21 +2378,21 @@ def render_spider_web_analysis(df):
             added_nodes.add(ip)
 
         # 2. ISPノード (オレンジの四角)
-        if isp != "N/A" and isp != "":
+        if show_isp and isp != "N/A" and isp != "":
             if isp not in added_nodes:
                 nodes.append(Node(id=isp, label=isp, size=20, color="#FF9800", shape="box"))
                 added_nodes.add(isp)
             edges.append(Edge(source=ip, target=isp, color="#FF9800"))
 
         # 3. 国ノード (緑の楕円)
-        if country != "N/A" and country != "":
+        if show_country and country != "N/A" and country != "":
             if country not in added_nodes:
                 nodes.append(Node(id=country, label=country, size=20, color="#8BC34A", shape="ellipse"))
                 added_nodes.add(country)
             edges.append(Edge(source=ip, target=country, color="#8BC34A", dashes=True))
 
         # 4. リスクノード (赤色)
-        if risk and risk not in ("[No Match]", "[Not Checked]", "[No Data]", "N/A", ""):
+        if show_risk and risk and risk not in ("[No Match]", "[Not Checked]", "[No Data]", "N/A", ""):
             for r in risk.split(" / "):
                 r_clean = r.strip()
                 if not r_clean:
@@ -2250,18 +2403,26 @@ def render_spider_web_analysis(df):
                 edges.append(Edge(source=ip, target=r_clean, color="#F44336"))
 
         # 5. プロキシノード (紫の六角形)
-        if proxy and proxy not in ("Standard Connection", "", "N/A (Domain)", "未検証"):
+        if show_proxy and proxy and proxy not in ("Standard Connection", "", "N/A (Domain)", "未検証"):
             if proxy not in added_nodes:
                 nodes.append(Node(id=proxy, label=proxy, size=20, color="#9C27B0", shape="hexagon"))
                 added_nodes.add(proxy)
             edges.append(Edge(source=ip, target=proxy, color="#9C27B0"))
+
+        # 6. ASNノード (青の三角形)
+        if show_asn and asn_info and asn_info not in ("N/A", "", "nan", "None"):
+            asn_label = f"AS{asn_num}: {asn_info}" if asn_num and asn_num not in ("N/A", "", "nan") else asn_info
+            if asn_label not in added_nodes:
+                nodes.append(Node(id=asn_label, label=asn_label, size=20, color="#2196F3", shape="triangle"))
+                added_nodes.add(asn_label)
+            edges.append(Edge(source=ip, target=asn_label, color="#2196F3"))
 
     # 物理エンジンの設定（ノードが反発しあって自動配置される）
     config = Config(
         width="100%",
         height=600,
         directed=False,
-        physics=True,
+        physics=not freeze_physics, # UIのチェックボックスと連動して物理演算をON/OFF
         hierarchical=False,
     )
 
@@ -2302,9 +2463,12 @@ def render_merged_analysis(df_merged):
         tab_cross, tab_time, tab_spider = st.tabs(["📊 クロス分析 (マクロ視点)", "🕒 時間分析 (時系列・グループ化対応)", "🕸️ リンク分析 (ミクロ視点)"])
     
     # --- 共通の列整理処理 ---
-    exclude_cols = ['Whois(元データ)', 'Whois(日本語名)', '国名（英語）', '国名', 'プロキシ種別', 'ステータス', 'IoTリスク', 'RDAP(元データ)', 'RDAP(日本語名)', 'ISP', 'ISP_JP', 'Country', 'Country_JP']
+    # 除外リストに「ASN番号」「ASN情報」を追加し、元データの列として誤認されるのを防ぐ
+    exclude_cols = ['ASN番号', 'ASN情報', 'Whois(元データ)', 'Whois(日本語名)', '国名（英語）', '国名', 'プロキシ種別', 'ステータス', 'IoTリスク', 'RDAP(元データ)', 'RDAP(日本語名)', 'ISP', 'ISP_JP', 'Country', 'Country_JP']
     original_cols = [c for c in df_merged.columns if c not in exclude_cols]
-    base_whois_cols = ['Whois(日本語名)', '国名', 'プロキシ種別', 'IoTリスク', 'ステータス']
+    
+    # グラフのグループ化/色分け用の選択肢に「ASN情報」「ASN番号」を追加
+    base_whois_cols = ['ASN情報', 'ASN番号', 'Whois(日本語名)', '国名', 'プロキシ種別', 'IoTリスク', 'ステータス']
     whois_cols = [c for c in base_whois_cols if c in df_merged.columns]
 
     with tab_cross:
@@ -2642,8 +2806,8 @@ def init_session_state():
         'target_freq_map': {},
         'cidr_cache': {},
         'debug_summary': {},
-        'learned_proxy_isps': {}
-        # 'detailed_data': {} 完全に削除
+        'learned_proxy_isps': {},
+        'query_filters': [] # クエリビルダー用のフィルター条件保持リスト
     }
     
     for key, default_value in default_states.items():
@@ -3050,10 +3214,16 @@ def main():
     st.title("🔎 検索大臣 - IP/Domain OSINT -")
     st.markdown(f"**Current Mode:** <span style='color:{mode_color}; font-weight:bold;'>{mode_title}</span>", unsafe_allow_html=True)
     # --- アップデート通知エリア  ---
-    with st.expander("🍉アップデート情報 (令和8年7月18日) - ローカル脅威検知・最適化 🍉", expanded=False):
+    with st.expander("🍉アップデート情報 (令和8年7月23日) - リンク分析強化・バルク抽出対応 🍉", expanded=False):
         st.markdown("""
         **Update:**\n
-        **🛡️ ローカル脅威・匿名検知エンジンの追加**:
+        **🕸️ リンク分析（Spider Web）のフィルター＆画像保存機能**:
+        * 分析センターの相関グラフにおいて、ISP、国名、ASN、リスク等の特定のノードを個別に表示/非表示できるフィルター機能を追加しました。\n
+        * グラフの物理演算（動き）を停止させる機能を追加し、書類添付用のPNG画像として保存しやすくしました。\n
+        **🚀 Bulk WHOIS機能の完全統合とレポート出力**:
+        * Team Cymru APIを用いたBulk WHOIS（ASN高速抽出）の結果を、一覧ビューの専用カラム（ASN番号・ASN情報）に正しく反映するように修正しました。\n
+        * 個別レポート出力時に「Bulk WHOIS」タブを新設し、取得したJSONの生データを閲覧・保存できるようにしました。\n
+        **🛡️ ローカル脅威・匿名検知エンジンの追加** (令和8年7月18日):
         * 外部APIに依存しない軽量な脅威インテリジェンス（Abuse.ch Feodo Tracker）およびプロキシリスト（FireHOL）をローカル実装しました。API消費なしでC2サーバーや悪意のあるプロキシを即座に特定可能です。\n
         **🌐 AlienVault OTX (Passive DNS) APIの実装**:
         * SecurityTrailsの厳しい無料枠（月50回）を回避するため、無制限にReverse IP検索が可能なAlienVault OTXに対応しました。\n
@@ -3503,13 +3673,19 @@ def main():
                 disabled=not (bool(st_api_key) or bool(otx_api_key)), 
                 help="対象IPに紐づくドメイン群を逆検索します。AlienVault OTXのAPIキーがある場合は優先利用され、バルク制限を回避できます。"
             )
+            
+            use_bulk_whois = st.checkbox(
+                "Bulk WHOIS (ASN高速抽出)", 
+                value=False, 
+                help="Team Cymru APIを使用して、大量のIPリストからASNと組織名だけを一括で高速取得します。L3/L4ログのフィルタリングに最適です。"
+            )
 
             skip_whois = False
-            if use_st_reverse_ip:
+            if use_st_reverse_ip or use_bulk_whois:
                 skip_whois = st.checkbox(
-                    "IP属性検索(ISP/国等)をスキップ", 
-                    value=False, 
-                    help="オンにすると処理時間は短縮されますが、APIの連続アクセス制限にかかりやすくなります。オフのままWhois検索等の自然な通信ラグをクッションとして利用することを推奨します。"
+                    "詳細API検索(IPinfo/VPNAPI/RDAP等)をスキップ", 
+                    value=True if use_bulk_whois else False, 
+                    help="Bulk WHOIS等で大量のIPを処理する際、深刻な遅延やレートリミットを防ぐため、1件ごとの外部API通信を完全にバイパスします。"
                 )
 
         with col_set1:
@@ -3695,7 +3871,7 @@ def main():
                         ns_raw = dns_data.get('raw', '') if isinstance(dns_data, dict) else str(dns_data)
                         res_domain = get_domain_details(d, ns_raw, st_api_key, st_start_date, st_end_date, is_single_target=is_single_input, skip_whois=skip_whois)
                         
-                        heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT']
+                        heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT', 'CYMRU_JSON']
                         ip_val = res_domain['Target_IP']
                         
                         # セッションではなくDBへ退避
@@ -3722,6 +3898,15 @@ def main():
                         if actual_ips_to_fetch:
                             with st.spinner(f"⏳ IPinfo Bulk APIで {len(actual_ips_to_fetch)} 件の基本情報を一括取得中..."):
                                 bulk_ipinfo_cache_snapshot = fetch_ipinfo_bulk(actual_ips_to_fetch, pro_api_key)
+                                
+                    # --- Team Cymru バルク一括取得の実行 ---
+                    bulk_asn_cache_snapshot = {}
+                    if use_bulk_whois:
+                        actual_ips_to_fetch = list(set([extract_actual_ip(ip) for ip in immediate_ip_queue if is_valid_ip(extract_actual_ip(ip))]))
+                        if actual_ips_to_fetch:
+                            with st.spinner(f"⏳ Team Cymru Bulk APIで {len(actual_ips_to_fetch)} 件のASN情報を一括取得中..."):
+                                from api_clients import fetch_cymru_asn_bulk
+                                bulk_asn_cache_snapshot = fetch_cymru_asn_bulk(actual_ips_to_fetch)
                                 
                     # --- 各種オプション有効時の動的負荷調整 (安全装置) ---
                     current_max_workers = max_workers
@@ -3791,6 +3976,7 @@ def main():
                                         use_st_rev_fetchall,
                                         is_single_input,
                                         bulk_ipinfo_cache_snapshot,
+                                        bulk_asn_cache_snapshot,
                                         threat_intel_list=threat_intel_list,
                                         proxy_intel_list=proxy_intel_list,
                                         resolved_dns_map_snapshot=resolved_dns_map_snapshot # ← ★これを追加
@@ -3829,7 +4015,7 @@ def main():
                                         st.session_state.learned_proxy_isps.update(new_learned_isp)
                                         
                                     if res.get('Status', '').startswith('Success'):
-                                        heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT']
+                                        heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT', 'CYMRU_JSON']
                                         # セッションではなくDBへ退避
                                         heavy_data_payload = {k: res.pop(k) for k in heavy_keys if k in res}
                                         save_heavy_data_to_db(ip, heavy_data_payload)
@@ -3839,7 +4025,7 @@ def main():
                                     elif res.get('Defer_Until'):
                                         st.session_state.deferred_ips[ip] = res['Defer_Until']
                                     else:
-                                        heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT']
+                                        heavy_keys = ['RDAP_JSON', 'VPNAPI_JSON', 'IPINFO_JSON', 'DOMAIN_RDAP_JSON', 'ST_JSON', 'RDNS_DATA', 'ST_REVERSE_IP_JSON', 'DOMAIN_WHOIS_TEXT', 'IP_WHOIS_TEXT', 'CYMRU_JSON']
                                         # セッションではなくDBへ退避
                                         heavy_data_payload = {k: res.pop(k) for k in heavy_keys if k in res}
                                         save_heavy_data_to_db(ip, heavy_data_payload)
@@ -4039,7 +4225,9 @@ def main():
                     # 元のアップロードデータ(CSV/Excel)が存在する場合、その行構造(時間など)を完全維持する
                     df_for_analysis = st.session_state['original_df'].copy()
                     ip_col = st.session_state['ip_column_name']
-                    
+                        
+                    df_for_analysis['ASN番号'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('ASN', ''))
+                    df_for_analysis['ASN情報'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('AS_Name', ''))
                     df_for_analysis['Whois(元データ)'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('ISP_API_Raw', 'N/A'))
                     df_for_analysis['Whois(日本語名)'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('ISP_JP', 'N/A'))
                     df_for_analysis['RDAP(元データ)'] = df_for_analysis[ip_col].map(lambda x: get_result_info(x).get('RDAP_Name_Raw', 'N/A'))
@@ -4057,6 +4245,8 @@ def main():
                         info = get_result_info(t)
                         temp_rows.append({
                             '対象IP/Domain': t,
+                            'ASN番号': info.get('ASN', ''),
+                            'ASN情報': info.get('AS_Name', ''),
                             'Whois(元データ)': info.get('ISP_API_Raw', 'N/A'),
                             'Whois(日本語名)': info.get('ISP_JP', 'N/A'),
                             'RDAP(元データ)': info.get('RDAP_Name_Raw', 'N/A'),
@@ -4073,6 +4263,8 @@ def main():
             # マスターデータ（Excel/全件CSV用）から無効オプション列を削除
             if not df_for_analysis.empty:
                 master_cols_to_drop = []
+                if not use_bulk_whois:
+                    master_cols_to_drop.extend(['ASN番号', 'ASN情報'])
                 if not use_rdap_option:
                     master_cols_to_drop.extend(['RDAP(元データ)', 'RDAP(日本語名)'])
                 if not use_internetdb_option:
@@ -4168,6 +4360,8 @@ def main():
                     # --- CSV出力の列名と並び順をマスターレポートと完全に統一する ---
                     desired_cols_map = {
                         'Target_IP': 'IPアドレス',
+                        'ASN': 'ASN番号',
+                        'AS_Name': 'ASN情報',
                         'ISP_API_Raw': 'Whois(元データ)',
                         'ISP_JP': 'Whois(日本語名)',
                         'RDAP_Name_Raw': 'RDAP(元データ)',
