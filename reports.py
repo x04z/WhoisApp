@@ -632,7 +632,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None, resolved_dn
     if not (res.get('RDAP_JSON') or res.get('IPINFO_JSON') or res.get('DOMAIN_RDAP_JSON') or 
             res.get('DOMAIN_WHOIS_TEXT') or nslookup_raw or res.get('ST_JSON') or 
             rdns_raw or res.get('IP_WHOIS_TEXT') or 
-            res.get('ST_REVERSE_IP_JSON') or has_proxy_alert):
+            res.get('ST_REVERSE_IP_JSON') or res.get('CYMRU_JSON') or has_proxy_alert):
         return None 
 
     jst_timezone = datetime.timezone(datetime.timedelta(hours=9))
@@ -660,6 +660,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None, resolved_dn
         'show_domain_whois': bool(res.get('DOMAIN_WHOIS_TEXT') and report_opts.get("whois", True)),
         'show_ip_rdap': bool(res.get('RDAP_JSON') and report_opts.get("rdap", True)),
         'show_ip_whois': bool(res.get('IP_WHOIS_TEXT') and report_opts.get("whois", True)),
+        'show_cymru': bool(res.get('CYMRU_JSON') and report_opts.get("whois", True)),
         'show_ipinfo': bool(res.get('IPINFO_JSON') and report_opts.get("ipinfo", True)),
         'show_vpnapi': bool((res.get('VPNAPI_JSON') or has_proxy_alert) and report_opts.get("vpnapi", True)),
         'show_st_history': bool(res.get('ST_JSON') and report_opts.get("st", True)),
@@ -863,6 +864,19 @@ def generate_individual_html_report(res, clean_ip, report_opts=None, resolved_dn
             'raw': esc_raw
         }
 
+    # --- Bulk WHOIS (Team Cymru) ---
+    if ctx['show_cymru']:
+        c_json = res['CYMRU_JSON']
+        ctx['cymru'] = {
+            'asn': c_json.get('asn', '情報なし'),
+            'as_name': c_json.get('as_name', '情報なし'),
+            'bgp_prefix': c_json.get('bgp_prefix', '情報なし'),
+            'cc': c_json.get('cc', '情報なし'),
+            'registry': c_json.get('registry', '情報なし'),
+            'allocated': c_json.get('allocated', '情報なし'),
+            'raw': _safe_highlight_json(c_json, ['asn', 'as_name', 'bgp_prefix', 'cc', 'registry', 'allocated'])
+        }
+
     # ---------------------------------------------------------
     # 2. Jinja2 テンプレート (HTML層)
     # ---------------------------------------------------------
@@ -929,6 +943,7 @@ def generate_individual_html_report(res, clean_ip, report_opts=None, resolved_dn
             {% if show_domain_whois %}<button class="tab-button" onclick="openTab(event, 'tab-domain-whois')" id="btn-tab-domain-whois">WHOIS(Domain)</button>{% endif %}
             {% if show_ip_rdap %}<button class="tab-button" onclick="openTab(event, 'tab-rdap')" id="btn-tab-rdap">RDAP(IP)</button>{% endif %}
             {% if show_ip_whois %}<button class="tab-button" onclick="openTab(event, 'tab-ip-whois')" id="btn-tab-ip-whois">WHOIS(IP)</button>{% endif %}
+            {% if show_cymru %}<button class="tab-button" onclick="openTab(event, 'tab-cymru')" id="btn-tab-cymru">Bulk WHOIS</button>{% endif %}
             {% if show_ipinfo %}<button class="tab-button" onclick="openTab(event, 'tab-ipinfo')" id="btn-tab-ipinfo">IPinfo</button>{% endif %}
             {% if show_vpnapi %}<button class="tab-button" onclick="openTab(event, 'tab-vpnapi')" id="btn-tab-vpnapi">匿名通信判定</button>{% endif %}
             {% if show_st_history %}<button class="tab-button" onclick="openTab(event, 'tab-st')" id="btn-tab-st">SecurityTrails</button>{% endif %}
@@ -1143,6 +1158,32 @@ def generate_individual_html_report(res, clean_ip, report_opts=None, resolved_dn
             <div class="raw-data" style="background-color: #263238; color: #eceff1; font-weight: bold; margin-bottom: 20px;">$ whois -h {{ i_whois.server | e }} {{ clean_ip | e }}</div>
             <h2>WHOISデータ</h2>
             <div class="raw-data" style="white-space: pre-wrap;">{{ i_whois.raw | safe }}</div>
+        </div>
+        {% endif %}
+
+        <!-- Bulk WHOIS (Team Cymru) -->
+        {% if show_cymru %}
+        <div id="tab-cymru" class="tab-content">
+            <h1 class="theme-rdap" style="color: #0d47a1; border-color: #0d47a1;">Bulk WHOIS 取得結果 (Team Cymru)</h1>
+            <div class="description" style="background-color: #e3f2fd; border-color: #90caf9;">
+                <strong>Team Cymru IP to ASN Mapping：</strong><br>
+                Team Cymru(インターネットのセキュリティおよびインフラストラクチャに関する情報収集と解析を専門とする非営利のセキュリティ研究団)が提供するバルク WHOIS API (TCP 43) より、IPアドレスからASN（自律システム番号）および BGP プレフィックス情報を一括取得した結果を示す。
+            </div>
+            <h2>対象IPアドレス及び取得結果</h2>
+            <table>
+                <tr><th>対象IPアドレス<br>(Target IP)</th><td><strong>{{ clean_ip | e }}</strong></td></tr>
+                <tr><th>取得日時<br>(Timestamp)</th><td><strong>{{ current_time }}</strong></td></tr>
+            </table>
+            <h2>ASN (自律システム) 情報</h2>
+            <table>
+                <tr><th>ASN番号</th><td><strong>AS{{ cymru.asn | e }}</strong></td></tr>
+                <tr><th>組織名 (AS Name)</th><td><strong>{{ cymru.as_name | e }}</strong></td></tr>
+                <tr><th>BGPプレフィックス</th><td><strong>{{ cymru.bgp_prefix | e }}</strong></td></tr>
+                <tr><th>割当国 / レジストリ</th><td><strong>{{ cymru.cc | e }} / {{ cymru.registry | e }}</strong></td></tr>
+                <tr><th>割当年月日</th><td><strong>{{ cymru.allocated | e }}</strong></td></tr>
+            </table>
+            <h2>解析用生データ (JSON形式)</h2>
+            <div class="raw-data">{{ cymru.raw | safe }}</div>
         </div>
         {% endif %}
 

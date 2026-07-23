@@ -437,6 +437,50 @@ def fetch_ipinfo_bulk(ip_list, api_key):
     return results
 
 
+def fetch_cymru_asn_bulk(ip_list, chunk_size=500, delay=1.0):
+    """
+    Team CymruのBulk WHOIS API (TCP 43)を使用してASN情報を取得する。
+    サーバー負荷とブロックを避けるため、リストをチャンクに分割して処理する。
+    """
+    if not ip_list:
+        return {}
+    
+    asn_map = {}
+    
+    for i in range(0, len(ip_list), chunk_size):
+        chunk = ip_list[i:i + chunk_size]
+        request = "begin\nverbose\n" + "\n".join(chunk) + "\nend\n"
+        
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(15.0)
+                s.connect(('whois.cymru.com', 43))
+                s.sendall(request.encode('utf-8'))
+                
+                response = b""
+                while True:
+                    data = s.recv(4096)
+                    if not data:
+                        break
+                    response += data
+                    
+            lines = response.decode('utf-8', errors='ignore').splitlines()
+            for line in lines:
+                if line.startswith('Bulk mode') or line.startswith('Error') or not line.strip():
+                    continue
+                    
+                parts = [p.strip() for p in line.split('|')]
+                if len(parts) >= 7:
+                    asn_map[parts[1]] = {"asn": parts[0], "as_name": parts[6]}
+                    
+        except Exception as e:
+            logging.error(f"[Cymru Bulk ASN] チャンク処理エラー (インデックス {i}): {e}")
+            
+        if i + chunk_size < len(ip_list):
+            time.sleep(delay)
+            
+    return asn_map
+
 # ==========================================
 # 非同期 API クライアント関数群 (Async)
 # ==========================================

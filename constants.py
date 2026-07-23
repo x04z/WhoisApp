@@ -222,6 +222,7 @@ ISP_REMAP_RULES = [
     ('logiclinks', '株式会社LogicLinks'),('lgls', '株式会社LogicLinks'),
     ('plala', '株式会社NTTドコモ (ぷらら)'),('docomo', '株式会社NTTドコモ'),('maps', '株式会社NTTドコモ'),
     ('wi2', '株式会社ワイヤ・アンド・ワイヤレス'),
+    ('GMO Internet, Inc.','GMOインターネットグループ株式会社'),
 ]
 
 def normalize_isp_key(text):
